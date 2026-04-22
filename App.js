@@ -1,5 +1,5 @@
 import 'react-native-url-polyfill/auto';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Text, View, StyleSheet, TouchableOpacity,
   TextInput, SafeAreaView, StatusBar,
@@ -134,7 +134,7 @@ function RolePicker({ onSelect }) {
 }
 
 // ── Crew Tab Navigator ────────────────────────────────────────
-function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount }) {
+function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount, onResetRole }) {
   const screenParams = { userName, userDept };
   return (
     <Tab.Navigator
@@ -149,7 +149,7 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount }) {
       <Tab.Screen
         name="Home"
         component={HomeScreen}
-        initialParams={screenParams}
+        initialParams={{ ...screenParams, onResetRole }}
         options={{
           tabBarButton: (props) => <TabButton {...props} />,
           tabBarIcon: ({ focused, color, size }) => (
@@ -301,6 +301,17 @@ export default function App() {
     setRole(selectedRole);
   };
 
+  const handleResetRole = useCallback(async () => {
+    await Promise.all([
+      AsyncStorage.removeItem(STORAGE.NAME),
+      AsyncStorage.removeItem(STORAGE.DEPT),
+      AsyncStorage.removeItem(STORAGE.ROLE),
+    ]);
+    setRole('');
+    setUserName('');
+    setUserDept('');
+  }, []);
+
   if (role === null) return null; // loading
 
   if (role === '') {
@@ -322,6 +333,7 @@ export default function App() {
             userDept={userDept}
             unreadCount={unreadCount}
             setUnreadCount={setUnreadCount}
+            onResetRole={handleResetRole}
           />
         )}
       </NavigationContainer>

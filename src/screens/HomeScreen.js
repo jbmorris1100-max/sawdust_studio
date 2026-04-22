@@ -46,15 +46,18 @@ const ACTIONS = [
 ];
 
 // ── Main Component ────────────────────────────────────────────
-export default function HomeScreen({ navigation }) {
-  const [userName, setUserName]         = useState('');
-  const [userDept, setUserDept]         = useState('');
-  const [setupVisible, setSetupVisible] = useState(false);
-  const [draftName, setDraftName]       = useState('');
-  const [draftDept, setDraftDept]       = useState('');
-  const [openInventory, setOpenInventory] = useState(0);
-  const [openDamage, setOpenDamage]       = useState(0);
-  const [alertLoading, setAlertLoading]   = useState(false);
+export default function HomeScreen({ navigation, route }) {
+  const { onResetRole } = route?.params ?? {};
+
+  const [userName, setUserName]             = useState('');
+  const [userDept, setUserDept]             = useState('');
+  const [setupVisible, setSetupVisible]     = useState(false);
+  const [settingsVisible, setSettingsVisible] = useState(false);
+  const [draftName, setDraftName]           = useState('');
+  const [draftDept, setDraftDept]           = useState('');
+  const [openInventory, setOpenInventory]   = useState(0);
+  const [openDamage, setOpenDamage]         = useState(0);
+  const [alertLoading, setAlertLoading]     = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -130,12 +133,20 @@ export default function HomeScreen({ navigation }) {
             </View>
           ) : null}
         </View>
-        <TouchableOpacity
-          onPress={() => { setDraftName(userName); setDraftDept(userDept); setSetupVisible(true); }}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          <Ionicons name="person-circle-outline" size={30} color={C.muted} />
-        </TouchableOpacity>
+        <View style={styles.headerIcons}>
+          <TouchableOpacity
+            onPress={() => setSettingsVisible(true)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="settings-outline" size={24} color={C.muted} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => { setDraftName(userName); setDraftDept(userDept); setSetupVisible(true); }}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="person-circle-outline" size={30} color={C.muted} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Alert Banner */}
@@ -224,6 +235,46 @@ export default function HomeScreen({ navigation }) {
               disabled={!draftName.trim() || !draftDept}
             >
               <Text style={styles.saveBtnText}>Let's Go</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Settings Modal */}
+      <Modal visible={settingsVisible} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Settings</Text>
+
+            <TouchableOpacity
+              style={styles.settingsRow}
+              onPress={() => { setSettingsVisible(false); setDraftName(userName); setDraftDept(userDept); setSetupVisible(true); }}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.settingsIcon, { backgroundColor: C.accent + '22' }]}>
+                <Ionicons name="person-outline" size={18} color={C.accent} />
+              </View>
+              <Text style={styles.settingsRowText}>Change Name / Department</Text>
+              <Ionicons name="chevron-forward" size={16} color={C.border} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.settingsRow}
+              onPress={async () => { setSettingsVisible(false); if (onResetRole) await onResetRole(); }}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.settingsIcon, { backgroundColor: '#3b82f622' }]}>
+                <Ionicons name="swap-horizontal-outline" size={18} color="#3b82f6" />
+              </View>
+              <Text style={[styles.settingsRowText, { color: '#3b82f6' }]}>Switch Role</Text>
+              <Ionicons name="chevron-forward" size={16} color={C.border} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.settingsCancelBtn}
+              onPress={() => setSettingsVisible(false)}
+            >
+              <Text style={styles.settingsCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -429,4 +480,48 @@ const styles = StyleSheet.create({
   },
   saveBtnDisabled: { opacity: 0.35 },
   saveBtnText: { color: '#000', fontSize: 16, fontWeight: '700' },
+
+  // Header icons
+  headerIcons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+
+  // Settings modal rows
+  settingsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+  },
+  settingsIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  settingsRowText: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '600',
+    color: C.text,
+  },
+  settingsCancelBtn: {
+    marginTop: 18,
+    paddingVertical: 14,
+    alignItems: 'center',
+    backgroundColor: C.input,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  settingsCancelText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: C.muted,
+  },
 });
