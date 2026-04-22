@@ -1,6 +1,9 @@
 import 'react-native-url-polyfill/auto';
 import React, { useState, useEffect, useRef } from 'react';
-import { Text, View, StyleSheet, TouchableOpacity } from 'react-native';
+import {
+  Text, View, StyleSheet, TouchableOpacity,
+  TextInput, SafeAreaView, StatusBar,
+} from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -13,17 +16,29 @@ import HomeScreen      from './src/screens/HomeScreen';
 import PartsScreen     from './src/screens/PartsScreen';
 import InventoryScreen from './src/screens/InventoryScreen';
 import MessagesScreen  from './src/screens/MessagesScreen';
+import SupervisorApp   from './src/screens/SupervisorApp';
 
 const Tab = createBottomTabNavigator();
+
+const STORAGE = {
+  NAME: '@sawdust_user_name',
+  DEPT: '@sawdust_user_dept',
+  ROLE: '@sawdust_user_role',
+};
 
 // ── Colors ────────────────────────────────────────────────────
 const C = {
   bg:       '#0d0d0d',
-  tabBar:   '#111111',
+  surface:  '#141414',
+  input:    '#1a1a1a',
   border:   '#2a2a2a',
+  text:     '#e5e5e5',
+  muted:    '#555555',
+  tabBar:   '#111111',
   active:   '#f59e0b',
   inactive: '#444444',
   badge:    '#ef4444',
+  blue:     '#3b82f6',
 };
 
 // ── Per-tab top accent indicator ──────────────────────────────
@@ -41,132 +56,274 @@ function TabButton({ children, onPress, accessibilityState, style }) {
   );
 }
 
+// ── Role Picker Screen ────────────────────────────────────────
+function RolePicker({ onSelect }) {
+  const [pickingSupervisor, setPickingSupervisor] = useState(false);
+  const [name, setName] = useState('');
+
+  return (
+    <SafeAreaView style={rp.safe}>
+      <StatusBar barStyle="light-content" backgroundColor={C.bg} />
+      <View style={rp.container}>
+        <Text style={rp.appName}>Sawdust Crew</Text>
+        <Text style={rp.heading}>Who are you?</Text>
+
+        {!pickingSupervisor ? (
+          <>
+            <TouchableOpacity
+              style={rp.roleCard}
+              onPress={() => onSelect('crew')}
+              activeOpacity={0.8}
+            >
+              <View style={[rp.roleIcon, { backgroundColor: C.active + '22' }]}>
+                <Ionicons name="construct-outline" size={30} color={C.active} />
+              </View>
+              <View style={rp.roleText}>
+                <Text style={rp.roleTitle}>I'm Crew</Text>
+                <Text style={rp.roleDesc}>Log inventory, scan parts, report damage, send messages</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={C.border} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[rp.roleCard, rp.roleCardSup]}
+              onPress={() => setPickingSupervisor(true)}
+              activeOpacity={0.8}
+            >
+              <View style={[rp.roleIcon, { backgroundColor: C.blue + '22' }]}>
+                <Ionicons name="shield-checkmark-outline" size={30} color={C.blue} />
+              </View>
+              <View style={rp.roleText}>
+                <Text style={[rp.roleTitle, { color: C.blue }]}>I'm Supervisor</Text>
+                <Text style={rp.roleDesc}>Monitor crew, manage inventory, reply to messages</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={C.border} />
+            </TouchableOpacity>
+          </>
+        ) : (
+          <View style={rp.nameBox}>
+            <Text style={rp.fieldLabel}>SUPERVISOR NAME</Text>
+            <TextInput
+              style={rp.input}
+              placeholder="e.g. Mike Torres"
+              placeholderTextColor={C.muted}
+              value={name}
+              onChangeText={setName}
+              autoFocus
+            />
+            <TouchableOpacity
+              style={[rp.goBtn, !name.trim() && rp.goBtnDisabled]}
+              onPress={() => onSelect('supervisor', name.trim())}
+              disabled={!name.trim()}
+              activeOpacity={0.85}
+            >
+              <Text style={rp.goBtnText}>Enter Supervisor Dashboard</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => { setPickingSupervisor(false); setName(''); }}
+              style={rp.backBtn}
+            >
+              <Ionicons name="arrow-back" size={16} color={C.muted} style={{ marginRight: 5 }} />
+              <Text style={rp.backBtnText}>Back</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+    </SafeAreaView>
+  );
+}
+
+// ── Crew Tab Navigator ────────────────────────────────────────
+function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount }) {
+  const screenParams = { userName, userDept };
+  return (
+    <Tab.Navigator
+      screenOptions={{
+        headerShown: false,
+        tabBarStyle: styles.tabBar,
+        tabBarActiveTintColor:   C.active,
+        tabBarInactiveTintColor: C.inactive,
+        tabBarLabelStyle: styles.tabLabel,
+      }}
+    >
+      <Tab.Screen
+        name="Home"
+        component={HomeScreen}
+        initialParams={screenParams}
+        options={{
+          tabBarButton: (props) => <TabButton {...props} />,
+          tabBarIcon: ({ focused, color, size }) => (
+            <Ionicons name={focused ? 'home' : 'home-outline'} size={size} color={color} />
+          ),
+        }}
+      />
+
+      <Tab.Screen
+        name="ScanPart"
+        component={PartsScreen}
+        initialParams={screenParams}
+        options={{
+          title: 'Parts',
+          tabBarButton: (props) => <TabButton {...props} />,
+          tabBarIcon: ({ focused, color, size }) => (
+            <Ionicons name={focused ? 'scan' : 'scan-outline'} size={size} color={color} />
+          ),
+        }}
+      />
+
+      <Tab.Screen
+        name="LogInventory"
+        component={InventoryScreen}
+        initialParams={screenParams}
+        options={{
+          title: 'Inventory',
+          tabBarButton: (props) => <TabButton {...props} />,
+          tabBarIcon: ({ focused, color, size }) => (
+            <Ionicons name={focused ? 'layers' : 'layers-outline'} size={size} color={color} />
+          ),
+        }}
+      />
+
+      <Tab.Screen
+        name="Messages"
+        component={MessagesScreen}
+        initialParams={screenParams}
+        options={{
+          title: 'Messages',
+          tabBarButton: (props) => <TabButton {...props} />,
+          tabBarIcon: ({ focused, color, size }) => (
+            <Ionicons
+              name={focused ? 'chatbubble-ellipses' : 'chatbubble-ellipses-outline'}
+              size={size}
+              color={color}
+            />
+          ),
+          tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
+          tabBarBadgeStyle: styles.nativeBadge,
+        }}
+        listeners={{ tabPress: () => setUnreadCount(0) }}
+      />
+
+      {/* Hidden tab — navigated to from HomeScreen */}
+      <Tab.Screen
+        name="ReportDamage"
+        component={InventoryScreen}
+        initialParams={{ ...screenParams, activeTab: 'damage' }}
+        options={{ tabBarButton: () => null }}
+      />
+    </Tab.Navigator>
+  );
+}
+
+// ── Supervisor Tab Navigator ──────────────────────────────────
+const SupervisorTab = createBottomTabNavigator();
+function SupervisorNavigator({ userName }) {
+  return (
+    <SupervisorTab.Navigator
+      screenOptions={{
+        headerShown: false,
+        tabBarStyle: { display: 'none' }, // SupervisorApp renders its own tab bar
+      }}
+    >
+      <SupervisorTab.Screen
+        name="SupervisorMain"
+        component={SupervisorApp}
+        initialParams={{ userName }}
+      />
+    </SupervisorTab.Navigator>
+  );
+}
+
 // ── App ───────────────────────────────────────────────────────
 export default function App() {
-  const [userInfo,    setUserInfo]    = useState({ userName: '', userDept: '' });
+  // null = loading, '' = not set, 'crew', 'supervisor'
+  const [role,        setRole]        = useState(null);
+  const [userName,    setUserName]    = useState('');
+  const [userDept,    setUserDept]    = useState('');
   const [unreadCount, setUnreadCount] = useState(0);
   const channelRef = useRef(null);
 
   useEffect(() => {
     (async () => {
-      const [name, dept] = await Promise.all([
-        AsyncStorage.getItem('@sawdust_user_name'),
-        AsyncStorage.getItem('@sawdust_user_dept'),
+      const [name, dept, storedRole] = await Promise.all([
+        AsyncStorage.getItem(STORAGE.NAME),
+        AsyncStorage.getItem(STORAGE.DEPT),
+        AsyncStorage.getItem(STORAGE.ROLE),
       ]);
-      if (name && dept) {
-        setUserInfo({ userName: name, userDept: dept });
-        registerForPushNotifications(name, dept).catch((err) =>
-          console.warn('[App] push registration error:', err)
-        );
+
+      if (storedRole === 'supervisor' && name) {
+        setRole('supervisor');
+        setUserName(name);
+        setUserDept('Management');
+        registerForPushNotifications(name, 'Supervisor').catch(console.warn);
+      } else if (!storedRole && name && dept) {
+        // Legacy users (pre-role-system): assume crew, backfill role
+        await AsyncStorage.setItem(STORAGE.ROLE, 'crew');
+        setRole('crew');
+        setUserName(name);
+        setUserDept(dept);
+        registerForPushNotifications(name, dept).catch(console.warn);
+      } else if (storedRole === 'crew' && name && dept) {
+        setRole('crew');
+        setUserName(name);
+        setUserDept(dept);
+        registerForPushNotifications(name, dept).catch(console.warn);
+      } else {
+        setRole(''); // needs role setup
       }
     })();
   }, []);
 
+  // Unread badge channel — crew only
   useEffect(() => {
+    if (role !== 'crew') return;
     channelRef.current = supabase
       .channel('app-messages-badge')
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
         (payload) => {
-          if (payload.new.sender_name !== userInfo.userName) {
-            setUnreadCount((n) => n + 1);
-          }
+          if (payload.new.sender_name !== userName) setUnreadCount((n) => n + 1);
         }
       )
       .subscribe();
-
     return () => { supabase.removeChannel(channelRef.current); };
-  }, [userInfo.userName]);
+  }, [role, userName]);
 
-  const screenParams = userInfo;
+  const handleRoleSelect = async (selectedRole, name) => {
+    await AsyncStorage.setItem(STORAGE.ROLE, selectedRole);
+    if (selectedRole === 'supervisor' && name) {
+      await AsyncStorage.setItem(STORAGE.NAME, name);
+      setUserName(name);
+      setUserDept('Management');
+      registerForPushNotifications(name, 'Supervisor').catch(console.warn);
+    }
+    setRole(selectedRole);
+  };
+
+  if (role === null) return null; // loading
+
+  if (role === '') {
+    return (
+      <SafeAreaProvider>
+        <RolePicker onSelect={handleRoleSelect} />
+      </SafeAreaProvider>
+    );
+  }
 
   return (
     <SafeAreaProvider>
       <NavigationContainer>
-        <Tab.Navigator
-          screenOptions={{
-            headerShown: false,
-            tabBarStyle: styles.tabBar,
-            tabBarActiveTintColor:   C.active,
-            tabBarInactiveTintColor: C.inactive,
-            tabBarLabelStyle: styles.tabLabel,
-          }}
-        >
-          {/* Home */}
-          <Tab.Screen
-            name="Home"
-            component={HomeScreen}
-            initialParams={screenParams}
-            options={{
-              tabBarButton: (props) => <TabButton {...props} />,
-              tabBarIcon: ({ focused, color, size }) => (
-                <Ionicons name={focused ? 'home' : 'home-outline'} size={size} color={color} />
-              ),
-            }}
+        {role === 'supervisor' ? (
+          <SupervisorNavigator userName={userName} />
+        ) : (
+          <CrewNavigator
+            userName={userName}
+            userDept={userDept}
+            unreadCount={unreadCount}
+            setUnreadCount={setUnreadCount}
           />
-
-          {/* Parts / Scan */}
-          <Tab.Screen
-            name="ScanPart"
-            component={PartsScreen}
-            initialParams={screenParams}
-            options={{
-              title: 'Parts',
-              tabBarButton: (props) => <TabButton {...props} />,
-              tabBarIcon: ({ focused, color, size }) => (
-                <Ionicons name={focused ? 'scan' : 'scan-outline'} size={size} color={color} />
-              ),
-            }}
-          />
-
-          {/* Inventory / Damage */}
-          <Tab.Screen
-            name="LogInventory"
-            component={InventoryScreen}
-            initialParams={screenParams}
-            options={{
-              title: 'Inventory',
-              tabBarButton: (props) => <TabButton {...props} />,
-              tabBarIcon: ({ focused, color, size }) => (
-                <Ionicons name={focused ? 'layers' : 'layers-outline'} size={size} color={color} />
-              ),
-            }}
-          />
-
-          {/* Messages */}
-          <Tab.Screen
-            name="Messages"
-            component={MessagesScreen}
-            initialParams={screenParams}
-            options={{
-              title: 'Messages',
-              tabBarButton: (props) => <TabButton {...props} />,
-              tabBarIcon: ({ focused, color, size }) => (
-                <Ionicons
-                  name={focused ? 'chatbubble-ellipses' : 'chatbubble-ellipses-outline'}
-                  size={size}
-                  color={color}
-                />
-              ),
-              tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
-              tabBarBadgeStyle: styles.nativeBadge,
-            }}
-            listeners={{
-              tabPress: () => setUnreadCount(0),
-            }}
-          />
-
-          {/* ReportDamage — hidden tab, navigated to from HomeScreen */}
-          <Tab.Screen
-            name="ReportDamage"
-            component={InventoryScreen}
-            initialParams={{ ...screenParams, activeTab: 'damage' }}
-            options={{
-              tabBarButton: () => null,
-            }}
-          />
-        </Tab.Navigator>
+        )}
       </NavigationContainer>
     </SafeAreaProvider>
   );
@@ -209,4 +366,57 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
   },
+});
+
+// ── Role Picker Styles ────────────────────────────────────────
+const rp = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: C.bg },
+  container: {
+    flex: 1, paddingHorizontal: 24, justifyContent: 'center',
+  },
+  appName: {
+    fontSize: 13, fontWeight: '700', color: C.active,
+    letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 12,
+  },
+  heading: {
+    fontSize: 28, fontWeight: '800', color: C.text,
+    letterSpacing: -0.5, marginBottom: 32,
+  },
+  roleCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    backgroundColor: C.surface, borderRadius: 18,
+    borderWidth: 1, borderColor: '#222',
+    padding: 18, marginBottom: 12,
+  },
+  roleCardSup: { borderColor: C.blue + '30' },
+  roleIcon: {
+    width: 52, height: 52, borderRadius: 14,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  roleText:  { flex: 1 },
+  roleTitle: { fontSize: 17, fontWeight: '700', color: C.text, marginBottom: 4 },
+  roleDesc:  { fontSize: 12, color: C.muted, lineHeight: 17 },
+
+  nameBox:   { marginTop: 8 },
+  fieldLabel: {
+    fontSize: 10, fontWeight: '700', color: C.muted,
+    letterSpacing: 0.9, marginBottom: 10,
+  },
+  input: {
+    backgroundColor: C.input, borderRadius: 14,
+    borderWidth: 1.5, borderColor: C.border,
+    color: C.text, fontSize: 17,
+    paddingHorizontal: 16, paddingVertical: 14,
+    marginBottom: 16,
+  },
+  goBtn: {
+    backgroundColor: C.blue, borderRadius: 14,
+    paddingVertical: 17, alignItems: 'center', marginBottom: 14,
+  },
+  goBtnDisabled: { opacity: 0.35 },
+  goBtnText:     { color: '#fff', fontSize: 16, fontWeight: '700' },
+  backBtn: {
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingVertical: 8,
+  },
+  backBtnText: { color: C.muted, fontSize: 14 },
 });

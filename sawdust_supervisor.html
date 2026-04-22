@@ -138,6 +138,7 @@ function App() {
   const [damageRpts,   setDamageRpts]   = useState([]);   // damage_reports
   const [messages,     setMessages]     = useState([]);   // messages
   const [sbReady,      setSbReady]      = useState(false);// connection status
+  const [damageF,      setDamageF]      = useState("open"); // damage-only filter
 
   // ── Message compose ───────────────────────────────────────────────────────
   const [msgBody,       setMsgBody]       = useState("");
@@ -193,8 +194,8 @@ function App() {
           if (p.some(m => m.id === payload.new.id)) return p;
           return [...p, payload.new];
         });
-        // badge if not currently viewing messages tab
-        setUnread(n => n + 1);
+        // only badge for incoming crew messages, not supervisor's own sends
+        if (payload.new.sender_name !== "Supervisor") setUnread(n => n + 1);
       })
       .subscribe();
 
@@ -850,12 +851,12 @@ function App() {
       h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
         h("div",{style:{fontSize:11,color:"#444"}}, damageRpts.filter(d=>d.status==="open").length+" open reports"),
         h("div",{style:{display:"flex",gap:6}},
-          ["open","reviewed","resolved","all"].map(f=>h(FBtn,{key:f,val:f,cur:missF,set:setMissF}))
+          ["open","reviewed","resolved","all"].map(f=>h(FBtn,{key:f,val:f,cur:damageF,set:setDamageF}))
         )
       ),
-      (missF==="all" ? damageRpts : damageRpts.filter(d=>d.status===missF)).length===0
-        && h(Empty,{msg:"No "+missF+" damage reports."}),
-      (missF==="all" ? damageRpts : damageRpts.filter(d=>d.status===missF)).map(d => {
+      (damageF==="all" ? damageRpts : damageRpts.filter(d=>d.status===damageF)).length===0
+        && h(Empty,{msg:"No "+damageF+" damage reports."}),
+      (damageF==="all" ? damageRpts : damageRpts.filter(d=>d.status===damageF)).map(d => {
         const col = d.status==="open" ? "#ef4444" : d.status==="reviewed" ? "#f59e0b" : "#22c55e";
         return h("div",{key:d.id,style:{...CS,borderLeft:`3px solid ${col}`,display:"flex",alignItems:"center",justifyContent:"space-between"}},
           h("div",{style:{flex:1}},
@@ -1007,7 +1008,7 @@ function App() {
         threads.length === 0 && h(Empty,{msg:"No crew messages yet."}),
         threads.map(t => {
           const last = t.messages[t.messages.length-1];
-          const replyCount = messages.filter(m => m.sender_name==="Supervisor").length;
+          const replyCount = messages.filter(m => m.sender_name==="Supervisor" && new Date(m.created_at) >= new Date(t.messages[0]?.created_at)).length;
           return h("div",{
             key: t.name,
             onClick: ()=>{ setActiveThread({name:t.name,dept:t.dept}); setUnread(0); },
