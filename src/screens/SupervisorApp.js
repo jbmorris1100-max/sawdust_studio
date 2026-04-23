@@ -105,9 +105,28 @@ const FilterChips = ({ options, value, onChange }) => (
 );
 
 // ── Overview Tab ──────────────────────────────────────────────
-function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole }) {
+function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole, todayClockEntries }) {
+  // Tick every second to keep elapsed times live
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
   const pendingNeeds = needs.filter((n) => n.status === 'pending').length;
   const openDamage   = damage.filter((d) => d.status === 'open').length;
+
+  const activeClock = (todayClockEntries || []).filter((e) => !e.clock_out);
+  const totalClockHours = (todayClockEntries || []).reduce((sum, e) => {
+    if (e.clock_out) return sum + (e.total_hours || 0);
+    return sum + (Date.now() - new Date(e.clock_in).getTime()) / 3600000;
+  }, 0);
+  const clockElapsed = (isoStart) => {
+    const diff = Math.floor((Date.now() - new Date(isoStart).getTime()) / 1000);
+    const h = Math.floor(diff / 3600);
+    const m = Math.floor((diff % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  };
 
   const deptNeeds   = {};
   const deptDamage  = {};
@@ -165,8 +184,27 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole 
         </View>
       </View>
 
+      {/* Who's Clocked In */}
+      <Text style={styles.sectionLabel}>
+        {`WHO'S CLOCKED IN${totalClockHours > 0 ? ` — ${totalClockHours.toFixed(1)}h today` : ''}`}
+      </Text>
+      {activeClock.length === 0 ? (
+        <Text style={styles.clockNoneText}>No crew clocked in yet.</Text>
+      ) : (
+        activeClock.map((entry) => (
+          <View key={entry.id} style={styles.clockCrewRow}>
+            <View style={styles.clockCrewDot} />
+            <View style={styles.clockCrewInfo}>
+              <Text style={styles.clockCrewName}>{entry.worker_name}</Text>
+              <Text style={styles.clockCrewDept}>{entry.dept}</Text>
+            </View>
+            <Text style={styles.clockCrewElapsed}>{clockElapsed(entry.clock_in)}</Text>
+          </View>
+        ))
+      )}
+
       {/* Dept status grid */}
-      <Text style={styles.sectionLabel}>DEPT STATUS — PENDING NEEDS</Text>
+      <Text style={[styles.sectionLabel, { marginTop: 20 }]}>DEPT STATUS — PENDING NEEDS</Text>
       {DEPARTMENTS.map((dept) => {
         const n   = deptNeeds[dept];
         const dmg = deptDamage[dept];
@@ -578,22 +616,26 @@ export default function SupervisorApp({ route, userName: userNameProp, onResetRo
   const [activeThread, setActiveThread] = useState(null);
   const [msgBody,      setMsgBody]      = useState('');
   const [sending,      setSending]      = useState(false);
-  const [needsFilter,  setNeedsFilter]  = useState('pending');
-  const [damageFilter, setDamageFilter] = useState('open');
+  const [needsFilter,       setNeedsFilter]       = useState('pending');
+  const [damageFilter,      setDamageFilter]      = useState('open');
+  const [todayClockEntries, setTodayClockEntries] = useState([]);
 
   const msgListRef = useRef(null);
   const channels   = useRef([]);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
-    const [msgsRes, needsRes, dmgRes] = await Promise.all([
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const [msgsRes, needsRes, dmgRes, clockRes] = await Promise.all([
       supabase.from('messages').select('*').order('created_at', { ascending: true }).limit(300),
       supabase.from('inventory_needs').select('*').order('created_at', { ascending: false }),
       supabase.from('damage_reports').select('*').order('created_at', { ascending: false }),
+      supabase.from('time_clock').select('*').eq('date', todayStr).order('clock_in', { ascending: true }),
     ]);
-    if (msgsRes.data)  setMessages(msgsRes.data);
-    if (needsRes.data) setNeeds(needsRes.data);
-    if (dmgRes.data)   setDamage(dmgRes.data);
+    if (msgsRes.data)   setMessages(msgsRes.data);
+    if (needsRes.data)  setNeeds(needsRes.data);
+    if (dmgRes.data)    setDamage(dmgRes.data);
+    if (clockRes.data)  setTodayClockEntries(clockRes.data);
     setLoading(false);
   }, []);
 
@@ -626,7 +668,20 @@ export default function SupervisorApp({ route, userName: userNameProp, onResetRo
       })
       .subscribe();
 
-    channels.current = [msgCh, needsCh, dmgCh];
+    const clockCh = supabase.channel('sup-app-timeclock')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'time_clock' }, (p) => {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        if (p.eventType === 'INSERT' && p.new.date === todayStr) {
+          setTodayClockEntries((prev) => [...prev, p.new]);
+        } else if (p.eventType === 'UPDATE') {
+          setTodayClockEntries((prev) => prev.map((e) => e.id === p.new.id ? p.new : e));
+        } else if (p.eventType === 'DELETE') {
+          setTodayClockEntries((prev) => prev.filter((e) => e.id !== p.old.id));
+        }
+      })
+      .subscribe();
+
+    channels.current = [msgCh, needsCh, dmgCh, clockCh];
     return () => channels.current.forEach((ch) => supabase.removeChannel(ch));
   }, []);
 
@@ -725,6 +780,7 @@ export default function SupervisorApp({ route, userName: userNameProp, onResetRo
                 threads={threads}
                 userName={userName}
                 onSwitchRole={handleSwitchRole}
+                todayClockEntries={todayClockEntries}
               />
             )}
             {activeTab === 'messages' && (
@@ -1016,4 +1072,20 @@ const styles = StyleSheet.create({
     minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 3,
   },
   tabBadgeText: { color: '#fff', fontSize: 9, fontWeight: '700' },
+
+  // Clock crew rows (Overview tab)
+  clockNoneText: { fontSize: 12, color: C.muted, marginBottom: 12 },
+  clockCrewRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 8, paddingHorizontal: 12,
+    backgroundColor: C.surface, borderRadius: 10,
+    borderWidth: 1, borderColor: '#222',
+    borderLeftWidth: 3, borderLeftColor: '#22c55e',
+    marginBottom: 6,
+  },
+  clockCrewDot:     { width: 7, height: 7, borderRadius: 4, backgroundColor: '#22c55e' },
+  clockCrewInfo:    { flex: 1 },
+  clockCrewName:    { fontSize: 13, fontWeight: '700', color: C.text },
+  clockCrewDept:    { fontSize: 11, color: C.muted, marginTop: 1 },
+  clockCrewElapsed: { fontSize: 13, color: '#22c55e', fontWeight: '600' },
 });

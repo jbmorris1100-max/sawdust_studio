@@ -75,7 +75,8 @@ const CL = [
 ];
 const CTYPES = ["Base cabinet","Upper cabinet","Tall cabinet","Island","Drawer box","Door","Custom"];
 const STAGES = ["Cutting","Edgebanding","Assembly","Finishing","Shipping","Install"];
-const UNITS  = ["sheets","pcs","lbs","ft","rolls","boxes","gallons"];
+const UNITS      = ["sheets","pcs","lbs","ft","rolls","boxes","gallons"];
+const CREW_DEPTS = ["Cutting","Edgebanding","Assembly","Finishing","Shipping","Install","Craftsman","Management"];
 const AM = "#f59e0b";
 const SM = {
   active:  { bar:"#3b82f6", bg:"#1e2a3a", txt:"#60a5fa" },
@@ -150,19 +151,21 @@ function App() {
 
   // ── Supabase: initial fetch + real-time subscriptions ─────────────────────
   useEffect(() => {
-    // Fetch all three tables on mount
+    // Fetch all tables on mount
     Promise.all([
       sb.from("inventory_needs").select("*").order("created_at", { ascending: false }),
       sb.from("damage_reports").select("*").order("created_at",  { ascending: false }),
       sb.from("messages").select("*").order("created_at",        { ascending: true  }).limit(200),
       sb.from("sops").select("*").order("updated_at",            { ascending: false }),
       sb.from("sop_views").select("*").order("viewed_at",        { ascending: false }),
-    ]).then(([ni, dr, ms, so, sv]) => {
+      sb.from("time_clock").select("*").eq("date", today()).order("clock_in", { ascending: true }),
+    ]).then(([ni, dr, ms, so, sv, tc]) => {
       if (ni.data) setMiss(ni.data);
       if (dr.data) setDamageRpts(dr.data);
       if (ms.data) setMessages(ms.data);
       if (so.data) setSops(so.data);
       if (sv.data) setSopViews(sv.data);
+      if (tc.data) setTcToday(tc.data);
       setSbReady(true);
     });
 
@@ -218,13 +221,33 @@ function App() {
       })
       .subscribe();
 
+    // Real-time: time_clock
+    const tcCh = sb.channel("sup-timeclock")
+      .on("postgres_changes", { event: "*", schema: "public", table: "time_clock" }, payload => {
+        const tod = today();
+        if (payload.eventType === "INSERT" && payload.new.date === tod)
+          setTcToday(p => [...p, payload.new]);
+        else if (payload.eventType === "UPDATE")
+          setTcToday(p => p.map(e => e.id === payload.new.id ? payload.new : e));
+        else if (payload.eventType === "DELETE")
+          setTcToday(p => p.filter(e => e.id !== payload.old.id));
+      })
+      .subscribe();
+
     return () => {
       sb.removeChannel(invCh);
       sb.removeChannel(dmgCh);
       sb.removeChannel(msgCh);
       sb.removeChannel(sopCh);
       sb.removeChannel(sopViewCh);
+      sb.removeChannel(tcCh);
     };
+  }, []);
+
+  // Update tcNow every 30s so elapsed hours in the report stay fresh
+  useEffect(() => {
+    const t = setInterval(() => setTcNow(Date.now()), 30000);
+    return () => clearInterval(t);
   }, []);
 
   // Auto-scroll messages list when new messages arrive
@@ -283,6 +306,15 @@ function App() {
   // ── Toast ─────────────────────────────────────────────────────────────────
   const [toast, setToast] = useState(null);
   const showToastMsg = msg => { setToast(msg); setTimeout(() => setToast(null), 3000); };
+
+  // ── Crew management (Supabase device_tokens) ─────────────────────────────
+  const [crewMembers,   setCrewMembers]   = useState([]);
+  const [crewDeptEdits, setCrewDeptEdits] = useState({});
+  const [crewLoading,   setCrewLoading]   = useState(false);
+
+  // ── Time Clock (Supabase) ─────────────────────────────────────────────────
+  const [tcToday,      setTcToday]      = useState([]);
+  const [tcNow,        setTcNow]        = useState(Date.now()); // tick for live elapsed
 
   // ── SOPs (Supabase) ───────────────────────────────────────────────────────
   const [sops,         setSops]         = useState([]);
@@ -524,6 +556,14 @@ function App() {
     const stageMap = {};
     miss.forEach(m => { stageMap[m.dept] = (stageMap[m.dept]||0) + 1; });
     const flagged = jobs.filter(j => j.status === "flagged");
+    const tcActive = tcToday.filter(e => !e.clock_out);
+    const tcDeptHrs = {};
+    tcToday.forEach(e => {
+      const h = e.clock_out ? (e.total_hours||0) : (Date.now() - new Date(e.clock_in).getTime()) / 3600000;
+      tcDeptHrs[e.dept] = (tcDeptHrs[e.dept]||0) + h;
+    });
+    const tcTotal = Object.values(tcDeptHrs).reduce((a,b)=>a+b,0);
+
     const lines = [
       "SAWDUST STUDIO — QC WEEKLY REPORT",
       "Generated: " + fmtDT(new Date().toISOString()),
@@ -545,12 +585,33 @@ function App() {
       "",
       "-- LOW INVENTORY (" + lowI.length + " items) --",
       ...(lowI.length ? lowI.map(i => "  * " + i.name + ": " + i.qty + " " + i.unit + "  (min: " + i.threshold + ")") : ["  None"]),
+      "",
+      "-- TIME CLOCK TODAY (" + tcToday.length + " sessions, " + tcTotal.toFixed(1) + "h total) --",
+      "  Active now: " + tcActive.length + " crew",
+      ...Object.entries(tcDeptHrs).sort((a,b)=>b[1]-a[1]).map(([dept,hrs]) => "  " + dept + ": " + hrs.toFixed(1) + "h"),
     ];
     setReport(lines.join("\n"));
   };
 
   const copyReport = () =>
     navigator.clipboard.writeText(report).then(() => { setCopied(true); setTimeout(()=>setCopied(false), 2000); });
+
+  // ── Crew management ───────────────────────────────────────────────────────
+  const loadCrewMembers = async () => {
+    setCrewLoading(true);
+    const { data } = await sb.from("device_tokens").select("id,name,dept,token").order("name");
+    if (data) setCrewMembers(data);
+    setCrewLoading(false);
+  };
+
+  const updateCrewDept = async (id, dept) => {
+    const { error } = await sb.from("device_tokens").update({ dept }).eq("id", id);
+    if (!error) {
+      setCrewMembers(p => p.map(m => m.id === id ? { ...m, dept } : m));
+      setCrewDeptEdits(p => { const n = {...p}; delete n[id]; return n; });
+      showToastMsg("Department updated — crew member sees this on next reload");
+    }
+  };
 
   // ── SOPs ──────────────────────────────────────────────────────────────────
   const saveSop = async () => {
@@ -599,7 +660,8 @@ function App() {
     {id:"standup",   label:"Standup",      onClick:()=>setView("standup")},
     {id:"inventory", label:"Inventory",    onClick:()=>setView("inventory")},
     {id:"messages",  label:`Messages${unread>0?" ("+unread+")":""}`, onClick:openMessages},
-    {id:"sops",      label:"SOPs",          onClick:()=>setView("sops")},
+    {id:"crew",       label:"Crew",          onClick:()=>{ setView("crew"); loadCrewMembers(); }},
+    {id:"sops",       label:"SOPs",          onClick:()=>setView("sops")},
     {id:"report",    label:"Report",       onClick:()=>setView("report")},
   ];
 
@@ -1152,13 +1214,128 @@ function App() {
     })(),
 
     // ── REPORT ────────────────────────────────────────────────────────────────
-    view==="report" && h("div", null,
-      h("div",{style:{marginBottom:12,fontSize:12,color:"#444"}}, "Plain-text weekly summary including Supabase crew data — paste into a text or email."),
-      h("div",{style:{display:"flex",gap:8,marginBottom:14}},
-        h("button",{className:"bp",onClick:genReport}, "generate report"),
-        report && h("button",{onClick:copyReport,style:{color:copied?"#4ade80":"#aaa",borderColor:copied?"#14532d":"#1e1e1e"}}, copied?"copied ✓":"copy to clipboard")
+    view==="report" && (() => {
+      const activeTc = tcToday.filter(e => !e.clock_out);
+      const tcTotalHours = tcToday.reduce((sum, e) => {
+        if (e.clock_out) return sum + (e.total_hours || 0);
+        return sum + (tcNow - new Date(e.clock_in).getTime()) / 3600000;
+      }, 0);
+      const deptHours = {};
+      tcToday.forEach(e => {
+        const h = e.clock_out ? (e.total_hours || 0) : (tcNow - new Date(e.clock_in).getTime()) / 3600000;
+        deptHours[e.dept] = (deptHours[e.dept] || 0) + h;
+      });
+      const fmtT = iso => new Date(iso).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+      const fmtElapsed = isoStart => {
+        const diff = Math.floor((tcNow - new Date(isoStart).getTime()) / 1000);
+        const hh = Math.floor(diff / 3600), mm = Math.floor((diff % 3600) / 60);
+        return hh > 0 ? `${hh}h ${mm}m` : `${mm}m`;
+      };
+
+      return h("div", null,
+        // ── Time Clock section ────────────────────────────────────────
+        h(Divider, {label:"TIME CLOCK — TODAY"}),
+        h("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:10,marginBottom:16}},
+          h(Stat,{label:"clocked in now",  val:activeTc.length,              color:"#22c55e"}),
+          h(Stat,{label:"sessions today",  val:tcToday.length,               color:"#3b82f6"}),
+          h(Stat,{label:"total labor hrs", val:tcTotalHours.toFixed(1)+"h",  color:AM})
+        ),
+
+        // Currently clocked in
+        activeTc.length > 0 && h("div",{style:{marginBottom:14}},
+          h("div",{style:{fontSize:10,color:"#555",marginBottom:8,letterSpacing:".08em"}},"CURRENTLY CLOCKED IN"),
+          activeTc.map(e => h("div",{key:e.id,style:{...CS,borderLeft:"3px solid #22c55e",display:"flex",alignItems:"center",justifyContent:"space-between"}},
+            h("div",null,
+              h("span",{style:{fontWeight:500,color:"#e5e5e5",fontSize:14}}, e.worker_name),
+              h("span",{style:{fontSize:11,color:"#555",marginLeft:10,background:"#1a1a1a",padding:"2px 8px",borderRadius:99,border:"1px solid #222"}}, e.dept)
+            ),
+            h("div",{style:{textAlign:"right"}},
+              h("div",{style:{fontSize:12,color:"#22c55e",fontWeight:500}}, "since "+fmtT(e.clock_in)),
+              h("div",{style:{fontSize:11,color:"#555",marginTop:2}}, fmtElapsed(e.clock_in)+" elapsed")
+            )
+          ))
+        ),
+
+        // Today's full log
+        tcToday.length > 0 && h("div",{style:{marginBottom:14}},
+          h("div",{style:{fontSize:10,color:"#555",marginBottom:8,letterSpacing:".08em"}},"TODAY'S CLOCK LOG"),
+          h("div",{style:{background:"#0d0d0d",borderRadius:8,border:"1px solid #1a1a1a",overflow:"hidden"}},
+            h("div",{style:{display:"grid",gridTemplateColumns:"1fr 100px 80px 80px 60px",padding:"8px 14px",borderBottom:"1px solid #1a1a1a",fontSize:10,color:"#444",letterSpacing:".06em"}},
+              h("span",null,"CREW"), h("span",null,"DEPT"), h("span",null,"IN"), h("span",null,"OUT"), h("span",null,"HRS")
+            ),
+            tcToday.map(e => {
+              const hrs = e.clock_out ? (e.total_hours||0) : (tcNow - new Date(e.clock_in).getTime()) / 3600000;
+              return h("div",{key:e.id,style:{display:"grid",gridTemplateColumns:"1fr 100px 80px 80px 60px",padding:"8px 14px",borderBottom:"1px solid #111",fontSize:12,alignItems:"center"}},
+                h("span",{style:{color:"#e5e5e5",fontWeight:500}}, e.worker_name),
+                h("span",{style:{color:"#555"}}, e.dept),
+                h("span",{style:{color:"#888"}}, fmtT(e.clock_in)),
+                h("span",{style:{color:e.clock_out?"#888":"#22c55e"}}, e.clock_out ? fmtT(e.clock_out) : "active"),
+                h("span",{style:{color:AM,fontWeight:500}}, hrs.toFixed(1)+"h")
+              );
+            })
+          )
+        ),
+
+        // Hours by department
+        Object.keys(deptHours).length > 0 && h("div",{style:{marginBottom:20}},
+          h("div",{style:{fontSize:10,color:"#555",marginBottom:8,letterSpacing:".08em"}},"LABOR HOURS BY DEPARTMENT"),
+          h("div",{style:{display:"flex",flexWrap:"wrap",gap:8}},
+            Object.entries(deptHours).sort((a,b)=>b[1]-a[1]).map(([dept,hrs]) =>
+              h("div",{key:dept,style:{background:"#141414",borderRadius:8,border:"1px solid #222",padding:"10px 16px",minWidth:110}},
+                h("div",{style:{fontSize:20,fontWeight:500,color:AM}}, hrs.toFixed(1)+"h"),
+                h("div",{style:{fontSize:10,color:"#555",marginTop:3,letterSpacing:".04em"}}, dept)
+              )
+            )
+          )
+        ),
+
+        // ── Text report ───────────────────────────────────────────────
+        h(Divider, {label:"WEEKLY TEXT REPORT"}),
+        h("div",{style:{marginBottom:12,fontSize:12,color:"#444"}}, "Plain-text weekly summary — paste into a message or email."),
+        h("div",{style:{display:"flex",gap:8,marginBottom:14}},
+          h("button",{className:"bp",onClick:genReport}, "generate report"),
+          report && h("button",{onClick:copyReport,style:{color:copied?"#4ade80":"#aaa",borderColor:copied?"#14532d":"#1e1e1e"}}, copied?"copied ✓":"copy to clipboard")
+        ),
+        report && h("textarea",{value:report,readOnly:true,rows:26,style:{...IS,fontSize:12,color:"#666",lineHeight:1.7,resize:"none",background:"#0d0d0d",border:"1px solid #1a1a1a"}})
+      );
+    })(),
+
+    // ── CREW MANAGEMENT ───────────────────────────────────────────────────────
+    view==="crew" && h("div", null,
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}},
+        h("div",{style:{fontSize:11,color:"#444"}},
+          crewMembers.length+" device"+(crewMembers.length!==1?"s":"")+" registered — change a department and click update"
+        ),
+        h("button",{onClick:loadCrewMembers,style:{fontSize:11}}, crewLoading?"loading…":"↺ refresh")
       ),
-      report && h("textarea",{value:report,readOnly:true,rows:26,style:{...IS,fontSize:12,color:"#666",lineHeight:1.7,resize:"none",background:"#0d0d0d",border:"1px solid #1a1a1a"}})
+      crewLoading && h("div",{style:{textAlign:"center",padding:"48px 0",color:"#444",fontSize:13}}, "Loading…"),
+      !crewLoading && crewMembers.length===0 && h(Empty,{msg:"No crew devices registered yet. Crew members appear here after they first log into the app."}),
+      !crewLoading && crewMembers.map(m => {
+        const pendingDept  = crewDeptEdits[m.id];
+        const selectedDept = pendingDept !== undefined ? pendingDept : (m.dept || "");
+        const changed      = selectedDept !== (m.dept || "");
+        return h("div",{key:m.id,style:{...CS,display:"flex",alignItems:"center",justifyContent:"space-between",gap:14}},
+          h("div",{style:{flex:1}},
+            h("div",{style:{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}},
+              h("span",{style:{fontWeight:500,fontSize:14,color:"#e5e5e5"}}, m.name||"(unnamed)"),
+              h(Pill,{label:m.dept||"—",color:"#3b82f6"})
+            )
+          ),
+          h("div",{style:{display:"flex",alignItems:"center",gap:8}},
+            h("select",{
+              value:    selectedDept,
+              onChange: e => setCrewDeptEdits(p => ({...p,[m.id]:e.target.value})),
+              style:    {...IS, width:170},
+            }, CREW_DEPTS.map(d => h("option",{key:d,value:d},d))),
+            h("button",{
+              className: changed ? "bp" : "",
+              disabled:  !changed,
+              onClick:   () => updateCrewDept(m.id, selectedDept),
+              style:     {opacity: changed ? 1 : 0.3, whiteSpace:"nowrap"},
+            }, "update")
+          )
+        );
+      })
     ),
 
     // ── SOPs ──────────────────────────────────────────────────────────────────

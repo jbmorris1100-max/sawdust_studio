@@ -21,6 +21,8 @@ import { supabase } from '../lib/supabase';
 // ── Constants ─────────────────────────────────────────────────
 const STORAGE_KEY_NAME = '@sawdust_user_name';
 const STORAGE_KEY_DEPT = '@sawdust_user_dept';
+const CLOCK_IN_KEY     = '@sawdust_clock_in_time';
+const CLOCK_ID_KEY     = '@sawdust_clock_record_id';
 
 const DEPARTMENTS = [
   'Cutting',
@@ -64,15 +66,27 @@ export default function HomeScreen({ navigation, route }) {
   const [alertLoading, setAlertLoading]     = useState(false);
   const [recentMessages, setRecentMessages] = useState([]);
   const [lastSeenAt, setLastSeenAt]         = useState('');
+  const [clockedIn,     setClockedIn]       = useState(false);
+  const [clockInTime,   setClockInTime]     = useState(null);
+  const [clockRecordId, setClockRecordId]   = useState(null);
+  const [elapsed,       setElapsed]         = useState('00:00:00');
+  const [clockLoading,  setClockLoading]    = useState(false);
 
   useEffect(() => {
     (async () => {
-      const [name, dept, seen] = await Promise.all([
+      const [name, dept, seen, ciTime, ciId] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEY_NAME),
         AsyncStorage.getItem(STORAGE_KEY_DEPT),
         AsyncStorage.getItem('@sawdust_last_msg_seen'),
+        AsyncStorage.getItem(CLOCK_IN_KEY),
+        AsyncStorage.getItem(CLOCK_ID_KEY),
       ]);
       if (seen) setLastSeenAt(seen);
+      if (ciTime && ciId) {
+        setClockedIn(true);
+        setClockInTime(ciTime);
+        setClockRecordId(ciId);
+      }
       if (name && dept) {
         setUserName(name);
         setUserDept(dept);
@@ -107,6 +121,21 @@ export default function HomeScreen({ navigation, route }) {
       if (userName) fetchRecentMessages(userName);
     }, [userDept, userName, fetchRecentMessages])
   );
+
+  // Live elapsed timer while clocked in
+  useEffect(() => {
+    if (!clockedIn || !clockInTime) return;
+    const tick = () => {
+      const diff = Math.floor((Date.now() - new Date(clockInTime).getTime()) / 1000);
+      const h = String(Math.floor(diff / 3600)).padStart(2, '0');
+      const m = String(Math.floor((diff % 3600) / 60)).padStart(2, '0');
+      const s = String(diff % 60).padStart(2, '0');
+      setElapsed(`${h}:${m}:${s}`);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [clockedIn, clockInTime]);
 
   const fetchAlerts = async (dept) => {
     setAlertLoading(true);
@@ -150,6 +179,65 @@ export default function HomeScreen({ navigation, route }) {
         },
       },
       { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const handleClockIn = async () => {
+    if (!userName || !userDept || clockLoading) return;
+    setClockLoading(true);
+    try {
+      const now = new Date().toISOString();
+      const { data, error } = await supabase
+        .from('time_clock')
+        .insert({ worker_name: userName, dept: userDept, clock_in: now, date: now.slice(0, 10) })
+        .select()
+        .single();
+      if (error || !data) throw new Error(error?.message || 'Insert failed');
+      await Promise.all([
+        AsyncStorage.setItem(CLOCK_IN_KEY, now),
+        AsyncStorage.setItem(CLOCK_ID_KEY, data.id),
+      ]);
+      setClockInTime(now);
+      setClockRecordId(data.id);
+      setClockedIn(true);
+    } catch (e) {
+      Alert.alert('Clock In Failed', e.message || 'Could not record clock-in. Check network.');
+    } finally {
+      setClockLoading(false);
+    }
+  };
+
+  const handleClockOut = () => {
+    Alert.alert('Clock Out', 'End your shift?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clock Out',
+        style: 'destructive',
+        onPress: async () => {
+          setClockLoading(true);
+          try {
+            const now = new Date().toISOString();
+            const totalHours = +((Date.now() - new Date(clockInTime).getTime()) / 3600000).toFixed(4);
+            const { error } = await supabase
+              .from('time_clock')
+              .update({ clock_out: now, total_hours: totalHours })
+              .eq('id', clockRecordId);
+            if (error) throw new Error(error.message);
+            await Promise.all([
+              AsyncStorage.removeItem(CLOCK_IN_KEY),
+              AsyncStorage.removeItem(CLOCK_ID_KEY),
+            ]);
+            setClockedIn(false);
+            setClockInTime(null);
+            setClockRecordId(null);
+            setElapsed('00:00:00');
+          } catch (e) {
+            Alert.alert('Clock Out Failed', 'Could not record clock-out. Check network.');
+          } finally {
+            setClockLoading(false);
+          }
+        },
+      },
     ]);
   };
 
@@ -200,6 +288,46 @@ export default function HomeScreen({ navigation, route }) {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        {/* Clock In / Out */}
+        {userName ? (
+          clockedIn ? (
+            <View style={styles.clockCard}>
+              <View style={styles.clockCardHeader}>
+                <View style={styles.clockCardDot} />
+                <Text style={styles.clockCardStatus}>CLOCKED IN</Text>
+              </View>
+              <Text style={styles.clockCardElapsed}>{elapsed}</Text>
+              <Text style={styles.clockCardSub}>{userName} · {userDept}</Text>
+              <TouchableOpacity
+                style={styles.clockOutBtn}
+                onPress={handleClockOut}
+                disabled={clockLoading}
+                activeOpacity={0.8}
+              >
+                {clockLoading
+                  ? <ActivityIndicator size="small" color="#ef4444" />
+                  : <Text style={styles.clockOutBtnText}>Clock Out</Text>
+                }
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={[styles.clockInBtn, clockLoading && { opacity: 0.6 }]}
+              onPress={handleClockIn}
+              disabled={clockLoading}
+              activeOpacity={0.85}
+            >
+              {clockLoading
+                ? <ActivityIndicator size="small" color="#000" />
+                : <>
+                    <Ionicons name="time-outline" size={20} color="#000" />
+                    <Text style={styles.clockInBtnText}>CLOCK IN</Text>
+                  </>
+              }
+            </TouchableOpacity>
+          )
+        ) : null}
+
         {/* Alert Banner */}
         {totalAlerts > 0 && (
           <View style={styles.alertBanner}>
@@ -566,5 +694,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 14,
   },
+
+  // Clock in / out
+  clockInBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    marginHorizontal: 16, marginTop: 16,
+    backgroundColor: C.accent, borderRadius: 16, paddingVertical: 18,
+  },
+  clockInBtnText: { color: '#000', fontSize: 17, fontWeight: '800', letterSpacing: 0.5 },
+  clockCard: {
+    marginHorizontal: 16, marginTop: 16,
+    backgroundColor: '#0a1f10', borderRadius: 16,
+    borderWidth: 1.5, borderColor: '#14532d',
+    paddingVertical: 16, paddingHorizontal: 20,
+    alignItems: 'center',
+  },
+  clockCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  clockCardDot:    { width: 8, height: 8, borderRadius: 4, backgroundColor: '#22c55e' },
+  clockCardStatus: { color: '#22c55e', fontSize: 11, fontWeight: '700', letterSpacing: 0.8 },
+  clockCardElapsed:{ color: '#22c55e', fontSize: 38, fontWeight: '700', letterSpacing: 2, marginBottom: 4 },
+  clockCardSub:    { color: '#555555', fontSize: 13, marginBottom: 16 },
+  clockOutBtn: {
+    borderRadius: 12, borderWidth: 1.5, borderColor: '#7f1d1d',
+    backgroundColor: '#2e1a1a', paddingVertical: 10, paddingHorizontal: 28,
+  },
+  clockOutBtnText: { color: '#ef4444', fontSize: 15, fontWeight: '700' },
 
 });
