@@ -10,6 +10,8 @@ import {
   ActivityIndicator,
   SafeAreaView,
   StatusBar,
+  Alert,
+  ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -46,25 +48,31 @@ const ACTIONS = [
 ];
 
 // ── Main Component ────────────────────────────────────────────
+const formatMsgTime = (iso) =>
+  new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
 export default function HomeScreen({ navigation, route }) {
-  const { onResetRole } = route?.params ?? {};
+  const { onResetRole, onClearUnread } = route?.params ?? {};
 
   const [userName, setUserName]             = useState('');
   const [userDept, setUserDept]             = useState('');
   const [setupVisible, setSetupVisible]     = useState(false);
-  const [settingsVisible, setSettingsVisible] = useState(false);
   const [draftName, setDraftName]           = useState('');
   const [draftDept, setDraftDept]           = useState('');
   const [openInventory, setOpenInventory]   = useState(0);
   const [openDamage, setOpenDamage]         = useState(0);
   const [alertLoading, setAlertLoading]     = useState(false);
+  const [recentMessages, setRecentMessages] = useState([]);
+  const [lastSeenAt, setLastSeenAt]         = useState('');
 
   useEffect(() => {
     (async () => {
-      const [name, dept] = await Promise.all([
+      const [name, dept, seen] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEY_NAME),
         AsyncStorage.getItem(STORAGE_KEY_DEPT),
+        AsyncStorage.getItem('@sawdust_last_msg_seen'),
       ]);
+      if (seen) setLastSeenAt(seen);
       if (name && dept) {
         setUserName(name);
         setUserDept(dept);
@@ -74,10 +82,30 @@ export default function HomeScreen({ navigation, route }) {
     })();
   }, []);
 
+  const fetchRecentMessages = useCallback(async (name) => {
+    const { data } = await supabase
+      .from('messages')
+      .select('*')
+      .neq('sender_name', name)
+      .order('created_at', { ascending: false })
+      .limit(3);
+    if (data) setRecentMessages(data);
+  }, []);
+
+  const handleNotifPress = useCallback(async () => {
+    const now = new Date().toISOString();
+    await AsyncStorage.setItem('@sawdust_last_msg_seen', now);
+    setLastSeenAt(now);
+    setRecentMessages([]);
+    onClearUnread?.();
+    navigation.navigate('Messages', { userName, userDept });
+  }, [userName, userDept, onClearUnread, navigation]);
+
   useFocusEffect(
     useCallback(() => {
       if (userDept) fetchAlerts(userDept);
-    }, [userDept])
+      if (userName) fetchRecentMessages(userName);
+    }, [userDept, userName, fetchRecentMessages])
   );
 
   const fetchAlerts = async (dept) => {
@@ -105,6 +133,24 @@ export default function HomeScreen({ navigation, route }) {
     setUserDept(draftDept);
     setSetupVisible(false);
     fetchAlerts(draftDept);
+  };
+
+  const handleSwitchRole = () => {
+    Alert.alert('Settings', null, [
+      {
+        text: 'Switch Role',
+        style: 'destructive',
+        onPress: async () => {
+          await Promise.all([
+            AsyncStorage.removeItem('@sawdust_user_name'),
+            AsyncStorage.removeItem('@sawdust_user_dept'),
+            AsyncStorage.removeItem('@sawdust_user_role'),
+          ]);
+          if (onResetRole) onResetRole();
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
   const badgeFor = (key) => {
@@ -135,7 +181,7 @@ export default function HomeScreen({ navigation, route }) {
         </View>
         <View style={styles.headerIcons}>
           <TouchableOpacity
-            onPress={() => setSettingsVisible(true)}
+            onPress={handleSwitchRole}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
             <Ionicons name="settings-outline" size={24} color={C.muted} />
@@ -149,44 +195,84 @@ export default function HomeScreen({ navigation, route }) {
         </View>
       </View>
 
-      {/* Alert Banner */}
-      {totalAlerts > 0 && (
-        <View style={styles.alertBanner}>
-          <View style={styles.alertDot} />
-          {alertLoading
-            ? <ActivityIndicator size="small" color={C.accent} />
-            : <Text style={styles.alertText}>
-                {totalAlerts} open alert{totalAlerts !== 1 ? 's' : ''} in {userDept}
-              </Text>
-          }
-        </View>
-      )}
+      <ScrollView
+        style={styles.flex}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Alert Banner */}
+        {totalAlerts > 0 && (
+          <View style={styles.alertBanner}>
+            <View style={styles.alertDot} />
+            {alertLoading
+              ? <ActivityIndicator size="small" color={C.accent} />
+              : <Text style={styles.alertText}>
+                  {totalAlerts} open alert{totalAlerts !== 1 ? 's' : ''} in {userDept}
+                </Text>
+            }
+          </View>
+        )}
 
-      {/* Action Cards */}
-      <View style={styles.grid}>
-        {ACTIONS.map((action) => {
-          const badge = badgeFor(action.key);
-          return (
-            <TouchableOpacity
-              key={action.key}
-              style={[styles.card, { borderLeftColor: action.accentColor }]}
-              activeOpacity={0.7}
-              onPress={() => navigation.navigate(action.screen, { userName, userDept })}
-            >
-              <View style={[styles.cardIconWrap, { backgroundColor: action.accentColor + '22' }]}>
-                <Ionicons name={action.icon} size={24} color={action.accentColor} />
-              </View>
-              <Text style={styles.cardLabel}>{action.label}</Text>
-              <Ionicons name="chevron-forward" size={16} color={C.border} style={styles.cardChevron} />
-              {badge > 0 && (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{badge}</Text>
+        {/* Recent Message Notifications */}
+        {recentMessages.length > 0 && (
+          <View style={styles.notifSection}>
+            <Text style={styles.notifSectionLabel}>Recent Messages</Text>
+            {recentMessages.map((msg) => {
+              const isUnread = !lastSeenAt || msg.created_at > lastSeenAt;
+              return (
+                <TouchableOpacity
+                  key={msg.id}
+                  style={[styles.notifCard, isUnread && styles.notifCardUnread]}
+                  onPress={handleNotifPress}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.notifAvatar}>
+                    <Text style={styles.notifAvatarText}>
+                      {(msg.sender_name || '?')[0].toUpperCase()}
+                    </Text>
+                  </View>
+                  <View style={styles.notifBody}>
+                    <View style={styles.notifHeaderRow}>
+                      <Text style={styles.notifSender} numberOfLines={1}>
+                        {msg.sender_name}
+                        {msg.dept ? <Text style={styles.notifDept}> · {msg.dept}</Text> : null}
+                      </Text>
+                      <Text style={styles.notifTime}>{formatMsgTime(msg.created_at)}</Text>
+                    </View>
+                    <Text style={styles.notifPreview} numberOfLines={1}>{msg.body}</Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
+
+        {/* Action Cards */}
+        <View style={styles.grid}>
+          {ACTIONS.map((action) => {
+            const badge = badgeFor(action.key);
+            return (
+              <TouchableOpacity
+                key={action.key}
+                style={[styles.card, { borderLeftColor: action.accentColor }]}
+                activeOpacity={0.7}
+                onPress={() => navigation.navigate(action.screen, { userName, userDept })}
+              >
+                <View style={[styles.cardIconWrap, { backgroundColor: action.accentColor + '22' }]}>
+                  <Ionicons name={action.icon} size={24} color={action.accentColor} />
                 </View>
-              )}
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+                <Text style={styles.cardLabel}>{action.label}</Text>
+                <Ionicons name="chevron-forward" size={16} color={C.border} style={styles.cardChevron} />
+                {badge > 0 && (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>{badge}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </ScrollView>
 
       {/* Setup Modal */}
       <Modal visible={setupVisible} animationType="slide" transparent>
@@ -240,45 +326,6 @@ export default function HomeScreen({ navigation, route }) {
         </View>
       </Modal>
 
-      {/* Settings Modal */}
-      <Modal visible={settingsVisible} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Settings</Text>
-
-            <TouchableOpacity
-              style={styles.settingsRow}
-              onPress={() => { setSettingsVisible(false); setDraftName(userName); setDraftDept(userDept); setSetupVisible(true); }}
-              activeOpacity={0.7}
-            >
-              <View style={[styles.settingsIcon, { backgroundColor: C.accent + '22' }]}>
-                <Ionicons name="person-outline" size={18} color={C.accent} />
-              </View>
-              <Text style={styles.settingsRowText}>Change Name / Department</Text>
-              <Ionicons name="chevron-forward" size={16} color={C.border} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.settingsRow}
-              onPress={async () => { setSettingsVisible(false); if (onResetRole) await onResetRole(); }}
-              activeOpacity={0.7}
-            >
-              <View style={[styles.settingsIcon, { backgroundColor: '#3b82f622' }]}>
-                <Ionicons name="swap-horizontal-outline" size={18} color="#3b82f6" />
-              </View>
-              <Text style={[styles.settingsRowText, { color: '#3b82f6' }]}>Switch Role</Text>
-              <Ionicons name="chevron-forward" size={16} color={C.border} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.settingsCancelBtn}
-              onPress={() => setSettingsVisible(false)}
-            >
-              <Text style={styles.settingsCancelText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -364,9 +411,41 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
+  flex: { flex: 1 },
+  scrollContent: { paddingBottom: 24 },
+
+  // Notification cards
+  notifSection: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
+  notifSectionLabel: {
+    fontSize: 10, fontWeight: '700', color: C.muted,
+    letterSpacing: 0.9, textTransform: 'uppercase', marginBottom: 8,
+  },
+  notifCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: C.surface, borderRadius: 12,
+    borderWidth: 1, borderColor: '#222',
+    borderLeftWidth: 3, borderLeftColor: C.border,
+    paddingHorizontal: 12, paddingVertical: 10, marginBottom: 8,
+  },
+  notifCardUnread: { borderLeftColor: C.accent },
+  notifAvatar: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: C.accent + '22',
+    justifyContent: 'center', alignItems: 'center', flexShrink: 0,
+  },
+  notifAvatarText: { color: C.accent, fontSize: 15, fontWeight: '700' },
+  notifBody: { flex: 1 },
+  notifHeaderRow: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center', marginBottom: 2,
+  },
+  notifSender: { fontSize: 13, fontWeight: '700', color: C.text, flex: 1, marginRight: 8 },
+  notifDept: { fontWeight: '400', color: C.muted },
+  notifTime: { fontSize: 11, color: C.muted, flexShrink: 0 },
+  notifPreview: { fontSize: 12, color: C.muted },
+
   // Grid
   grid: {
-    flex: 1,
     paddingHorizontal: 16,
     paddingTop: 16,
     gap: 10,
@@ -488,40 +567,4 @@ const styles = StyleSheet.create({
     gap: 14,
   },
 
-  // Settings modal rows
-  settingsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: C.border,
-  },
-  settingsIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  settingsRowText: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: '600',
-    color: C.text,
-  },
-  settingsCancelBtn: {
-    marginTop: 18,
-    paddingVertical: 14,
-    alignItems: 'center',
-    backgroundColor: C.input,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: C.border,
-  },
-  settingsCancelText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: C.muted,
-  },
 });

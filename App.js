@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Text, View, StyleSheet, TouchableOpacity,
   TextInput, SafeAreaView, StatusBar,
+  KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -66,7 +67,10 @@ function RolePicker({ onSelect }) {
   return (
     <SafeAreaView style={rp.safe}>
       <StatusBar barStyle="light-content" backgroundColor={C.bg} />
-      <View style={rp.container}>
+      <KeyboardAvoidingView
+        style={rp.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
         <Text style={rp.appName}>Sawdust Crew</Text>
         <Text style={rp.heading}>Who are you?</Text>
 
@@ -130,7 +134,7 @@ function RolePicker({ onSelect }) {
             </TouchableOpacity>
           </View>
         )}
-      </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -145,13 +149,13 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount, onRese
         tabBarStyle: styles.tabBar,
         tabBarActiveTintColor:   C.active,
         tabBarInactiveTintColor: C.inactive,
-        tabBarLabelStyle: styles.tabLabel,
+        tabBarShowLabel: false,
       }}
     >
       <Tab.Screen
         name="Home"
         component={HomeScreen}
-        initialParams={{ ...screenParams, onResetRole }}
+        initialParams={{ ...screenParams, onResetRole, onClearUnread: () => setUnreadCount(0) }}
         options={{
           tabBarButton: (props) => <TabButton {...props} />,
           tabBarIcon: ({ focused, color, size }) => (
@@ -232,7 +236,7 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount, onRese
 
 // ── Supervisor Tab Navigator ──────────────────────────────────
 const SupervisorTab = createBottomTabNavigator();
-function SupervisorNavigator({ userName }) {
+function SupervisorNavigator({ userName, onResetRole }) {
   return (
     <SupervisorTab.Navigator
       screenOptions={{
@@ -243,7 +247,7 @@ function SupervisorNavigator({ userName }) {
       <SupervisorTab.Screen
         name="SupervisorMain"
         component={SupervisorApp}
-        initialParams={{ userName }}
+        initialParams={{ userName, onResetRole }}
       />
     </SupervisorTab.Navigator>
   );
@@ -357,7 +361,7 @@ export default function App() {
     <SafeAreaProvider>
       <NavigationContainer>
         {role === 'supervisor' ? (
-          <SupervisorNavigator userName={userName} />
+          <SupervisorNavigator userName={userName} onResetRole={handleResetRole} />
         ) : (
           <CrewNavigator
             userName={userName}
@@ -379,13 +383,8 @@ const styles = StyleSheet.create({
     borderTopWidth:  1,
     borderTopColor:  C.border,
     paddingBottom:   6,
-    paddingTop:      4,
-    height:          62,
-  },
-  tabLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    marginTop: 1,
+    paddingTop:      6,
+    height:          56,
   },
   tabButton: {
     flex: 1,

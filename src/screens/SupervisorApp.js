@@ -12,7 +12,9 @@ import {
   StatusBar,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 
@@ -103,7 +105,7 @@ const FilterChips = ({ options, value, onChange }) => (
 );
 
 // ── Overview Tab ──────────────────────────────────────────────
-function OverviewTab({ needs, damage, messages, threads, userName }) {
+function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole }) {
   const pendingNeeds = needs.filter((n) => n.status === 'pending').length;
   const openDamage   = damage.filter((d) => d.status === 'open').length;
 
@@ -132,9 +134,18 @@ function OverviewTab({ needs, damage, messages, threads, userName }) {
           <Text style={styles.overviewTitle}>Shop Supervisor</Text>
           <Text style={styles.overviewName}>{userName}</Text>
         </View>
-        <View style={styles.liveRow}>
-          <View style={styles.liveDot} />
-          <Text style={styles.liveText}>Live</Text>
+        <View style={styles.overviewHeaderRight}>
+          <View style={styles.liveRow}>
+            <View style={styles.liveDot} />
+            <Text style={styles.liveText}>Live</Text>
+          </View>
+          <TouchableOpacity
+            onPress={onSwitchRole}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            style={styles.gearBtn}
+          >
+            <Ionicons name="settings-outline" size={20} color={C.muted} />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -271,7 +282,7 @@ function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBo
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={0}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
     >
       {/* Thread header */}
       <View style={styles.threadHeader}>
@@ -297,6 +308,7 @@ function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBo
         ref={listRef}
         data={threadMsgs}
         keyExtractor={(m) => String(m.id)}
+        style={styles.flex}
         contentContainerStyle={styles.msgListContent}
         showsVerticalScrollIndicator={false}
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
@@ -535,8 +547,27 @@ function DamageTab({ allDamage, filter, setFilter, onStatusChange }) {
 }
 
 // ── Main Screen ───────────────────────────────────────────────
-export default function SupervisorApp({ route, userName: userNameProp }) {
-  const userName = route?.params?.userName ?? userNameProp ?? 'Supervisor';
+export default function SupervisorApp({ route, userName: userNameProp, onResetRole: onResetRoleProp }) {
+  const userName    = route?.params?.userName    ?? userNameProp    ?? 'Supervisor';
+  const onResetRole = route?.params?.onResetRole ?? onResetRoleProp ?? null;
+
+  const handleSwitchRole = () => {
+    Alert.alert('Switch Role', 'Leave the supervisor dashboard?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Switch Role',
+        style: 'destructive',
+        onPress: async () => {
+          await Promise.all([
+            AsyncStorage.removeItem('@sawdust_user_name'),
+            AsyncStorage.removeItem('@sawdust_user_dept'),
+            AsyncStorage.removeItem('@sawdust_user_role'),
+          ]);
+          onResetRole?.();
+        },
+      },
+    ]);
+  };
 
   const [messages,     setMessages]     = useState([]);
   const [needs,        setNeeds]        = useState([]);
@@ -693,6 +724,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
                 messages={messages}
                 threads={threads}
                 userName={userName}
+                onSwitchRole={handleSwitchRole}
               />
             )}
             {activeTab === 'messages' && (
@@ -777,9 +809,11 @@ const styles = StyleSheet.create({
   },
   overviewTitle: { fontSize: 20, fontWeight: '800', color: C.text, letterSpacing: -0.3 },
   overviewName:  { fontSize: 13, color: C.muted, marginTop: 2 },
-  liveRow:       { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 6 },
+  overviewHeaderRight: { alignItems: 'flex-end', gap: 8 },
+  liveRow:       { flexDirection: 'row', alignItems: 'center', gap: 5 },
   liveDot:       { width: 7, height: 7, borderRadius: 4, backgroundColor: C.success },
   liveText:      { fontSize: 11, color: C.success, fontWeight: '600' },
+  gearBtn:       { padding: 2 },
 
   // Stat cards
   statRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
@@ -918,7 +952,7 @@ const styles = StyleSheet.create({
   composeInput: {
     flex: 1, backgroundColor: C.input, borderRadius: 24,
     borderWidth: 1.5, borderColor: C.border, color: C.text,
-    fontSize: 15, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10,
+    fontSize: 16, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10,
     maxHeight: 120,
   },
   sendBtn: {
