@@ -37,6 +37,7 @@ button:hover{background:#1a1a1a;color:#e5e5e5}
 /* message bubbles */
 .bubble-in{background:#2a2a2a;border-radius:0 14px 14px 14px;padding:9px 14px;word-break:break-word;word-wrap:break-word;overflow-wrap:break-word}
 .bubble-out{background:#f59e0b;border-radius:14px 0 14px 14px;padding:9px 14px;word-break:break-word;word-wrap:break-word;overflow-wrap:break-word}
+.toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#22c55e;color:#0a1f0a;border-radius:8px;padding:12px 22px;font-size:13px;font-weight:500;z-index:300;box-shadow:0 4px 24px rgba(0,0,0,.5);white-space:nowrap;pointer-events:none;font-family:'DM Mono','Courier New',monospace}
 </style>
 </head>
 <body>
@@ -154,10 +155,14 @@ function App() {
       sb.from("inventory_needs").select("*").order("created_at", { ascending: false }),
       sb.from("damage_reports").select("*").order("created_at",  { ascending: false }),
       sb.from("messages").select("*").order("created_at",        { ascending: true  }).limit(200),
-    ]).then(([ni, dr, ms]) => {
+      sb.from("sops").select("*").order("updated_at",            { ascending: false }),
+      sb.from("sop_views").select("*").order("viewed_at",        { ascending: false }),
+    ]).then(([ni, dr, ms, so, sv]) => {
       if (ni.data) setMiss(ni.data);
       if (dr.data) setDamageRpts(dr.data);
       if (ms.data) setMessages(ms.data);
+      if (so.data) setSops(so.data);
+      if (sv.data) setSopViews(sv.data);
       setSbReady(true);
     });
 
@@ -199,10 +204,26 @@ function App() {
       })
       .subscribe();
 
+    const sopCh = sb.channel("sup-sops")
+      .on("postgres_changes", { event: "*", schema: "public", table: "sops" }, payload => {
+        if (payload.eventType === "INSERT")      setSops(p => [payload.new, ...p]);
+        else if (payload.eventType === "UPDATE") setSops(p => p.map(s => s.id === payload.new.id ? payload.new : s));
+        else if (payload.eventType === "DELETE") setSops(p => p.filter(s => s.id !== payload.old.id));
+      })
+      .subscribe();
+
+    const sopViewCh = sb.channel("sup-sop-views")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sop_views" }, payload => {
+        setSopViews(p => [payload.new, ...p]);
+      })
+      .subscribe();
+
     return () => {
       sb.removeChannel(invCh);
       sb.removeChannel(dmgCh);
       sb.removeChannel(msgCh);
+      sb.removeChannel(sopCh);
+      sb.removeChannel(sopViewCh);
     };
   }, []);
 
@@ -258,6 +279,18 @@ function App() {
   // ── Report ────────────────────────────────────────────────────────────────
   const [report, setReport] = useState("");
   const [copied, setCopied] = useState(false);
+
+  // ── Toast ─────────────────────────────────────────────────────────────────
+  const [toast, setToast] = useState(null);
+  const showToastMsg = msg => { setToast(msg); setTimeout(() => setToast(null), 3000); };
+
+  // ── SOPs (Supabase) ───────────────────────────────────────────────────────
+  const [sops,         setSops]         = useState([]);
+  const [sopViews,     setSopViews]     = useState([]);
+  const [showSopModal, setShowSopModal] = useState(false);
+  const [editSopId,    setEditSopId]    = useState(null);
+  const defaultSopForm = { title:"", dept:"Assembly", description:"", steps:[{instruction:"",warning:""}], pdf_url:"" };
+  const [sopForm,      setSopForm]      = useState(defaultSopForm);
 
   // ── Job actions ───────────────────────────────────────────────────────────
   const addJob = () => {
@@ -519,6 +552,39 @@ function App() {
   const copyReport = () =>
     navigator.clipboard.writeText(report).then(() => { setCopied(true); setTimeout(()=>setCopied(false), 2000); });
 
+  // ── SOPs ──────────────────────────────────────────────────────────────────
+  const saveSop = async () => {
+    if (!sopForm.title.trim()) return;
+    const steps = sopForm.steps.map((s, i) => ({
+      step_number: i + 1,
+      instruction: s.instruction,
+      warning:     s.warning || null,
+    }));
+    const payload = {
+      title:       sopForm.title.trim(),
+      dept:        sopForm.dept,
+      description: sopForm.description.trim() || null,
+      steps,
+      pdf_url:     sopForm.pdf_url.trim() || null,
+      updated_at:  new Date().toISOString(),
+    };
+    if (editSopId) {
+      const { data, error } = await sb.from("sops").update(payload).eq("id", editSopId).select().single();
+      if (!error && data) setSops(p => p.map(s => s.id === editSopId ? data : s));
+    } else {
+      const { data, error } = await sb.from("sops").insert({ ...payload, created_by: "Supervisor" }).select().single();
+      if (!error && data) setSops(p => [data, ...p]);
+    }
+    setShowSopModal(false);
+    showToastMsg("SOP saved — crew can see it immediately");
+  };
+
+  const deleteSop = async id => {
+    if (!confirm("Delete this SOP? This cannot be undone.")) return;
+    await sb.from("sops").delete().eq("id", id);
+    setSops(p => p.filter(s => s.id !== id));
+  };
+
   // ── Derived ───────────────────────────────────────────────────────────────
   const filtJobs = jobF === "all" ? jobs : jobs.filter(j => j.status === jobF);
   const filtMiss = missF === "all" ? miss : miss.filter(m => m.status === missF);
@@ -533,6 +599,7 @@ function App() {
     {id:"standup",   label:"Standup",      onClick:()=>setView("standup")},
     {id:"inventory", label:"Inventory",    onClick:()=>setView("inventory")},
     {id:"messages",  label:`Messages${unread>0?" ("+unread+")":""}`, onClick:openMessages},
+    {id:"sops",      label:"SOPs",          onClick:()=>setView("sops")},
     {id:"report",    label:"Report",       onClick:()=>setView("report")},
   ];
 
@@ -1092,7 +1159,106 @@ function App() {
         report && h("button",{onClick:copyReport,style:{color:copied?"#4ade80":"#aaa",borderColor:copied?"#14532d":"#1e1e1e"}}, copied?"copied ✓":"copy to clipboard")
       ),
       report && h("textarea",{value:report,readOnly:true,rows:26,style:{...IS,fontSize:12,color:"#666",lineHeight:1.7,resize:"none",background:"#0d0d0d",border:"1px solid #1a1a1a"}})
-    )
+    ),
+
+    // ── SOPs ──────────────────────────────────────────────────────────────────
+    view==="sops" && h("div", null,
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}},
+        h("div",{style:{fontSize:11,color:"#444"}}, sops.length+" procedure"+(sops.length!==1?"s":"")+" defined"),
+        h("button",{className:"bp",onClick:()=>{setSopForm(defaultSopForm);setEditSopId(null);setShowSopModal(true)}}, "+ add sop")
+      ),
+      sops.length===0 && h(Empty,{msg:"No SOPs yet. Add one above."}),
+      ...Object.entries(
+        sops.reduce((acc,sop)=>{ (acc[sop.dept]=acc[sop.dept]||[]).push(sop); return acc; },{})
+      ).sort(([a],[b])=>a.localeCompare(b)).map(([dept,deptSops]) =>
+        h("div",{key:dept},
+          h(Divider,{label:dept.toUpperCase()}),
+          deptSops.map(sop => {
+            const uniqueViewers = new Set(sopViews.filter(v=>v.sop_id===sop.id).map(v=>v.viewer_name)).size;
+            return h("div",{key:sop.id,style:{...CS,borderLeft:"3px solid #f59e0b",display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}},
+              h("div",{style:{flex:1,minWidth:0}},
+                h("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}},
+                  h("span",{style:{fontWeight:500,fontSize:14,color:"#e5e5e5"}}, sop.title),
+                  h(Pill,{label:sop.dept,color:"#f59e0b"}),
+                  sop.pdf_url && h(Pill,{label:"PDF",color:"#3b82f6"})
+                ),
+                sop.description && h("div",{style:{fontSize:12,color:"#666",marginBottom:6,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:500}}, sop.description),
+                h("div",{style:{display:"flex",alignItems:"center",gap:16,fontSize:11,color:"#444",flexWrap:"wrap"}},
+                  h("span",null, (sop.steps||[]).length+" step"+(sop.steps?.length!==1?"s":"")),
+                  h("span",null, "updated "+fmtD(sop.updated_at)),
+                  uniqueViewers>0 && h("span",{style:{color:"#4ade80"}}, uniqueViewers+" crew member"+(uniqueViewers!==1?"s":"")+" viewed")
+                )
+              ),
+              h("div",{style:{display:"flex",gap:6,flexShrink:0}},
+                h("button",{style:{color:"#60a5fa",borderColor:"#1e3a5f"},onClick:()=>{
+                  setSopForm({
+                    title:       sop.title,
+                    dept:        sop.dept,
+                    description: sop.description||"",
+                    steps:       (sop.steps&&sop.steps.length ? sop.steps : [{instruction:"",warning:""}]).map(st=>({instruction:st.instruction,warning:st.warning||""})),
+                    pdf_url:     sop.pdf_url||"",
+                  });
+                  setEditSopId(sop.id);
+                  setShowSopModal(true);
+                }}, "edit"),
+                h("button",{className:"bd",onClick:()=>deleteSop(sop.id),style:{padding:"7px 10px"}}, "✕")
+              )
+            );
+          })
+        )
+      ),
+
+      // SOP modal
+      showSopModal && h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",zIndex:100,display:"flex",alignItems:"flex-start",justifyContent:"center",overflowY:"auto",padding:"40px 16px"}},
+        h("div",{style:{background:"#141414",borderRadius:10,border:"1px solid #2a2a2a",width:"100%",maxWidth:640,padding:24,marginBottom:40}},
+          h("div",{style:{fontSize:14,fontWeight:500,color:"#e5e5e5",marginBottom:18}}, editSopId?"edit sop":"new sop"),
+          h("div",{style:{display:"grid",gridTemplateColumns:"2fr 1fr",gap:10,marginBottom:10}},
+            h("input",{placeholder:"Title",value:sopForm.title,onChange:e=>setSopForm(p=>({...p,title:e.target.value})),style:IS,autoFocus:!editSopId}),
+            h("select",{value:sopForm.dept,onChange:e=>setSopForm(p=>({...p,dept:e.target.value})),style:IS},
+              ["All","Cutting","Edgebanding","Assembly","Finishing","Craftsman","Install"].map(d=>h("option",{key:d,value:d},d))
+            )
+          ),
+          h("textarea",{placeholder:"Short description (optional)",value:sopForm.description,onChange:e=>setSopForm(p=>({...p,description:e.target.value})),rows:2,style:{...IS,marginBottom:10,resize:"vertical"}}),
+          h("input",{placeholder:"PDF URL (optional)",value:sopForm.pdf_url,onChange:e=>setSopForm(p=>({...p,pdf_url:e.target.value})),style:{...IS,marginBottom:18}}),
+          h("div",{style:{fontSize:10,color:"#555",letterSpacing:".08em",marginBottom:10}}, "STEPS"),
+          ...sopForm.steps.map((step,idx)=>
+            h("div",{key:idx,style:{background:"#111",borderRadius:6,border:"1px solid #1e1e1e",padding:"10px 12px",marginBottom:8}},
+              h("div",{style:{display:"flex",alignItems:"center",gap:6,marginBottom:8}},
+                h("span",{style:{fontSize:11,color:"#555",minWidth:22,fontWeight:500,fontFamily:"'DM Mono',monospace"}}, String(idx+1).padStart(2,"0")),
+                h("button",{
+                  onClick:()=>setSopForm(p=>{const st=p.steps.filter((_,i)=>i!==idx);return {...p,steps:st.length?st:[{instruction:"",warning:""}]};}),
+                  style:{marginLeft:"auto",fontSize:10,padding:"2px 8px",color:"#f87171",borderColor:"#7f1d1d"}
+                }, "remove")
+              ),
+              h("textarea",{
+                placeholder:"What should the crew do?",
+                value:step.instruction,
+                onChange:e=>{const st=[...sopForm.steps];st[idx]={...st[idx],instruction:e.target.value};setSopForm(p=>({...p,steps:st}));},
+                rows:2,
+                style:{...IS,marginBottom:7,resize:"vertical",fontSize:12}
+              }),
+              h("input",{
+                placeholder:"⚠  Warning or caution (optional)",
+                value:step.warning||"",
+                onChange:e=>{const st=[...sopForm.steps];st[idx]={...st[idx],warning:e.target.value};setSopForm(p=>({...p,steps:st}));},
+                style:{...IS,fontSize:12}
+              })
+            )
+          ),
+          h("button",{
+            onClick:()=>setSopForm(p=>({...p,steps:[...p.steps,{instruction:"",warning:""}]})),
+            style:{fontSize:11,color:"#f59e0b",borderColor:"#78350f",marginBottom:18,display:"block"}
+          }, "+ add step"),
+          h("div",{style:{display:"flex",gap:8}},
+            h("button",{className:"bp",onClick:saveSop}, editSopId?"save changes":"create sop"),
+            h("button",{onClick:()=>setShowSopModal(false)}, "cancel")
+          )
+        )
+      )
+    ),
+
+    // Toast
+    toast && h("div",{className:"toast"}, toast)
   );
 }
 

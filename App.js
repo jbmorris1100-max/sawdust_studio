@@ -16,14 +16,16 @@ import HomeScreen      from './src/screens/HomeScreen';
 import PartsScreen     from './src/screens/PartsScreen';
 import InventoryScreen from './src/screens/InventoryScreen';
 import MessagesScreen  from './src/screens/MessagesScreen';
+import SOPsScreen      from './src/screens/SOPsScreen';
 import SupervisorApp   from './src/screens/SupervisorApp';
 
 const Tab = createBottomTabNavigator();
 
 const STORAGE = {
-  NAME: '@sawdust_user_name',
-  DEPT: '@sawdust_user_dept',
-  ROLE: '@sawdust_user_role',
+  NAME:    '@sawdust_user_name',
+  DEPT:    '@sawdust_user_dept',
+  ROLE:    '@sawdust_user_role',
+  VERSION: '@sawdust_app_version',
 };
 
 // ── Colors ────────────────────────────────────────────────────
@@ -204,6 +206,19 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount, onRese
         listeners={{ tabPress: () => setUnreadCount(0) }}
       />
 
+      <Tab.Screen
+        name="SOPs"
+        component={SOPsScreen}
+        initialParams={screenParams}
+        options={{
+          title: 'SOPs',
+          tabBarButton: (props) => <TabButton {...props} />,
+          tabBarIcon: ({ focused, color, size }) => (
+            <Ionicons name={focused ? 'book' : 'book-outline'} size={size} color={color} />
+          ),
+        }}
+      />
+
       {/* Hidden tab — navigated to from HomeScreen */}
       <Tab.Screen
         name="ReportDamage"
@@ -245,11 +260,24 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const [name, dept, storedRole] = await Promise.all([
+      const [name, dept, storedRole, storedVersion] = await Promise.all([
         AsyncStorage.getItem(STORAGE.NAME),
         AsyncStorage.getItem(STORAGE.DEPT),
         AsyncStorage.getItem(STORAGE.ROLE),
+        AsyncStorage.getItem(STORAGE.VERSION),
       ]);
+
+      // First-time v2 migration: force role picker for existing users who never saw it
+      if (parseInt(storedVersion ?? '0', 10) < 2) {
+        await Promise.all([
+          AsyncStorage.removeItem(STORAGE.NAME),
+          AsyncStorage.removeItem(STORAGE.DEPT),
+          AsyncStorage.removeItem(STORAGE.ROLE),
+          AsyncStorage.setItem(STORAGE.VERSION, '2'),
+        ]);
+        setRole('');
+        return;
+      }
 
       if (storedRole === 'supervisor' && name) {
         setRole('supervisor');
@@ -291,7 +319,10 @@ export default function App() {
   }, [role, userName]);
 
   const handleRoleSelect = async (selectedRole, name) => {
-    await AsyncStorage.setItem(STORAGE.ROLE, selectedRole);
+    await Promise.all([
+      AsyncStorage.setItem(STORAGE.ROLE, selectedRole),
+      AsyncStorage.setItem(STORAGE.VERSION, '2'),
+    ]);
     if (selectedRole === 'supervisor' && name) {
       await AsyncStorage.setItem(STORAGE.NAME, name);
       setUserName(name);
