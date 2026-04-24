@@ -212,12 +212,6 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
       showsVerticalScrollIndicator={false}
       contentContainerStyle={styles.overviewScroll}
     >
-      {/* Nuclear switch-role card */}
-      <TouchableOpacity style={styles.switchRoleCard} onPress={onSwitchRole} activeOpacity={0.8}>
-        <Ionicons name="log-out-outline" size={18} color="#fff" style={{ marginRight: 8 }} />
-        <Text style={styles.switchRoleCardText}>SWITCH ROLE</Text>
-      </TouchableOpacity>
-
       {/* Header */}
       <View style={styles.overviewHeader}>
         <View>
@@ -230,7 +224,10 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
             <Text style={styles.liveText}>Live</Text>
           </View>
           <TouchableOpacity
-            onPress={onSwitchRole}
+            onPress={() => {
+              console.log('gear tapped, onSwitchRole type:', typeof onSwitchRole);
+              onSwitchRole && onSwitchRole();
+            }}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             style={styles.gearBtn}
           >
@@ -934,8 +931,21 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
   const userName  = route?.params?.userName ?? userNameProp ?? 'Supervisor';
   const resetRole = useContext(RoleContext);
 
-  const handleSwitchRole = async () => {
-    if (resetRole) await resetRole();
+  const handleSwitchRole = () => {
+    Alert.alert(
+      'Exit Supervisor Dashboard',
+      'Switch back to role picker?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Exit', style: 'destructive',
+          onPress: async () => {
+            console.log('[SupervisorApp] exit confirmed, resetRole type:', typeof resetRole);
+            if (resetRole) await resetRole();
+          },
+        },
+      ]
+    );
   };
 
   const [messages,     setMessages]     = useState([]);
