@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Text, View, StyleSheet, TouchableOpacity,
   TextInput, SafeAreaView, StatusBar,
-  KeyboardAvoidingView, Platform,
+  KeyboardAvoidingView, Platform, Alert,
 } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -23,11 +23,21 @@ import SupervisorApp   from './src/screens/SupervisorApp';
 const Tab = createBottomTabNavigator();
 
 const STORAGE = {
-  NAME:    '@sawdust_user_name',
-  DEPT:    '@sawdust_user_dept',
-  ROLE:    '@sawdust_user_role',
-  VERSION: '@sawdust_app_version',
+  NAME:      '@sawdust_user_name',
+  DEPT:      '@sawdust_user_dept',
+  ROLE:      '@sawdust_user_role',
+  VERSION:   '@sawdust_app_version',
+  DEVICE_ID: '@sawdust_device_id',
 };
+
+async function getDeviceId() {
+  let id = await AsyncStorage.getItem(STORAGE.DEVICE_ID);
+  if (!id) {
+    id = 'dev_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+    await AsyncStorage.setItem(STORAGE.DEVICE_ID, id);
+  }
+  return id;
+}
 
 // ── Colors ────────────────────────────────────────────────────
 const C = {
@@ -323,20 +333,68 @@ export default function App() {
   }, [role, userName]);
 
   const handleRoleSelect = async (selectedRole, name) => {
-    await Promise.all([
-      AsyncStorage.setItem(STORAGE.ROLE, selectedRole),
-      AsyncStorage.setItem(STORAGE.VERSION, '2'),
-    ]);
+    const deviceId = await getDeviceId();
+
     if (selectedRole === 'supervisor' && name) {
+      // Check for an existing active session from a different device (24h window)
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const { data: activeSessions } = await supabase
+        .from('supervisor_sessions')
+        .select('name, device_id')
+        .eq('is_active', true)
+        .gte('logged_in_at', cutoff);
+
+      const conflict = activeSessions?.find((s) => s.device_id !== deviceId);
+      if (conflict) {
+        Alert.alert(
+          'Supervisor Already Logged In',
+          `A supervisor is already logged in as ${conflict.name}. Only one supervisor session is allowed at a time.`
+        );
+        return;
+      }
+
+      // Create supervisor session
+      await supabase.from('supervisor_sessions').insert({
+        name,
+        device_id: deviceId,
+        is_active: true,
+      });
+
       await AsyncStorage.setItem(STORAGE.NAME, name);
       setUserName(name);
       setUserDept('Management');
       registerForPushNotifications(name, 'Supervisor').catch(console.warn);
     }
+
+    await Promise.all([
+      AsyncStorage.setItem(STORAGE.ROLE, selectedRole),
+      AsyncStorage.setItem(STORAGE.VERSION, '2'),
+    ]);
+
+    // Log this login for audit trail
+    const displayName = name || (await AsyncStorage.getItem(STORAGE.NAME)) || 'Unknown';
+    const dept = selectedRole === 'supervisor' ? 'Management' : (await AsyncStorage.getItem(STORAGE.DEPT)) || '';
+    await supabase.from('login_log').insert({
+      worker_name:  displayName,
+      dept,
+      role:         selectedRole,
+      device_id:    deviceId,
+      app_version:  '2',
+    }).catch(console.warn);
+
     setRole(selectedRole);
   };
 
   const handleResetRole = useCallback(async () => {
+    if (role === 'supervisor') {
+      const deviceId = await getDeviceId();
+      await supabase
+        .from('supervisor_sessions')
+        .update({ is_active: false, logged_out_at: new Date().toISOString() })
+        .eq('device_id', deviceId)
+        .eq('is_active', true)
+        .catch(console.warn);
+    }
     await Promise.all([
       AsyncStorage.removeItem(STORAGE.NAME),
       AsyncStorage.removeItem(STORAGE.DEPT),
@@ -345,7 +403,7 @@ export default function App() {
     setRole('');
     setUserName('');
     setUserDept('');
-  }, []);
+  }, [role]);
 
   if (role === null) return null; // loading
 

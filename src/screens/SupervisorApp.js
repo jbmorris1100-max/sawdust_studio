@@ -13,6 +13,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Switch,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
@@ -60,11 +61,33 @@ const STATUS_STYLES = {
 };
 
 const TABS = [
-  { key: 'overview', label: 'Overview', icon: 'grid-outline',      activeIcon: 'grid'         },
-  { key: 'messages', label: 'Messages', icon: 'chatbubble-outline', activeIcon: 'chatbubbles'  },
-  { key: 'needs',    label: 'Needs',    icon: 'cube-outline',       activeIcon: 'cube'         },
-  { key: 'damage',   label: 'Damage',   icon: 'warning-outline',    activeIcon: 'warning'      },
+  { key: 'overview', label: 'Overview', icon: 'grid-outline',         activeIcon: 'grid'          },
+  { key: 'messages', label: 'Messages', icon: 'chatbubble-outline',   activeIcon: 'chatbubbles'   },
+  { key: 'needs',    label: 'Needs',    icon: 'cube-outline',          activeIcon: 'cube'          },
+  { key: 'damage',   label: 'Damage',   icon: 'warning-outline',       activeIcon: 'warning'       },
+  { key: 'ai',       label: 'AI',       icon: 'hardware-chip-outline', activeIcon: 'hardware-chip' },
 ];
+
+const BOTTLENECK_OPTIONS = [
+  'Material delay', 'Machine down', 'Understaffed', 'Design change',
+  'QC rework', 'Install issue', 'Supply shortage', 'Weather',
+];
+
+const MODE_INFO = {
+  observation: { label: 'Observation',  desc: 'Silently logs data. No suggestions.',       color: '#22c55e' },
+  assist:      { label: 'Assist',       desc: 'Surfaces insights. You decide.',             color: '#f59e0b' },
+  autonomous:  { label: 'Autonomous',   desc: 'Proactively flags bottlenecks & schedules.', color: '#ef4444' },
+};
+
+const FEATURE_LABELS = {
+  learning_active:           'Learning Active',
+  daily_standup_active:      'Daily Standup',
+  bottleneck_alerts_active:  'Bottleneck Alerts',
+  cost_forecasting_active:   'Cost Forecasting',
+  crew_scheduling_active:    'Crew Scheduling',
+  inventory_patterns_active: 'Inventory Patterns',
+  qc_failure_alerts_active:  'QC Failure Alerts',
+};
 
 const formatDate = (iso) =>
   new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
@@ -584,6 +607,272 @@ function DamageTab({ allDamage, filter, setFilter, onStatusChange }) {
   );
 }
 
+// ── AI Control Center Tab ─────────────────────────────────────
+function AIControlCenterTab({ userName }) {
+  const [settings,        setSettings]        = useState(null);
+  const [loadingSettings, setLoadingSettings] = useState(true);
+  const [savingMode,      setSavingMode]       = useState(false);
+  const [savingToggle,    setSavingToggle]     = useState(null);
+
+  // Daily input form
+  const [dailyBottlenecks,  setDailyBottlenecks]  = useState([]);
+  const [externalFactors,   setExternalFactors]   = useState('');
+  const [outputRating,      setOutputRating]      = useState(0);
+  const [dailyNotes,        setDailyNotes]        = useState('');
+  const [submittingDaily,   setSubmittingDaily]   = useState(false);
+  const [dailySubmitted,    setDailySubmitted]    = useState(false);
+
+  // Stats
+  const [logCount,   setLogCount]   = useState(null);
+  const [inputCount, setInputCount] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('ai_settings').select('*').limit(1).maybeSingle();
+      setSettings(data);
+      setLoadingSettings(false);
+
+      const today = new Date().toISOString().slice(0, 10);
+      const [logRes, inputRes, todayInputRes] = await Promise.all([
+        supabase.from('ai_learning_log').select('id', { count: 'exact', head: true }),
+        supabase.from('ai_daily_input').select('id', { count: 'exact', head: true }),
+        supabase.from('ai_daily_input').select('id').eq('date', today).limit(1),
+      ]);
+      setLogCount(logRes.count ?? 0);
+      setInputCount(inputRes.count ?? 0);
+      if (todayInputRes.data?.length > 0) setDailySubmitted(true);
+    })();
+  }, []);
+
+  const setMode = async (mode) => {
+    setSavingMode(true);
+    const updated = { ...settings, mode, updated_by: userName, updated_at: new Date().toISOString() };
+    setSettings(updated);
+    await supabase.from('ai_settings').update({ mode, updated_by: userName, updated_at: updated.updated_at }).eq('id', settings.id);
+    setSavingMode(false);
+  };
+
+  const toggleFeature = async (key) => {
+    setSavingToggle(key);
+    const newVal = !settings[key];
+    const updated = { ...settings, [key]: newVal, updated_by: userName, updated_at: new Date().toISOString() };
+    setSettings(updated);
+    await supabase.from('ai_settings').update({ [key]: newVal, updated_by: userName, updated_at: updated.updated_at }).eq('id', settings.id);
+    setSavingToggle(null);
+  };
+
+  const toggleBottleneck = (opt) => {
+    setDailyBottlenecks((prev) =>
+      prev.includes(opt) ? prev.filter((o) => o !== opt) : [...prev, opt]
+    );
+  };
+
+  const submitDailyInput = async () => {
+    if (outputRating === 0) {
+      Alert.alert('Rating required', 'Please select an output rating before submitting.');
+      return;
+    }
+    setSubmittingDaily(true);
+    const today = new Date().toISOString().slice(0, 10);
+    await supabase.from('ai_daily_input').insert({
+      date:             today,
+      supervisor_name:  userName,
+      bottlenecks:      JSON.stringify(dailyBottlenecks),
+      external_factors: externalFactors.trim() || null,
+      output_rating:    outputRating,
+      notes:            dailyNotes.trim() || null,
+    });
+    setSubmittingDaily(false);
+    setDailySubmitted(true);
+    setInputCount((n) => (n ?? 0) + 1);
+  };
+
+  if (loadingSettings) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color={C.accent} />
+      </View>
+    );
+  }
+
+  if (!settings) {
+    return (
+      <View style={styles.centered}>
+        <Text style={{ color: C.muted }}>AI settings not found. Run ai_tables.sql migration.</Text>
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView style={styles.flex} showsVerticalScrollIndicator={false} contentContainerStyle={styles.aiScroll}>
+
+      {/* Header */}
+      <View style={styles.aiHeader}>
+        <Ionicons name="hardware-chip" size={22} color={C.accent} />
+        <View style={{ flex: 1, marginLeft: 10 }}>
+          <Text style={styles.aiHeaderTitle}>AI Control Center</Text>
+          <Text style={styles.aiHeaderSub}>Learning system & pattern engine</Text>
+        </View>
+      </View>
+
+      {/* ── Section 1: Mode ── */}
+      <Text style={[styles.sectionLabel, { marginTop: 4 }]}>OPERATING MODE</Text>
+      {Object.entries(MODE_INFO).map(([modeKey, info]) => {
+        const active = settings.mode === modeKey;
+        return (
+          <TouchableOpacity
+            key={modeKey}
+            style={[styles.modeCard, active && { borderColor: info.color + '80', backgroundColor: info.color + '12' }]}
+            onPress={() => !savingMode && setMode(modeKey)}
+            activeOpacity={0.75}
+          >
+            <View style={[styles.modeRadio, active && { borderColor: info.color, backgroundColor: info.color }]}>
+              {active && <View style={styles.modeRadioInner} />}
+            </View>
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={[styles.modeLabel, active && { color: info.color }]}>{info.label}</Text>
+              <Text style={styles.modeDesc}>{info.desc}</Text>
+            </View>
+            {active && savingMode && <ActivityIndicator size="small" color={info.color} />}
+          </TouchableOpacity>
+        );
+      })}
+
+      {/* ── Section 2: Feature toggles ── */}
+      <Text style={[styles.sectionLabel, { marginTop: 20 }]}>FEATURE TOGGLES</Text>
+      <View style={styles.aiCard}>
+        {Object.entries(FEATURE_LABELS).map(([key, label], idx, arr) => (
+          <View
+            key={key}
+            style={[styles.toggleRow, idx < arr.length - 1 && styles.toggleRowBorder]}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={styles.toggleLabel}>{label}</Text>
+            </View>
+            {savingToggle === key
+              ? <ActivityIndicator size="small" color={C.accent} style={{ marginRight: 4 }} />
+              : (
+                <Switch
+                  value={!!settings[key]}
+                  onValueChange={() => toggleFeature(key)}
+                  trackColor={{ false: C.border, true: C.accent + '80' }}
+                  thumbColor={settings[key] ? C.accent : C.muted}
+                />
+              )
+            }
+          </View>
+        ))}
+      </View>
+
+      {/* ── Section 3: Daily Input Form ── */}
+      <Text style={[styles.sectionLabel, { marginTop: 20 }]}>END-OF-SHIFT CHECK-IN</Text>
+      {dailySubmitted ? (
+        <View style={[styles.aiCard, { alignItems: 'center', paddingVertical: 20, gap: 8 }]}>
+          <Ionicons name="checkmark-circle" size={36} color={C.success} />
+          <Text style={{ color: C.success, fontWeight: '700', fontSize: 15 }}>Today's check-in submitted</Text>
+          <Text style={{ color: C.muted, fontSize: 12, textAlign: 'center' }}>
+            Come back tomorrow to log the next shift.
+          </Text>
+        </View>
+      ) : (
+        <View style={styles.aiCard}>
+          <Text style={styles.toggleLabel}>What slowed us down today?</Text>
+          <View style={styles.bottleneckGrid}>
+            {BOTTLENECK_OPTIONS.map((opt) => {
+              const sel = dailyBottlenecks.includes(opt);
+              return (
+                <TouchableOpacity
+                  key={opt}
+                  style={[styles.bChip, sel && styles.bChipActive]}
+                  onPress={() => toggleBottleneck(opt)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.bChipText, sel && styles.bChipTextActive]}>{opt}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Text style={[styles.toggleLabel, { marginTop: 14 }]}>External factors (weather, rush orders…)</Text>
+          <TextInput
+            style={styles.aiInput}
+            value={externalFactors}
+            onChangeText={setExternalFactors}
+            placeholder="Optional…"
+            placeholderTextColor={C.muted}
+            multiline
+          />
+
+          <Text style={[styles.toggleLabel, { marginTop: 14 }]}>Overall output rating</Text>
+          <View style={styles.ratingRow}>
+            {[1, 2, 3, 4, 5].map((n) => (
+              <TouchableOpacity key={n} onPress={() => setOutputRating(n)} style={styles.ratingBtn}>
+                <Ionicons
+                  name={n <= outputRating ? 'star' : 'star-outline'}
+                  size={28}
+                  color={n <= outputRating ? C.accent : C.muted}
+                />
+              </TouchableOpacity>
+            ))}
+            {outputRating > 0 && (
+              <Text style={{ color: C.muted, fontSize: 12, marginLeft: 8 }}>
+                {['', 'Rough day', 'Below avg', 'Average', 'Good day', 'Great day'][outputRating]}
+              </Text>
+            )}
+          </View>
+
+          <Text style={[styles.toggleLabel, { marginTop: 14 }]}>Notes</Text>
+          <TextInput
+            style={styles.aiInput}
+            value={dailyNotes}
+            onChangeText={setDailyNotes}
+            placeholder="Anything the AI should know about today…"
+            placeholderTextColor={C.muted}
+            multiline
+          />
+
+          <TouchableOpacity
+            style={[styles.aiSubmitBtn, submittingDaily && { opacity: 0.5 }]}
+            onPress={submitDailyInput}
+            disabled={submittingDaily}
+            activeOpacity={0.8}
+          >
+            {submittingDaily
+              ? <ActivityIndicator size="small" color="#000" />
+              : <Text style={styles.aiSubmitBtnText}>Submit Check-In</Text>
+            }
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* ── Section 4: Learning Status ── */}
+      <Text style={[styles.sectionLabel, { marginTop: 20 }]}>LEARNING STATUS</Text>
+      <View style={[styles.aiCard, { gap: 12 }]}>
+        <View style={styles.statLineRow}>
+          <Text style={styles.statLineLabel}>Data points logged</Text>
+          <Text style={styles.statLineValue}>{logCount ?? '…'}</Text>
+        </View>
+        <View style={styles.statLineRow}>
+          <Text style={styles.statLineLabel}>Daily check-ins recorded</Text>
+          <Text style={styles.statLineValue}>{inputCount ?? '…'}</Text>
+        </View>
+        <View style={styles.statLineRow}>
+          <Text style={styles.statLineLabel}>Baseline window</Text>
+          <Text style={styles.statLineValue}>45 days</Text>
+        </View>
+        <View style={[styles.aiInfoBox, { marginTop: 4 }]}>
+          <Ionicons name="information-circle-outline" size={14} color={C.blue} style={{ marginTop: 1 }} />
+          <Text style={styles.aiInfoText}>
+            Auto-capture activates when QC checks are submitted. Stage, department, job type, and outcome are logged automatically.
+          </Text>
+        </View>
+      </View>
+
+      <View style={{ height: 40 }} />
+    </ScrollView>
+  );
+}
+
 // ── Main Screen ───────────────────────────────────────────────
 export default function SupervisorApp({ route, userName: userNameProp, onResetRole: onResetRoleProp }) {
   const userName    = route?.params?.userName    ?? userNameProp    ?? 'Supervisor';
@@ -811,6 +1100,9 @@ export default function SupervisorApp({ route, userName: userNameProp, onResetRo
                 setFilter={setDamageFilter}
                 onStatusChange={updateDamageStatus}
               />
+            )}
+            {activeTab === 'ai' && (
+              <AIControlCenterTab userName={userName} />
             )}
           </>
         )}
@@ -1072,6 +1364,71 @@ const styles = StyleSheet.create({
     minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 3,
   },
   tabBadgeText: { color: '#fff', fontSize: 9, fontWeight: '700' },
+
+  // AI Control Center
+  aiScroll: { paddingHorizontal: 16, paddingBottom: 32, paddingTop: 16 },
+  aiHeader: {
+    flexDirection: 'row', alignItems: 'center',
+    marginBottom: 20, paddingBottom: 16,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  aiHeaderTitle: { fontSize: 18, fontWeight: '800', color: C.text },
+  aiHeaderSub:   { fontSize: 12, color: C.muted, marginTop: 2 },
+  aiCard: {
+    backgroundColor: C.surface, borderRadius: 16,
+    borderWidth: 1, borderColor: '#222', padding: 16, marginBottom: 8,
+  },
+  modeCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: C.surface, borderRadius: 14,
+    borderWidth: 1.5, borderColor: '#222',
+    padding: 14, marginBottom: 8,
+  },
+  modeRadio: {
+    width: 20, height: 20, borderRadius: 10,
+    borderWidth: 2, borderColor: C.muted,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  modeRadioInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#000' },
+  modeLabel: { fontSize: 14, fontWeight: '700', color: C.text, marginBottom: 2 },
+  modeDesc:  { fontSize: 12, color: C.muted },
+  toggleRow: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 10,
+  },
+  toggleRowBorder: { borderBottomWidth: 1, borderBottomColor: C.border },
+  toggleLabel: { fontSize: 13, fontWeight: '600', color: C.text },
+  bottleneckGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
+  bChip: {
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20,
+    backgroundColor: C.input, borderWidth: 1.5, borderColor: C.border,
+  },
+  bChipActive:     { backgroundColor: C.accent + '22', borderColor: C.accent },
+  bChipText:       { fontSize: 12, fontWeight: '600', color: C.muted },
+  bChipTextActive: { color: C.accent },
+  aiInput: {
+    backgroundColor: C.input, borderRadius: 12,
+    borderWidth: 1.5, borderColor: C.border,
+    color: C.text, fontSize: 14,
+    paddingHorizontal: 14, paddingVertical: 10,
+    marginTop: 8, minHeight: 48,
+  },
+  ratingRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
+  ratingBtn: { padding: 4 },
+  aiSubmitBtn: {
+    backgroundColor: C.accent, borderRadius: 14,
+    paddingVertical: 14, alignItems: 'center', marginTop: 16,
+  },
+  aiSubmitBtnText: { color: '#000', fontSize: 15, fontWeight: '700' },
+  statLineRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  statLineLabel: { fontSize: 13, color: C.muted },
+  statLineValue: { fontSize: 14, fontWeight: '700', color: C.text },
+  aiInfoBox: {
+    flexDirection: 'row', gap: 8, alignItems: 'flex-start',
+    backgroundColor: C.blueBg, borderRadius: 10,
+    borderWidth: 1, borderColor: C.blueBorder,
+    padding: 10,
+  },
+  aiInfoText: { flex: 1, fontSize: 11, color: '#93c5fd', lineHeight: 16 },
 
   // Clock crew rows (Overview tab)
   clockNoneText: { fontSize: 12, color: C.muted, marginBottom: 12 },

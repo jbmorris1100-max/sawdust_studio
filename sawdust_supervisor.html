@@ -91,6 +91,15 @@ const fmtDT = iso => fmtD(iso) + " " + new Date(iso).toLocaleTimeString([],{hour
 const today = () => new Date().toISOString().slice(0,10);
 const dimStr = p => [p.width,p.height,p.depth].filter(v => v && v.trim()).join(" x ");
 
+const getWebDeviceId = () => {
+  let id = localStorage.getItem("web_device_id");
+  if (!id) {
+    id = "web_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2,8);
+    localStorage.setItem("web_device_id", id);
+  }
+  return id;
+};
+
 // localStorage (supervisor-local tables only)
 const load = (k, d=[]) => { try { const v=localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const sv   = (k, v)    => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
@@ -128,6 +137,12 @@ const StatusDot = ({ok}) =>
 // ─── Main App ─────────────────────────────────────────────────────────────────
 function App() {
   const [view,      setView]      = useState("dashboard");
+
+  // ── Supervisor session ─────────────────────────────────────────────────────
+  const [supervisorName,   setSupervisorName]   = useState(() => localStorage.getItem("supervisor_name") || "");
+  const [supLoginName,     setSupLoginName]     = useState("");
+  const [supLoginError,    setSupLoginError]    = useState("");
+  const [supLoginLoading,  setSupLoginLoading]  = useState(false);
 
   // ── Supervisor-local state (localStorage) ──────────────────────────────────
   const [jobs,      setJobs]      = useState(() => load(K.j));
@@ -311,6 +326,10 @@ function App() {
   const [crewMembers,   setCrewMembers]   = useState([]);
   const [crewDeptEdits, setCrewDeptEdits] = useState({});
   const [crewLoading,   setCrewLoading]   = useState(false);
+  const [crewSubView,   setCrewSubView]   = useState("devices");
+  const [loginAudit,    setLoginAudit]    = useState([]);
+  const [auditLoading,  setAuditLoading]  = useState(false);
+  const [auditSearch,   setAuditSearch]   = useState("");
 
   // ── Time Clock (Supabase) ─────────────────────────────────────────────────
   const [tcToday,      setTcToday]      = useState([]);
@@ -391,6 +410,20 @@ function App() {
       (qcN ? `\n${qcN}` : "") +
       (parts.length > 0 ? `\nParts verified: ${parts.filter(p=>partChecks[p.uid]?.checked).length}/${parts.length}` : "");
     await sb.from("messages").insert({ sender_name:"Supervisor", dept:"QC", body });
+
+    // AI auto-capture — log this QC check as a learning data point
+    const _now = new Date();
+    sb.from("ai_learning_log").insert({
+      job_id:          qcJob.jobId,
+      job_type:        qcJob.type,
+      stage:           qcType,
+      dept:            "QC",
+      concurrent_jobs: jobs.filter(j => j.status === "active").length,
+      day_of_week:     _now.getDay(),
+      hour_of_day:     _now.getHours(),
+      had_qc_fail:     result === "fail",
+      date:            today(),
+    }).catch(() => {});
 
     setView("dashboard");
   };
@@ -596,6 +629,59 @@ function App() {
   const copyReport = () =>
     navigator.clipboard.writeText(report).then(() => { setCopied(true); setTimeout(()=>setCopied(false), 2000); });
 
+  // ── Supervisor session ────────────────────────────────────────────────────
+  const supervisorLogin = async () => {
+    const name = supLoginName.trim();
+    if (!name) return;
+    setSupLoginLoading(true);
+    setSupLoginError("");
+    const deviceId = getWebDeviceId();
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: activeSessions } = await sb.from("supervisor_sessions")
+      .select("name, device_id").eq("is_active", true).gte("logged_in_at", cutoff);
+    const conflict = activeSessions?.find(s => s.device_id !== deviceId);
+    if (conflict) {
+      setSupLoginError("Supervisor already logged in as " + conflict.name + ". Only one session is allowed at a time.");
+      setSupLoginLoading(false);
+      return;
+    }
+    await sb.from("supervisor_sessions").insert({ name, device_id: deviceId, is_active: true });
+    await sb.from("login_log").insert({ worker_name: name, dept: "Management", role: "supervisor", device_id: deviceId, app_version: "web" }).catch(() => {});
+    localStorage.setItem("supervisor_name", name);
+    setSupervisorName(name);
+    setSupLoginName("");
+    setSupLoginLoading(false);
+  };
+
+  const supervisorLogout = async () => {
+    if (!confirm("Sign out of the supervisor dashboard?")) return;
+    const deviceId = getWebDeviceId();
+    await sb.from("supervisor_sessions")
+      .update({ is_active: false, logged_out_at: new Date().toISOString() })
+      .eq("device_id", deviceId).eq("is_active", true).catch(() => {});
+    localStorage.removeItem("supervisor_name");
+    setSupervisorName("");
+    setSupLoginName("");
+  };
+
+  // ── Login Audit ───────────────────────────────────────────────────────────
+  const loadLoginAudit = async () => {
+    setAuditLoading(true);
+    const { data } = await sb.from("login_log").select("*").order("logged_in_at", { ascending: false }).limit(50);
+    if (data) setLoginAudit(data);
+    setAuditLoading(false);
+  };
+
+  const exportAuditCSV = () => {
+    const rows = [["Name","Dept","Role","Device","Time","Version"]];
+    loginAudit.forEach(r => rows.push([r.worker_name, r.dept||"", r.role, r.device_id, fmtDT(r.logged_in_at), r.app_version||""]));
+    const csv = rows.map(r => r.map(c => '"'+String(c).replace(/"/g,'""')+'"').join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+    a.download = "login_audit_" + today() + ".csv";
+    a.click();
+  };
+
   // ── Crew management ───────────────────────────────────────────────────────
   const loadCrewMembers = async () => {
     setCrewLoading(true);
@@ -660,7 +746,7 @@ function App() {
     {id:"standup",   label:"Standup",      onClick:()=>setView("standup")},
     {id:"inventory", label:"Inventory",    onClick:()=>setView("inventory")},
     {id:"messages",  label:`Messages${unread>0?" ("+unread+")":""}`, onClick:openMessages},
-    {id:"crew",       label:"Crew",          onClick:()=>{ setView("crew"); loadCrewMembers(); }},
+    {id:"crew",       label:"Crew",          onClick:()=>{ setView("crew"); setCrewSubView("devices"); loadCrewMembers(); }},
     {id:"sops",       label:"SOPs",          onClick:()=>setView("sops")},
     {id:"report",    label:"Report",       onClick:()=>setView("report")},
   ];
@@ -718,6 +804,30 @@ function App() {
   // ─────────────────────────────────────────────────────────────────────────
   return h("div", null,
 
+    // SUPERVISOR LOGIN MODAL
+    !supervisorName && h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:24}},
+      h("div",{style:{background:"#141414",borderRadius:12,border:"1px solid #2a2a2a",padding:28,width:"100%",maxWidth:400}},
+        h("div",{style:{fontSize:10,color:AM,letterSpacing:".15em",marginBottom:8,fontWeight:500}}, "SAWDUST STUDIO"),
+        h("div",{style:{fontSize:20,fontWeight:500,color:"#e5e5e5",marginBottom:4}}, "Supervisor Sign In"),
+        h("div",{style:{fontSize:12,color:"#555",marginBottom:20}}, "One supervisor session at a time. Enter your name to continue."),
+        h("input",{
+          placeholder:"Your name (e.g. Mike Torres)",
+          value:supLoginName,
+          onChange:e=>{ setSupLoginName(e.target.value); setSupLoginError(""); },
+          onKeyDown:e=>{ if(e.key==="Enter") supervisorLogin(); },
+          autoFocus:true,
+          style:{fontSize:14,background:"#1a1a1a",border:"1px solid #2a2a2a",borderRadius:6,color:"#e5e5e5",padding:"10px 14px",width:"100%",outline:"none",marginBottom:10,fontFamily:"'DM Mono','Courier New',monospace"},
+        }),
+        supLoginError && h("div",{style:{fontSize:12,color:"#f87171",marginBottom:10,padding:"8px 12px",background:"#2e1a1a",borderRadius:6,border:"1px solid #7f1d1d"}}, supLoginError),
+        h("button",{
+          className:"bp",
+          onClick:supervisorLogin,
+          disabled:!supLoginName.trim()||supLoginLoading,
+          style:{width:"100%",padding:"11px 0",opacity:(!supLoginName.trim()||supLoginLoading)?0.4:1},
+        }, supLoginLoading?"checking…":"Enter Supervisor Dashboard")
+      )
+    ),
+
     // HEADER
     h("div", {style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.75rem",paddingBottom:"1.25rem",borderBottom:"1px solid #1a1a1a"}},
       h("div", null,
@@ -727,6 +837,10 @@ function App() {
           h("div", {style:{display:"flex",alignItems:"center",gap:4,fontSize:10,color:sbReady?"#22c55e":"#f59e0b"}},
             h(StatusDot,{ok:sbReady}),
             sbReady ? "live" : "connecting…"
+          ),
+          supervisorName && h("div",{style:{display:"flex",alignItems:"center",gap:6,marginLeft:8}},
+            h("span",{style:{fontSize:11,color:"#555",background:"#141414",padding:"2px 10px",borderRadius:99,border:"1px solid #222"}}, supervisorName),
+            h("button",{onClick:supervisorLogout,style:{fontSize:10,padding:"3px 10px",color:"#f87171",borderColor:"#7f1d1d"}}, "sign out")
           )
         )
       ),
@@ -1302,40 +1416,109 @@ function App() {
 
     // ── CREW MANAGEMENT ───────────────────────────────────────────────────────
     view==="crew" && h("div", null,
-      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}},
-        h("div",{style:{fontSize:11,color:"#444"}},
-          crewMembers.length+" device"+(crewMembers.length!==1?"s":"")+" registered — change a department and click update"
-        ),
-        h("button",{onClick:loadCrewMembers,style:{fontSize:11}}, crewLoading?"loading…":"↺ refresh")
+      // Sub-tab switcher
+      h("div",{style:{display:"flex",gap:6,marginBottom:16}},
+        h("button",{
+          onClick:()=>setCrewSubView("devices"),
+          style:{fontSize:11,padding:"6px 14px",background:crewSubView==="devices"?AM:"transparent",color:crewSubView==="devices"?"#1a0900":"#666",borderColor:crewSubView==="devices"?AM:"#1e1e1e"},
+        }, "Devices"),
+        h("button",{
+          onClick:()=>{ setCrewSubView("audit"); if(loginAudit.length===0) loadLoginAudit(); },
+          style:{fontSize:11,padding:"6px 14px",background:crewSubView==="audit"?AM:"transparent",color:crewSubView==="audit"?"#1a0900":"#666",borderColor:crewSubView==="audit"?AM:"#1e1e1e"},
+        }, "Login Audit")
       ),
-      crewLoading && h("div",{style:{textAlign:"center",padding:"48px 0",color:"#444",fontSize:13}}, "Loading…"),
-      !crewLoading && crewMembers.length===0 && h(Empty,{msg:"No crew devices registered yet. Crew members appear here after they first log into the app."}),
-      !crewLoading && crewMembers.map(m => {
-        const pendingDept  = crewDeptEdits[m.id];
-        const selectedDept = pendingDept !== undefined ? pendingDept : (m.dept || "");
-        const changed      = selectedDept !== (m.dept || "");
-        return h("div",{key:m.id,style:{...CS,display:"flex",alignItems:"center",justifyContent:"space-between",gap:14}},
-          h("div",{style:{flex:1}},
-            h("div",{style:{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}},
-              h("span",{style:{fontWeight:500,fontSize:14,color:"#e5e5e5"}}, m.name||"(unnamed)"),
-              h(Pill,{label:m.dept||"—",color:"#3b82f6"})
-            )
+
+      // ── Devices sub-view ────────────────────────────────────────────────────
+      crewSubView==="devices" && h("div", null,
+        h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}},
+          h("div",{style:{fontSize:11,color:"#444"}},
+            crewMembers.length+" device"+(crewMembers.length!==1?"s":"")+" registered — change a department and click update"
           ),
-          h("div",{style:{display:"flex",alignItems:"center",gap:8}},
-            h("select",{
-              value:    selectedDept,
-              onChange: e => setCrewDeptEdits(p => ({...p,[m.id]:e.target.value})),
-              style:    {...IS, width:170},
-            }, CREW_DEPTS.map(d => h("option",{key:d,value:d},d))),
-            h("button",{
-              className: changed ? "bp" : "",
-              disabled:  !changed,
-              onClick:   () => updateCrewDept(m.id, selectedDept),
-              style:     {opacity: changed ? 1 : 0.3, whiteSpace:"nowrap"},
-            }, "update")
+          h("button",{onClick:loadCrewMembers,style:{fontSize:11}}, crewLoading?"loading…":"↺ refresh")
+        ),
+        crewLoading && h("div",{style:{textAlign:"center",padding:"48px 0",color:"#444",fontSize:13}}, "Loading…"),
+        !crewLoading && crewMembers.length===0 && h(Empty,{msg:"No crew devices registered yet. Crew members appear here after they first log into the app."}),
+        !crewLoading && crewMembers.map(m => {
+          const pendingDept  = crewDeptEdits[m.id];
+          const selectedDept = pendingDept !== undefined ? pendingDept : (m.dept || "");
+          const changed      = selectedDept !== (m.dept || "");
+          return h("div",{key:m.id,style:{...CS,display:"flex",alignItems:"center",justifyContent:"space-between",gap:14}},
+            h("div",{style:{flex:1}},
+              h("div",{style:{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}},
+                h("span",{style:{fontWeight:500,fontSize:14,color:"#e5e5e5"}}, m.name||"(unnamed)"),
+                h(Pill,{label:m.dept||"—",color:"#3b82f6"})
+              )
+            ),
+            h("div",{style:{display:"flex",alignItems:"center",gap:8}},
+              h("select",{
+                value:    selectedDept,
+                onChange: e => setCrewDeptEdits(p => ({...p,[m.id]:e.target.value})),
+                style:    {...IS, width:170},
+              }, CREW_DEPTS.map(d => h("option",{key:d,value:d},d))),
+              h("button",{
+                className: changed ? "bp" : "",
+                disabled:  !changed,
+                onClick:   () => updateCrewDept(m.id, selectedDept),
+                style:     {opacity: changed ? 1 : 0.3, whiteSpace:"nowrap"},
+              }, "update")
+            )
+          );
+        })
+      ),
+
+      // ── Login Audit sub-view ────────────────────────────────────────────────
+      crewSubView==="audit" && h("div", null,
+        h("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:14,flexWrap:"wrap"}},
+          h("input",{
+            placeholder:"Search name or dept…",
+            value:auditSearch,
+            onChange:e=>setAuditSearch(e.target.value),
+            style:{...IS,maxWidth:240,padding:"6px 12px"},
+          }),
+          h("button",{onClick:loadLoginAudit,style:{fontSize:11}}, auditLoading?"loading…":"↺ refresh"),
+          loginAudit.length>0 && h("button",{onClick:exportAuditCSV,style:{fontSize:11,color:"#4ade80",borderColor:"#14532d"}}, "↓ export csv"),
+          h("div",{style:{fontSize:11,color:"#444",marginLeft:"auto"}},
+            "last 50 logins · blue = supervisor · ⚠ = multi-dept · 🌙 = off-hours"
           )
-        );
-      })
+        ),
+        auditLoading && h("div",{style:{textAlign:"center",padding:"48px 0",color:"#444",fontSize:13}}, "Loading…"),
+        !auditLoading && loginAudit.length===0 && h(Empty,{msg:"No login records yet. Records appear after crew or supervisors log in."}),
+        !auditLoading && (() => {
+          const q = auditSearch.toLowerCase();
+          const filtered = loginAudit.filter(r =>
+            !q || r.worker_name.toLowerCase().includes(q) || (r.dept||"").toLowerCase().includes(q)
+          );
+          // Detect multi-dept workers (same name, different depts in audit window)
+          const workerDepts = {};
+          loginAudit.forEach(r => {
+            if (!workerDepts[r.worker_name]) workerDepts[r.worker_name] = new Set();
+            workerDepts[r.worker_name].add(r.dept||"");
+          });
+          return filtered.map(r => {
+            const isSup    = r.role === "supervisor";
+            const isOffHrs = (() => { const h2 = new Date(r.logged_in_at).getHours(); return h2 < 6 || h2 >= 22; })();
+            const multiDep = (workerDepts[r.worker_name]?.size || 0) > 1;
+            return h("div",{key:r.id,style:{
+              ...CS,
+              borderLeft:"3px solid "+(isSup?"#3b82f6":"#2a2a2a"),
+              display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap",
+            }},
+              h("div",{style:{flex:1,minWidth:0}},
+                h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:3}},
+                  h("span",{style:{fontWeight:500,fontSize:13,color:isSup?"#60a5fa":"#e5e5e5"}}, r.worker_name),
+                  h(Pill,{label:r.role,color:isSup?"#3b82f6":"#22c55e"}),
+                  r.dept && h(Pill,{label:r.dept,color:"#555"}),
+                  multiDep && h("span",{style:{fontSize:11,color:"#f59e0b"}}, "⚠ multi-dept"),
+                  isOffHrs && h("span",{style:{fontSize:11,color:"#818cf8"}}, "🌙 off-hours")
+                ),
+                h("div",{style:{fontSize:11,color:"#444"}},
+                  fmtDT(r.logged_in_at) + (r.device_id ? "  ·  " + r.device_id.slice(0,18) + "…" : "")
+                )
+              )
+            );
+          });
+        })()
+      )
     ),
 
     // ── SOPs ──────────────────────────────────────────────────────────────────
