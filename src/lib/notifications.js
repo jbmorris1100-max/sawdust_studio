@@ -4,14 +4,16 @@ import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
 
-// How foreground notifications appear while the app is open
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge:  true,
-  }),
-});
+// expo-notifications has no web implementation — guard all native calls
+if (Platform.OS !== 'web') {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge:  true,
+    }),
+  });
+}
 
 /**
  * Request permission, get the Expo push token, and upsert it into
@@ -19,6 +21,7 @@ Notifications.setNotificationHandler({
  * on token means it won't create duplicates.
  */
 export async function registerForPushNotifications(userName, userDept) {
+  if (Platform.OS === 'web') return null;
   // Push notifications require a physical device
   if (!Device.isDevice) {
     console.log('[Notifications] skipping — not a physical device');

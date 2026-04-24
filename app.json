@@ -30,7 +30,14 @@
       ]
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "name": "Sawdust Crew",
+      "shortName": "Sawdust",
+      "description": "Shop floor crew management — messages, inventory, time clock",
+      "themeColor": "#0d0d0d",
+      "backgroundColor": "#0d0d0d",
+      "lang": "en"
     },
     "extra": {
       "eas": {
