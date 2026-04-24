@@ -400,11 +400,7 @@ function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBo
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={90}
-    >
+    <View style={styles.flex}>
       {/* Thread header */}
       <View style={styles.threadHeader}>
         <TouchableOpacity
@@ -481,7 +477,7 @@ function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBo
           }
         </TouchableOpacity>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -938,18 +934,8 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
   const userName  = route?.params?.userName ?? userNameProp ?? 'Supervisor';
   const resetRole = useContext(RoleContext);
 
-  useEffect(() => {
-    console.log('[SupervisorApp] RoleContext value on mount:', typeof resetRole);
-  }, []);
-
   const handleSwitchRole = async () => {
-    console.log('[SWITCH ROLE PRESSED]');
-    await AsyncStorage.multiRemove([
-      '@sawdust_user_name',
-      '@sawdust_user_dept',
-      '@sawdust_user_role',
-    ]);
-    resetRole?.();
+    if (resetRole) await resetRole();
   };
 
   const [messages,     setMessages]     = useState([]);
@@ -1128,14 +1114,17 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="light-content" backgroundColor={C.bg} />
-
-      <View style={styles.flex}>
-        {loading ? (
-          <View style={styles.centered}>
-            <ActivityIndicator size="large" color={C.accent} />
-          </View>
-        ) : (
-          <>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <View style={styles.flex}>
+          {loading ? (
+            <View style={styles.centered}>
+              <ActivityIndicator size="large" color={C.accent} />
+            </View>
+          ) : (
+            <>
             {activeTab === 'overview' && (
               <OverviewTab
                 needs={needs}
@@ -1224,6 +1213,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
           <Text style={styles.tabSwitchLabel}>Exit</Text>
         </TouchableOpacity>
       </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

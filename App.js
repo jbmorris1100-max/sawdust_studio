@@ -151,7 +151,7 @@ function RolePicker({ onSelect }) {
 }
 
 // ── Crew Tab Navigator ────────────────────────────────────────
-function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount, onResetRole }) {
+function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount }) {
   const screenParams = { userName, userDept };
   return (
     <Tab.Navigator
@@ -166,7 +166,7 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount, onRese
       <Tab.Screen
         name="Home"
         component={HomeScreen}
-        initialParams={{ ...screenParams, onResetRole, onClearUnread: () => setUnreadCount(0) }}
+        initialParams={{ ...screenParams, onClearUnread: () => setUnreadCount(0) }}
         options={{
           tabBarButton: (props) => <TabButton {...props} />,
           tabBarIcon: ({ focused, color, size }) => (
@@ -275,6 +275,15 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
+      // Expire supervisor sessions older than 8 hours so stale sessions can't block new logins
+      const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
+      supabase
+        .from('supervisor_sessions')
+        .update({ is_active: false, logged_out_at: new Date().toISOString() })
+        .eq('is_active', true)
+        .lt('logged_in_at', eightHoursAgo)
+        .catch(console.warn);
+
       const [name, dept, storedRole, storedVersion] = await Promise.all([
         AsyncStorage.getItem(STORAGE.NAME),
         AsyncStorage.getItem(STORAGE.DEPT),
@@ -428,7 +437,6 @@ export default function App() {
               userDept={userDept}
               unreadCount={unreadCount}
               setUnreadCount={setUnreadCount}
-              onResetRole={handleResetRole}
             />
           )}
         </NavigationContainer>

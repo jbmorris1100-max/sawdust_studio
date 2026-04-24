@@ -114,7 +114,6 @@ export default function MessagesScreen({ route }) {
   const channelRef = useRef(null);
 
   const fetchMessages = useCallback(async () => {
-    console.log('[Messages] fetching history — supabase URL:', process.env.EXPO_PUBLIC_SUPABASE_URL);
     const { data, error } = await supabase
       .from('messages')
       .select('*')
@@ -123,8 +122,6 @@ export default function MessagesScreen({ route }) {
 
     if (error) {
       console.error('[Messages] fetch failed:', error.message);
-    } else {
-      console.log('[Messages] fetched', data.length, 'messages');
     }
     if (!error && data) setMessages(data);
     setLoading(false);
@@ -145,9 +142,7 @@ export default function MessagesScreen({ route }) {
           });
         }
       )
-      .subscribe((status) => {
-        console.log('[Messages] realtime status:', status);
-      });
+      .subscribe();
 
     return () => { supabase.removeChannel(channelRef.current); };
   }, []);

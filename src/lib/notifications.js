@@ -24,7 +24,6 @@ export async function registerForPushNotifications(userName, userDept) {
   if (Platform.OS === 'web') return null;
   // Push notifications require a physical device
   if (!Device.isDevice) {
-    console.log('[Notifications] skipping — not a physical device');
     return null;
   }
 
@@ -48,7 +47,6 @@ export async function registerForPushNotifications(userName, userDept) {
   }
 
   if (finalStatus !== 'granted') {
-    console.log('[Notifications] permission denied');
     return null;
   }
 
@@ -72,8 +70,6 @@ export async function registerForPushNotifications(userName, userDept) {
     return null;
   }
 
-  console.log('[Notifications] push token:', token);
-
   // Upsert into device_tokens — update name/dept if token already registered
   const { error } = await supabase
     .from('device_tokens')
@@ -84,8 +80,6 @@ export async function registerForPushNotifications(userName, userDept) {
 
   if (error) {
     console.error('[Notifications] failed to save token:', error.message);
-  } else {
-    console.log('[Notifications] token saved for', userName);
   }
 
   return token;

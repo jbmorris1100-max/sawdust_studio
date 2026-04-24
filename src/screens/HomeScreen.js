@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
+import { RoleContext } from '../lib/RoleContext';
 
 // ── Constants ─────────────────────────────────────────────────
 const STORAGE_KEY_NAME = '@sawdust_user_name';
@@ -66,7 +67,8 @@ const fmtSecs = (secs) => {
 
 // ── Main Component ────────────────────────────────────────────
 export default function HomeScreen({ navigation, route }) {
-  const { onResetRole, onClearUnread } = route?.params ?? {};
+  const { onClearUnread } = route?.params ?? {};
+  const resetRole = useContext(RoleContext);
 
   const [userName, setUserName]             = useState('');
   const [userDept, setUserDept]             = useState('');
@@ -252,14 +254,7 @@ export default function HomeScreen({ navigation, route }) {
       {
         text: 'Switch Role',
         style: 'destructive',
-        onPress: async () => {
-          await Promise.all([
-            AsyncStorage.removeItem(STORAGE_KEY_NAME),
-            AsyncStorage.removeItem(STORAGE_KEY_DEPT),
-            AsyncStorage.removeItem('@sawdust_user_role'),
-          ]);
-          if (onResetRole) onResetRole();
-        },
+        onPress: () => resetRole?.(),
       },
       { text: 'Cancel', style: 'cancel' },
     ]);
