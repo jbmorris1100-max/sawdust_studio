@@ -166,6 +166,14 @@ function App() {
 
   // ── Supabase: initial fetch + real-time subscriptions ─────────────────────
   useEffect(() => {
+    // Expire stale supervisor sessions (older than 4h) before checking for conflicts
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+    sb.from("supervisor_sessions")
+      .update({ is_active: false, logged_out_at: new Date().toISOString() })
+      .eq("is_active", true)
+      .lt("logged_in_at", fourHoursAgo)
+      .then(() => {}).catch(() => {});
+
     // Fetch all tables on mount
     Promise.all([
       sb.from("inventory_needs").select("*").order("created_at", { ascending: false }),
@@ -636,7 +644,7 @@ function App() {
     setSupLoginLoading(true);
     setSupLoginError("");
     const deviceId = getWebDeviceId();
-    const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+    const cutoff = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
     const { data: activeSessions } = await sb.from("supervisor_sessions")
       .select("name, device_id").eq("is_active", true).gte("logged_in_at", cutoff);
     const conflict = activeSessions?.find(s => s.name.toLowerCase() !== name.toLowerCase());
@@ -662,6 +670,15 @@ function App() {
     localStorage.removeItem("supervisor_name");
     setSupervisorName("");
     setSupLoginName("");
+  };
+
+  const clearAllSessions = async () => {
+    setSupLoginLoading(true);
+    await sb.from("supervisor_sessions")
+      .update({ is_active: false, logged_out_at: new Date().toISOString() })
+      .eq("is_active", true).catch(() => {});
+    setSupLoginError("");
+    setSupLoginLoading(false);
   };
 
   // ── Login Audit ───────────────────────────────────────────────────────────
@@ -818,7 +835,14 @@ function App() {
           autoFocus:true,
           style:{fontSize:14,background:"#1a1a1a",border:"1px solid #2a2a2a",borderRadius:6,color:"#e5e5e5",padding:"10px 14px",width:"100%",outline:"none",marginBottom:10,fontFamily:"'DM Mono','Courier New',monospace"},
         }),
-        supLoginError && h("div",{style:{fontSize:12,color:"#f87171",marginBottom:10,padding:"8px 12px",background:"#2e1a1a",borderRadius:6,border:"1px solid #7f1d1d"}}, supLoginError),
+        supLoginError && h("div",{style:{fontSize:12,color:"#f87171",marginBottom:4,padding:"8px 12px",background:"#2e1a1a",borderRadius:6,border:"1px solid #7f1d1d"}}, supLoginError),
+        supLoginError && h("div",{style:{marginBottom:10,textAlign:"right"}},
+          h("button",{
+            onClick:clearAllSessions,
+            disabled:supLoginLoading,
+            style:{fontSize:11,color:"#f87171",background:"none",border:"none",cursor:"pointer",textDecoration:"underline",padding:0,opacity:supLoginLoading?0.4:1},
+          }, supLoginLoading?"clearing…":"Clear stuck session")
+        ),
         h("button",{
           className:"bp",
           onClick:supervisorLogin,

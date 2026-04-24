@@ -276,9 +276,9 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        // Expire supervisor sessions older than 12 hours so stale sessions can't block new logins
+        // Expire supervisor sessions older than 4 hours so stale sessions can't block new logins
         try {
-          const eightHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+          const eightHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
           await supabase
             .from('supervisor_sessions')
             .update({ is_active: false, logged_out_at: new Date().toISOString() })
@@ -353,8 +353,8 @@ export default function App() {
     const deviceId = await getDeviceId();
 
     if (selectedRole === 'supervisor' && name) {
-      // Check for an existing active session from a different device (12h window)
-      const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+      // Check for an existing active session from a different device (4h window)
+      const cutoff = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
       const { data: activeSessions } = await supabase
         .from('supervisor_sessions')
         .select('name, device_id')
