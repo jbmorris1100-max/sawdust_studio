@@ -422,6 +422,12 @@ export default function App() {
     setUserDept('');
   }, [role]);
 
+  // Stable ref so context consumers always call the latest handleResetRole
+  // even if it was captured in a stale closure (e.g. inside an Alert callback).
+  const resetRoleRef = useRef(null);
+  resetRoleRef.current = handleResetRole;
+  const stableReset = useCallback(() => resetRoleRef.current?.(), []);
+
   if (role === null) return null; // loading
 
   if (role === '') {
@@ -434,7 +440,7 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <RoleContext.Provider value={handleResetRole}>
+      <RoleContext.Provider value={stableReset}>
         <NavigationContainer>
           {role === 'supervisor' ? (
             <SupervisorNavigator userName={userName} />

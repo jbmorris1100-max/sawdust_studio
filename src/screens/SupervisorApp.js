@@ -931,6 +931,10 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
   const userName  = route?.params?.userName ?? userNameProp ?? 'Supervisor';
   const resetRole = useContext(RoleContext);
 
+  useEffect(() => {
+    console.log('[SupervisorApp] resetRole on mount:', typeof resetRole, resetRole);
+  }, [resetRole]);
+
   const handleSwitchRole = () => {
     Alert.alert(
       'Exit Supervisor Dashboard',
@@ -1214,14 +1218,6 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
             </TouchableOpacity>
           );
         })}
-        <TouchableOpacity
-          style={styles.tabSwitchBtn}
-          onPress={handleSwitchRole}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="log-out-outline" size={20} color={C.error} />
-          <Text style={styles.tabSwitchLabel}>Exit</Text>
-        </TouchableOpacity>
       </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -1450,17 +1446,6 @@ const styles = StyleSheet.create({
     minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 3,
   },
   tabBadgeText: { color: '#fff', fontSize: 9, fontWeight: '700' },
-  tabSwitchBtn: {
-    flex: 1, alignItems: 'center', justifyContent: 'center',
-    borderLeftWidth: 1, borderLeftColor: C.border,
-  },
-  tabSwitchLabel: { fontSize: 10, fontWeight: '700', color: C.error, marginTop: 3 },
-  switchRoleCard: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: C.error, borderRadius: 12,
-    paddingVertical: 14, marginTop: 12, marginBottom: 4,
-  },
-  switchRoleCardText: { color: '#fff', fontSize: 14, fontWeight: '800', letterSpacing: 0.5 },
 
   // AI Control Center
   aiScroll: { paddingHorizontal: 16, paddingBottom: 32, paddingTop: 16 },
