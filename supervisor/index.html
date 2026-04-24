@@ -134,6 +134,16 @@ const FBtn = ({val,cur,set}) =>
 const StatusDot = ({ok}) =>
   h("span",{style:{display:"inline-block",width:7,height:7,borderRadius:"50%",background:ok?"#22c55e":"#ef4444",marginRight:6}});
 
+const RESOLUTION_TYPES_WEB = ["Rework Order","Material Ordered","Repaired On Site","Credited to Client","Written Off","Other"];
+const RES_COLORS = {
+  "Rework Order":       "#f59e0b",
+  "Material Ordered":   "#3b82f6",
+  "Repaired On Site":   "#22c55e",
+  "Credited to Client": "#a78bfa",
+  "Written Off":        "#ef4444",
+  "Other":              "#6b7280",
+};
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 function App() {
   const [view,      setView]      = useState("dashboard");
@@ -156,6 +166,11 @@ function App() {
   const [messages,     setMessages]     = useState([]);   // messages
   const [sbReady,      setSbReady]      = useState(false);// connection status
   const [damageF,      setDamageF]      = useState("open"); // damage-only filter
+  const [resolveModal, setResolveModal] = useState(null);   // damage item being resolved
+  const [resType,      setResType]      = useState("Rework Order");
+  const [resNotes,     setResNotes]     = useState("");
+  const [resBy,        setResBy]        = useState("");
+  const [resolving,    setResolving]    = useState(false);
 
   // ── Message compose ───────────────────────────────────────────────────────
   const [msgBody,       setMsgBody]       = useState("");
@@ -200,6 +215,7 @@ function App() {
     // Real-time: damage_reports
     const dmgCh = sb.channel("sup-damage")
       .on("postgres_changes", { event: "*", schema: "public", table: "damage_reports" }, payload => {
+        console.log("[realtime] damage_reports", payload.eventType, payload.new || payload.old);
         if (payload.eventType === "INSERT") {
           setDamageRpts(p => [payload.new, ...p]);
         } else if (payload.eventType === "UPDATE") {
@@ -456,10 +472,28 @@ function App() {
     await sb.from("inventory_needs").delete().eq("id", id);
   };
 
-  // ── Damage reports: status update ─────────────────────────────────────────
+  // ── Damage reports: status update + resolution ────────────────────────────
   const updateDamageStatus = async (id, status) => {
     setDamageRpts(p => p.map(d => d.id === id ? { ...d, status } : d));
     await sb.from("damage_reports").update({ status }).eq("id", id);
+  };
+
+  const submitResolution = async () => {
+    if (!resType || !resolveModal || resolving) return;
+    setResolving(true);
+    const fields = {
+      resolution_type:  resType,
+      resolution_notes: resNotes.trim() || null,
+      resolved_by:      resBy.trim() || null,
+      resolved_at:      new Date().toISOString(),
+      status:           "resolved",
+    };
+    setDamageRpts(p => p.map(d => d.id === resolveModal.id ? { ...d, ...fields } : d));
+    await sb.from("damage_reports").update(fields).eq("id", resolveModal.id);
+    setResolving(false);
+    setResolveModal(null);
+    setResNotes("");
+    showToastMsg("Damage report resolved");
   };
 
   // ── Standup → localStorage + Supabase messages ────────────────────────────
@@ -587,9 +621,13 @@ function App() {
     const rc     = checks.filter(c => new Date(c.timestamp) > wk);
     const openM  = miss.filter(m => m.status === "pending");
     const openD  = damageRpts.filter(d => d.status === "open");
+    const resolvedD = damageRpts.filter(d => d.status === "resolved" && d.resolved_at && new Date(d.resolved_at) > wk);
+    const unresolvedD = damageRpts.filter(d => d.status !== "resolved");
     const lowI   = inv.filter(i => i.qty <= i.threshold);
     const stageMap = {};
     miss.forEach(m => { stageMap[m.dept] = (stageMap[m.dept]||0) + 1; });
+    const resTypeMap = {};
+    resolvedD.forEach(d => { resTypeMap[d.resolution_type] = (resTypeMap[d.resolution_type]||0) + 1; });
     const flagged = jobs.filter(j => j.status === "flagged");
     const tcActive = tcToday.filter(e => !e.clock_out);
     const tcDeptHrs = {};
@@ -615,8 +653,15 @@ function App() {
       "-- INVENTORY NEEDS BY DEPT --",
       ...Object.entries(stageMap).sort((a,b)=>b[1]-a[1]).map(([s,n]) => "  " + s + ": " + n),
       "",
-      "-- DAMAGE REPORTS (" + openD.length + " open) --",
-      ...(openD.length ? openD.map(d => "  * #" + (d.job_id||"--") + "  " + d.part_name + "  @  " + d.dept + (d.notes ? "  — "+d.notes : "")) : ["  None"]),
+      "-- DAMAGE REPORTS --",
+      "  Total this period: " + damageRpts.length + "  |  Open/unresolved: " + unresolvedD.length + "  |  Resolved this week: " + resolvedD.length,
+      unresolvedD.length ? "  ⚠ UNRESOLVED:" : "",
+      ...(unresolvedD.length ? unresolvedD.map(d => "  * #" + (d.job_id||"--") + "  " + d.part_name + "  @  " + d.dept + "  [" + d.status.toUpperCase() + "]") : []),
+      "",
+      "-- DAMAGE RESOLUTION BREAKDOWN (LAST 7 DAYS) --",
+      ...(Object.keys(resTypeMap).length
+        ? Object.entries(resTypeMap).sort((a,b)=>b[1]-a[1]).map(([t,n]) => "  " + t + ": " + n)
+        : ["  None resolved this week"]),
       "",
       "-- LOW INVENTORY (" + lowI.length + " items) --",
       ...(lowI.length ? lowI.map(i => "  * " + i.name + ": " + i.qty + " " + i.unit + "  (min: " + i.threshold + ")") : ["  None"]),
@@ -1105,20 +1150,28 @@ function App() {
         && h(Empty,{msg:"No "+damageF+" damage reports."}),
       (damageF==="all" ? damageRpts : damageRpts.filter(d=>d.status===damageF)).map(d => {
         const col = d.status==="open" ? "#ef4444" : d.status==="reviewed" ? "#f59e0b" : "#22c55e";
-        return h("div",{key:d.id,style:{...CS,borderLeft:`3px solid ${col}`,display:"flex",alignItems:"center",justifyContent:"space-between"}},
-          h("div",{style:{flex:1}},
-            h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:4}},
-              h("span",{style:{color:AM,fontWeight:500}}, "#"+(d.job_id||"—")),
-              h("span",{style:{fontSize:13,color:"#ccc"}}, d.part_name),
-              h(Pill,{label:d.dept,color:"#3b82f6"}),
-              h(Pill,{label:d.status,color:col})
+        const resCol = d.resolution_type ? (RES_COLORS[d.resolution_type] || "#6b7280") : null;
+        return h("div",{key:d.id,style:{...CS,borderLeft:`3px solid ${col}`}},
+          h("div",{style:{display:"flex",alignItems:"flex-start",justifyContent:"space-between"}},
+            h("div",{style:{flex:1}},
+              h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:4}},
+                h("span",{style:{color:AM,fontWeight:500}}, "#"+(d.job_id||"—")),
+                h("span",{style:{fontSize:13,color:"#ccc"}}, d.part_name),
+                h(Pill,{label:d.dept,color:"#3b82f6"}),
+                h(Pill,{label:d.status,color:col})
+              ),
+              d.notes && h("div",{style:{fontSize:12,color:"#666",marginBottom:4,fontStyle:"italic"}}, d.notes),
+              d.resolution_type && h("div",{style:{display:"flex",flexWrap:"wrap",gap:6,marginTop:6,marginBottom:4,alignItems:"center"}},
+                h(Pill,{label:d.resolution_type,color:resCol}),
+                d.resolution_notes && h("span",{style:{fontSize:12,color:"#888",fontStyle:"italic"}}, d.resolution_notes),
+                d.resolved_by && h("span",{style:{fontSize:11,color:"#555"}}, "— "+d.resolved_by)
+              ),
+              h("div",{style:{fontSize:11,color:"#444"}}, fmtD(d.created_at))
             ),
-            d.notes && h("div",{style:{fontSize:12,color:"#666",marginBottom:4,fontStyle:"italic"}}, d.notes),
-            h("div",{style:{fontSize:11,color:"#444"}}, fmtD(d.created_at))
-          ),
-          h("div",{style:{display:"flex",gap:6,flexShrink:0,marginLeft:12}},
-            d.status==="open"     && h("button",{style:{color:"#60a5fa",borderColor:"#1e3a5f"},onClick:()=>updateDamageStatus(d.id,"reviewed")},  "reviewed"),
-            d.status==="reviewed" && h("button",{className:"bg",onClick:()=>updateDamageStatus(d.id,"resolved")}, "resolved")
+            h("div",{style:{display:"flex",flexDirection:"column",gap:6,flexShrink:0,marginLeft:12,alignItems:"flex-end"}},
+              d.status==="open" && h("button",{style:{color:"#60a5fa",borderColor:"#1e3a5f"},onClick:()=>updateDamageStatus(d.id,"reviewed")}, "reviewed"),
+              d.status!=="resolved" && h("button",{className:"bg",onClick:()=>{setResolveModal(d);setResType("Rework Order");setResNotes("");setResBy(supervisorName||"");}}, "resolve")
+            )
           )
         );
       })
@@ -1407,6 +1460,81 @@ function App() {
           )
         ),
 
+        // ── Damage & Resolution Log ───────────────────────────────────
+        h(Divider, {label:"DAMAGE & RESOLUTION LOG"}),
+        (() => {
+          const resolved = damageRpts.filter(d => d.status === "resolved");
+          const unresolved = damageRpts.filter(d => d.status !== "resolved");
+          const resTypeCount = {};
+          resolved.forEach(d => { resTypeCount[d.resolution_type] = (resTypeCount[d.resolution_type]||0) + 1; });
+          return h("div", null,
+            // Summary stats
+            h("div",{style:{display:"flex",flexWrap:"wrap",gap:10,marginBottom:16}},
+              h("div",{style:{background:"#141414",borderRadius:6,padding:"10px 14px",borderTop:"3px solid #ef4444"}},
+                h("div",{style:{fontSize:20,fontWeight:500,color:"#ef4444"}}, damageRpts.length),
+                h("div",{style:{fontSize:10,color:"#555",marginTop:3,letterSpacing:".06em"}}, "TOTAL REPORTS")
+              ),
+              h("div",{style:{background:"#141414",borderRadius:6,padding:"10px 14px",borderTop:"3px solid #f59e0b"}},
+                h("div",{style:{fontSize:20,fontWeight:500,color:"#f59e0b"}}, unresolved.length),
+                h("div",{style:{fontSize:10,color:"#555",marginTop:3,letterSpacing:".06em"}}, "UNRESOLVED")
+              ),
+              h("div",{style:{background:"#141414",borderRadius:6,padding:"10px 14px",borderTop:"3px solid #22c55e"}},
+                h("div",{style:{fontSize:20,fontWeight:500,color:"#22c55e"}}, resolved.length),
+                h("div",{style:{fontSize:10,color:"#555",marginTop:3,letterSpacing:".06em"}}, "RESOLVED")
+              ),
+              Object.keys(resTypeCount).length > 0 && h("div",{style:{background:"#141414",borderRadius:6,padding:"10px 14px",flex:1,minWidth:180}},
+                h("div",{style:{fontSize:10,color:"#555",marginBottom:6,letterSpacing:".06em"}}, "RESOLUTION BREAKDOWN"),
+                h("div",{style:{display:"flex",flexWrap:"wrap",gap:4}},
+                  Object.entries(resTypeCount).sort((a,b)=>b[1]-a[1]).map(([t,n]) =>
+                    h("span",{key:t,style:{fontSize:10,background:(RES_COLORS[t]||"#555")+"20",color:RES_COLORS[t]||"#aaa",padding:"2px 8px",borderRadius:99,border:`1px solid ${(RES_COLORS[t]||"#555")}40`}}, t+": "+n)
+                  )
+                )
+              )
+            ),
+            // Unresolved flagged
+            unresolved.length > 0 && h("div",{style:{marginBottom:16}},
+              h("div",{style:{fontSize:10,color:"#ef4444",marginBottom:8,letterSpacing:".08em"}}, "⚠ UNRESOLVED DAMAGE REPORTS"),
+              unresolved.map(d => h("div",{key:d.id,style:{background:"#1f0a0a",borderRadius:6,border:"1px solid #450a0a",borderLeft:"3px solid #ef4444",padding:"8px 12px",marginBottom:6,display:"flex",alignItems:"center",justifyContent:"space-between"}},
+                h("div",null,
+                  h("span",{style:{color:AM,fontWeight:500,fontSize:12}}, "#"+(d.job_id||"—")+" "),
+                  h("span",{style:{color:"#ccc",fontSize:13}}, d.part_name),
+                  h("span",{style:{fontSize:11,color:"#555",marginLeft:8}}, d.dept)
+                ),
+                h("span",{style:{fontSize:10,color:"#f87171",background:"#2e1a1a",padding:"2px 8px",borderRadius:99}}, d.status.toUpperCase())
+              ))
+            ),
+            // Resolved table
+            resolved.length > 0 && h("div",null,
+              h("div",{style:{fontSize:10,color:"#555",marginBottom:8,letterSpacing:".08em"}}, "RESOLVED REPORTS"),
+              h("div",{style:{background:"#0d0d0d",borderRadius:8,border:"1px solid #1a1a1a",overflow:"auto"}},
+                h("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:11}},
+                  h("thead",null,
+                    h("tr",{style:{borderBottom:"1px solid #1a1a1a"}},
+                      ["JOB","PART","DEPT","RESOLUTION","NOTES","RESOLVED BY","DATE"].map(col =>
+                        h("th",{key:col,style:{padding:"8px 12px",color:"#444",fontWeight:500,letterSpacing:".06em",textAlign:"left",whiteSpace:"nowrap"}}, col)
+                      )
+                    )
+                  ),
+                  h("tbody",null,
+                    resolved.map(d => {
+                      const rc = RES_COLORS[d.resolution_type] || "#6b7280";
+                      return h("tr",{key:d.id,style:{borderBottom:"1px solid #111"}},
+                        h("td",{style:{padding:"8px 12px",color:AM}}, "#"+(d.job_id||"—")),
+                        h("td",{style:{padding:"8px 12px",color:"#ccc"}}, d.part_name),
+                        h("td",{style:{padding:"8px 12px",color:"#555"}}, d.dept),
+                        h("td",{style:{padding:"8px 12px"}}, h("span",{style:{fontSize:10,background:rc+"20",color:rc,padding:"2px 8px",borderRadius:99,border:`1px solid ${rc}40`,whiteSpace:"nowrap"}}, d.resolution_type||"—")),
+                        h("td",{style:{padding:"8px 12px",color:"#666",fontStyle:"italic",maxWidth:200}}, d.resolution_notes||"—"),
+                        h("td",{style:{padding:"8px 12px",color:"#555"}}, d.resolved_by||"—"),
+                        h("td",{style:{padding:"8px 12px",color:"#444",whiteSpace:"nowrap"}}, d.resolved_at ? fmtD(d.resolved_at) : "—")
+                      );
+                    })
+                  )
+                )
+              )
+            )
+          );
+        })(),
+
         // ── Text report ───────────────────────────────────────────────
         h(Divider, {label:"WEEKLY TEXT REPORT"}),
         h("div",{style:{marginBottom:12,fontSize:12,color:"#444"}}, "Plain-text weekly summary — paste into a message or email."),
@@ -1622,7 +1750,41 @@ function App() {
     ),
 
     // Toast
-    toast && h("div",{className:"toast"}, toast)
+    toast && h("div",{className:"toast"}, toast),
+
+    // Resolve damage modal
+    resolveModal && h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200}},
+      h("div",{style:{background:"#141414",border:"1px solid #333",borderRadius:12,padding:24,width:480,maxWidth:"calc(100vw - 48px)"}},
+        h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16,paddingBottom:12,borderBottom:"1px solid #222"}},
+          h("div",null,
+            h("div",{style:{fontSize:14,fontWeight:500,color:"#e5e5e5"}}, "Resolve — "+resolveModal.part_name),
+            resolveModal.job_id && h("div",{style:{fontSize:11,color:"#555",marginTop:3}}, "Job #"+resolveModal.job_id+
+              (resolveModal.dept ? "  ·  "+resolveModal.dept : ""))
+          ),
+          h("button",{onClick:()=>setResolveModal(null),style:{padding:"4px 10px",fontSize:12}}, "✕")
+        ),
+        h("div",{style:{marginBottom:14}},
+          h("div",{style:{fontSize:10,color:"#555",letterSpacing:".08em",marginBottom:8}}, "RESOLUTION TYPE"),
+          h("div",{style:{display:"flex",flexWrap:"wrap",gap:8}},
+            RESOLUTION_TYPES_WEB.map(t =>
+              h("button",{key:t,onClick:()=>setResType(t),style:{fontSize:11,padding:"6px 14px",background:resType===t?AM:"transparent",color:resType===t?"#1a0900":"#666",borderColor:resType===t?AM:"#1e1e1e",fontWeight:resType===t?500:400}}, t)
+            )
+          )
+        ),
+        h("div",{style:{marginBottom:14}},
+          h("div",{style:{fontSize:10,color:"#555",letterSpacing:".08em",marginBottom:6}}, "NOTES (OPTIONAL)"),
+          h("textarea",{value:resNotes,onChange:e=>setResNotes(e.target.value),placeholder:"Additional details...",rows:3,style:{...IS,fontSize:12}})
+        ),
+        h("div",{style:{marginBottom:20}},
+          h("div",{style:{fontSize:10,color:"#555",letterSpacing:".08em",marginBottom:6}}, "RESOLVED BY"),
+          h("input",{type:"text",value:resBy,onChange:e=>setResBy(e.target.value),placeholder:"Supervisor name",style:IS})
+        ),
+        h("div",{style:{display:"flex",gap:10}},
+          h("button",{className:"bp",onClick:submitResolution,disabled:resolving,style:{opacity:resolving?0.5:1}}, resolving?"saving…":"save resolution"),
+          h("button",{onClick:()=>setResolveModal(null)}, "cancel")
+        )
+      )
+    )
   );
 }
 

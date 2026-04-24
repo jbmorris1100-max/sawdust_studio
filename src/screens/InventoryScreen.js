@@ -90,6 +90,14 @@ const DamageItem = ({ item, onStatusChange }) => (
         </Text>
         {item.notes ? <Text style={styles.cardNotes}>{item.notes}</Text> : null}
         <Text style={styles.cardMeta}>{formatDate(item.created_at)}</Text>
+        {item.resolution_type ? (
+          <View style={styles.resolutionBadge}>
+            <Text style={styles.resolutionBadgeText}>{item.resolution_type}</Text>
+            {item.resolution_notes ? (
+              <Text style={styles.resolutionNotes}>{item.resolution_notes}</Text>
+            ) : null}
+          </View>
+        ) : null}
       </View>
       <StatusPill status={item.status} />
     </View>
@@ -124,6 +132,7 @@ export default function InventoryScreen({ route }) {
   const [damage,    setDamage]      = useState([]);
   const [loading,   setLoading]     = useState(true);
   const [saving,    setSaving]      = useState(false);
+  const [toast,     setToast]       = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
 
   const [nItem,  setNItem]  = useState('');
@@ -162,6 +171,11 @@ export default function InventoryScreen({ route }) {
     setDPart(''); setDJob(''); setDNotes('');
   };
 
+  const showToast = (msg, isError = false) => {
+    setToast({ msg, isError });
+    setTimeout(() => setToast(null), 2500);
+  };
+
   const handleSubmit = async () => {
     if (activeTab === 'needs') {
       if (!nItem.trim()) return;
@@ -172,17 +186,45 @@ export default function InventoryScreen({ route }) {
         .insert({ item: nItem.trim(), dept: userDept, job_id: nJob.trim() || null, qty: isNaN(qty) || qty < 1 ? 1 : qty, status: 'pending' })
         .select().single();
       if (!error && data) setNeeds((prev) => [data, ...prev]);
+      setSaving(false);
+      setModalVisible(false);
     } else {
       if (!dPart.trim()) return;
-      setSaving(true);
-      const { data, error } = await supabase
-        .from('damage_reports')
-        .insert({ part_name: dPart.trim(), dept: userDept, job_id: dJob.trim() || null, notes: dNotes.trim() || null, status: 'open' })
-        .select().single();
-      if (!error && data) setDamage((prev) => [data, ...prev]);
+      const tempId = `opt-${Date.now()}`;
+      const optimistic = {
+        id: tempId,
+        part_name: dPart.trim(),
+        dept: userDept,
+        job_id: dJob.trim() || null,
+        notes: dNotes.trim() || null,
+        status: 'open',
+        created_at: new Date().toISOString(),
+      };
+      setDamage((prev) => [optimistic, ...prev]);
+      setModalVisible(false);
+      resetForms();
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), 5000)
+      );
+      try {
+        const { data, error } = await Promise.race([
+          supabase.from('damage_reports').insert({
+            part_name: optimistic.part_name,
+            dept: optimistic.dept,
+            job_id: optimistic.job_id,
+            notes: optimistic.notes,
+            status: 'open',
+          }).select().single(),
+          timeout,
+        ]);
+        if (error) throw error;
+        setDamage((prev) => prev.map((d) => d.id === tempId ? data : d));
+        showToast('Report submitted');
+      } catch (err) {
+        setDamage((prev) => prev.filter((d) => d.id !== tempId));
+        showToast(err.message === 'timeout' ? 'Timed out — please retry' : 'Submission failed', true);
+      }
     }
-    setSaving(false);
-    setModalVisible(false);
   };
 
   const canSubmit = activeTab === 'needs' ? nItem.trim().length > 0 : dPart.trim().length > 0;
@@ -264,6 +306,13 @@ export default function InventoryScreen({ route }) {
       >
         <Ionicons name="add" size={28} color="#000" />
       </TouchableOpacity>
+
+      {/* Toast */}
+      {toast ? (
+        <View style={[styles.toastView, toast.isError && styles.toastViewError]}>
+          <Text style={[styles.toastText, toast.isError && styles.toastTextError]}>{toast.msg}</Text>
+        </View>
+      ) : null}
 
       {/* Log Modal */}
       <Modal visible={modalVisible} animationType="slide" transparent>
@@ -525,4 +574,33 @@ const styles = StyleSheet.create({
   },
   submitBtnDisabled: { opacity: 0.35 },
   submitBtnText: { color: '#000', fontSize: 16, fontWeight: '700' },
+
+  // Resolution badge (crew view of resolved damage)
+  resolutionBadge: {
+    marginTop: 8,
+    backgroundColor: '#0a1f10',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#14532d',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  resolutionBadgeText: { fontSize: 11, fontWeight: '700', color: '#22c55e', letterSpacing: 0.3 },
+  resolutionNotes:     { fontSize: 12, color: '#4ade80', marginTop: 4, fontStyle: 'italic' },
+
+  // Toast
+  toastView: {
+    position: 'absolute',
+    bottom: 100,
+    left: 20,
+    right: 20,
+    backgroundColor: '#22c55e',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+  },
+  toastViewError:  { backgroundColor: '#ef4444' },
+  toastText:       { color: '#0a1f10', fontWeight: '700', fontSize: 14 },
+  toastTextError:  { color: '#fff' },
 });

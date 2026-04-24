@@ -76,6 +76,11 @@ const BOTTLENECK_OPTIONS = [
   'QC rework', 'Install issue', 'Supply shortage', 'Weather',
 ];
 
+const RESOLUTION_TYPES = [
+  'Rework Order', 'Material Ordered', 'Repaired On Site',
+  'Credited to Client', 'Written Off', 'Other',
+];
+
 const MODE_INFO = {
   observation: { label: 'Observation',  desc: 'Silently logs data. No suggestions.',       color: '#22c55e' },
   assist:      { label: 'Assist',       desc: 'Surfaces insights. You decide.',             color: '#f59e0b' },
@@ -585,8 +590,34 @@ function NeedsTab({ allNeeds, filter, setFilter, onStatusChange }) {
 }
 
 // ── Damage Tab ────────────────────────────────────────────────
-function DamageTab({ allDamage, filter, setFilter, onStatusChange }) {
+function DamageTab({ allDamage, filter, setFilter, onStatusChange, onResolve, userName }) {
   const filtered = filter === 'all' ? allDamage : allDamage.filter((d) => d.status === filter);
+  const [resolveItem, setResolveItem] = useState(null);
+  const [resType,     setResType]     = useState('');
+  const [resNotes,    setResNotes]    = useState('');
+  const [resBy,       setResBy]       = useState('');
+  const [resolving,   setResolving]   = useState(false);
+
+  const openResolve = (item) => {
+    setResolveItem(item);
+    setResType('Rework Order');
+    setResNotes('');
+    setResBy(userName || '');
+  };
+
+  const submitResolve = async () => {
+    if (!resType || !resolveItem || resolving) return;
+    setResolving(true);
+    await onResolve(resolveItem.id, {
+      resolution_type:  resType,
+      resolution_notes: resNotes.trim() || null,
+      resolved_by:      resBy.trim() || null,
+      resolved_at:      new Date().toISOString(),
+      status:           'resolved',
+    });
+    setResolving(false);
+    setResolveItem(null);
+  };
 
   return (
     <View style={styles.flex}>
@@ -629,33 +660,110 @@ function DamageTab({ allDamage, filter, setFilter, onStatusChange }) {
                     <Text style={styles.cardNotes}>{d.notes}</Text>
                   ) : null}
                   <Text style={styles.cardDate}>{formatDate(d.created_at)}</Text>
+                  {d.resolution_type ? (
+                    <View style={{ marginTop: 8, backgroundColor: C.successBg, borderRadius: 8, borderWidth: 1, borderColor: C.successBorder, padding: 8 }}>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: C.success, marginBottom: 2 }}>{d.resolution_type}</Text>
+                      {d.resolution_notes ? (
+                        <Text style={{ fontSize: 12, color: '#4ade80', fontStyle: 'italic' }}>{d.resolution_notes}</Text>
+                      ) : null}
+                      {d.resolved_by ? (
+                        <Text style={{ fontSize: 11, color: C.success, marginTop: 2 }}>Resolved by {d.resolved_by}</Text>
+                      ) : null}
+                    </View>
+                  ) : null}
                 </View>
                 <StatusPill status={d.status} />
               </View>
-              {(d.status === 'open' || d.status === 'reviewed') && (
-                <View style={styles.cardActionRow}>
-                  {d.status === 'open' && (
-                    <TouchableOpacity
-                      style={[styles.actionBtn, { borderColor: C.blueBorder }]}
-                      onPress={() => onStatusChange(d.id, 'reviewed')}
-                    >
-                      <Text style={[styles.actionBtnText, { color: C.blue }]}>reviewed</Text>
-                    </TouchableOpacity>
-                  )}
-                  {d.status === 'reviewed' && (
-                    <TouchableOpacity
-                      style={[styles.actionBtn, { borderColor: C.successBorder }]}
-                      onPress={() => onStatusChange(d.id, 'resolved')}
-                    >
-                      <Text style={[styles.actionBtnText, { color: C.success }]}>resolved</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              )}
+              <View style={styles.cardActionRow}>
+                {d.status === 'open' && (
+                  <TouchableOpacity
+                    style={[styles.actionBtn, { borderColor: C.blueBorder }]}
+                    onPress={() => onStatusChange(d.id, 'reviewed')}
+                  >
+                    <Text style={[styles.actionBtnText, { color: C.blue }]}>reviewed</Text>
+                  </TouchableOpacity>
+                )}
+                {d.status !== 'resolved' && (
+                  <TouchableOpacity
+                    style={[styles.actionBtn, { borderColor: C.successBorder }]}
+                    onPress={() => openResolve(d)}
+                  >
+                    <Text style={[styles.actionBtnText, { color: C.success }]}>Resolve</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
           );
         }}
       />
+
+      {resolveItem ? (
+        <Modal visible animationType="slide" transparent>
+          <KeyboardAvoidingView
+            style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.75)' }}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          >
+            <View style={{ backgroundColor: C.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40, maxHeight: '90%' }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, borderBottomWidth: 1, borderBottomColor: C.border, paddingBottom: 14 }}>
+                <Text style={{ fontSize: 17, fontWeight: '800', color: C.text }}>Resolve Report</Text>
+                <TouchableOpacity onPress={() => setResolveItem(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Ionicons name="close" size={22} color={C.muted} />
+                </TouchableOpacity>
+              </View>
+              <Text style={{ fontSize: 13, color: C.muted, marginBottom: 16 }} numberOfLines={1}>
+                {resolveItem.part_name}{resolveItem.job_id ? ` · Job #${resolveItem.job_id}` : ''}
+              </Text>
+              <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                <Text style={{ fontSize: 10, fontWeight: '700', color: C.muted, letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 8 }}>Resolution Type</Text>
+                <View style={styles.bottleneckGrid}>
+                  {RESOLUTION_TYPES.map((t) => {
+                    const sel = resType === t;
+                    return (
+                      <TouchableOpacity
+                        key={t}
+                        style={[styles.bChip, sel && styles.bChipActive]}
+                        onPress={() => setResType(t)}
+                        activeOpacity={0.75}
+                      >
+                        <Text style={[styles.bChipText, sel && styles.bChipTextActive]}>{t}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <Text style={{ fontSize: 10, fontWeight: '700', color: C.muted, letterSpacing: 0.8, textTransform: 'uppercase', marginTop: 16, marginBottom: 8 }}>Notes (Optional)</Text>
+                <TextInput
+                  placeholder="Additional details..."
+                  placeholderTextColor={C.muted}
+                  value={resNotes}
+                  onChangeText={setResNotes}
+                  multiline
+                  numberOfLines={3}
+                  style={[styles.aiInput, { minHeight: 70, textAlignVertical: 'top', paddingTop: 10 }]}
+                />
+                <Text style={{ fontSize: 10, fontWeight: '700', color: C.muted, letterSpacing: 0.8, textTransform: 'uppercase', marginTop: 14, marginBottom: 8 }}>Resolved By</Text>
+                <TextInput
+                  style={styles.aiInput}
+                  value={resBy}
+                  onChangeText={setResBy}
+                  placeholder="Supervisor name"
+                  placeholderTextColor={C.muted}
+                />
+                <TouchableOpacity
+                  style={[styles.aiSubmitBtn, { marginTop: 20 }, (!resType || resolving) && { opacity: 0.4 }]}
+                  onPress={submitResolve}
+                  disabled={!resType || resolving}
+                  activeOpacity={0.8}
+                >
+                  {resolving
+                    ? <ActivityIndicator size="small" color="#000" />
+                    : <Text style={styles.aiSubmitBtnText}>Save Resolution</Text>
+                  }
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+      ) : null}
     </View>
   );
 }
@@ -1086,6 +1194,11 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
     await supabase.from('damage_reports').update({ status }).eq('id', id);
   };
 
+  const updateDamageResolution = async (id, fields) => {
+    setDamage((prev) => prev.map((d) => d.id === id ? { ...d, ...fields } : d));
+    await supabase.from('damage_reports').update(fields).eq('id', id);
+  };
+
   const dismissMessage = useCallback((id) => {
     setDismissedMsgIds((prev) => {
       const next = [...prev, id];
@@ -1180,6 +1293,8 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
                 filter={damageFilter}
                 setFilter={setDamageFilter}
                 onStatusChange={updateDamageStatus}
+                onResolve={updateDamageResolution}
+                userName={userName}
               />
             )}
             {activeTab === 'ai' && (
