@@ -275,53 +275,60 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      // Expire supervisor sessions older than 8 hours so stale sessions can't block new logins
-      const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
-      supabase
-        .from('supervisor_sessions')
-        .update({ is_active: false, logged_out_at: new Date().toISOString() })
-        .eq('is_active', true)
-        .lt('logged_in_at', eightHoursAgo)
-        .catch(console.warn);
+      try {
+        // Expire supervisor sessions older than 8 hours so stale sessions can't block new logins
+        try {
+          const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
+          await supabase
+            .from('supervisor_sessions')
+            .update({ is_active: false, logged_out_at: new Date().toISOString() })
+            .eq('is_active', true)
+            .lt('logged_in_at', eightHoursAgo);
+        } catch (e) { /* table may not exist yet */ }
 
-      const [name, dept, storedRole, storedVersion] = await Promise.all([
-        AsyncStorage.getItem(STORAGE.NAME),
-        AsyncStorage.getItem(STORAGE.DEPT),
-        AsyncStorage.getItem(STORAGE.ROLE),
-        AsyncStorage.getItem(STORAGE.VERSION),
-      ]);
-
-      // First-time v2 migration: force role picker for existing users who never saw it
-      if (parseInt(storedVersion ?? '0', 10) < 2) {
-        await Promise.all([
-          AsyncStorage.removeItem(STORAGE.NAME),
-          AsyncStorage.removeItem(STORAGE.DEPT),
-          AsyncStorage.removeItem(STORAGE.ROLE),
-          AsyncStorage.setItem(STORAGE.VERSION, '2'),
+        const [name, dept, storedRole, storedVersion] = await Promise.all([
+          AsyncStorage.getItem(STORAGE.NAME),
+          AsyncStorage.getItem(STORAGE.DEPT),
+          AsyncStorage.getItem(STORAGE.ROLE),
+          AsyncStorage.getItem(STORAGE.VERSION),
         ]);
-        setRole('');
-        return;
-      }
 
-      if (storedRole === 'supervisor' && name) {
-        setRole('supervisor');
-        setUserName(name);
-        setUserDept('Management');
-        registerForPushNotifications(name, 'Supervisor').catch(console.warn);
-      } else if (!storedRole && name && dept) {
-        // Legacy users (pre-role-system): assume crew, backfill role
-        await AsyncStorage.setItem(STORAGE.ROLE, 'crew');
-        setRole('crew');
-        setUserName(name);
-        setUserDept(dept);
-        registerForPushNotifications(name, dept).catch(console.warn);
-      } else if (storedRole === 'crew' && name && dept) {
-        setRole('crew');
-        setUserName(name);
-        setUserDept(dept);
-        registerForPushNotifications(name, dept).catch(console.warn);
-      } else {
-        setRole(''); // needs role setup
+        // First-time v2 migration: force role picker for existing users who never saw it
+        if (parseInt(storedVersion ?? '0', 10) < 2) {
+          await Promise.all([
+            AsyncStorage.removeItem(STORAGE.NAME),
+            AsyncStorage.removeItem(STORAGE.DEPT),
+            AsyncStorage.removeItem(STORAGE.ROLE),
+            AsyncStorage.setItem(STORAGE.VERSION, '2'),
+          ]);
+          setRole('');
+          return;
+        }
+
+        if (storedRole === 'supervisor' && name) {
+          setRole('supervisor');
+          setUserName(name);
+          setUserDept('Management');
+          registerForPushNotifications(name, 'Supervisor').catch(console.warn);
+        } else if (!storedRole && name && dept) {
+          // Legacy users (pre-role-system): assume crew, backfill role
+          await AsyncStorage.setItem(STORAGE.ROLE, 'crew');
+          setRole('crew');
+          setUserName(name);
+          setUserDept(dept);
+          registerForPushNotifications(name, dept).catch(console.warn);
+        } else if (storedRole === 'crew' && name && dept) {
+          setRole('crew');
+          setUserName(name);
+          setUserDept(dept);
+          registerForPushNotifications(name, dept).catch(console.warn);
+        } else {
+          setRole('');
+        }
+      } catch (e) {
+        console.error('[App] startup error:', e);
+      } finally {
+        setRole(prev => prev === null ? '' : prev);
       }
     })();
   }, []);
