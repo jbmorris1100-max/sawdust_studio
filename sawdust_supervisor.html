@@ -636,12 +636,12 @@ function App() {
     setSupLoginLoading(true);
     setSupLoginError("");
     const deviceId = getWebDeviceId();
-    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
     const { data: activeSessions } = await sb.from("supervisor_sessions")
       .select("name, device_id").eq("is_active", true).gte("logged_in_at", cutoff);
-    const conflict = activeSessions?.find(s => s.device_id !== deviceId);
+    const conflict = activeSessions?.find(s => s.name.toLowerCase() !== name.toLowerCase());
     if (conflict) {
-      setSupLoginError("Supervisor already logged in as " + conflict.name + ". Only one session is allowed at a time.");
+      setSupLoginError("Supervisor already logged in as " + conflict.name + ". Contact them to hand off access.");
       setSupLoginLoading(false);
       return;
     }

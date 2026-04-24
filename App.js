@@ -276,9 +276,9 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        // Expire supervisor sessions older than 8 hours so stale sessions can't block new logins
+        // Expire supervisor sessions older than 12 hours so stale sessions can't block new logins
         try {
-          const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
+          const eightHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
           await supabase
             .from('supervisor_sessions')
             .update({ is_active: false, logged_out_at: new Date().toISOString() })
@@ -361,11 +361,11 @@ export default function App() {
         .eq('is_active', true)
         .gte('logged_in_at', cutoff);
 
-      const conflict = activeSessions?.find((s) => s.device_id !== deviceId);
+      const conflict = activeSessions?.find((s) => s.name.toLowerCase() !== name.toLowerCase());
       if (conflict) {
         Alert.alert(
           'Supervisor Already Live',
-          `${conflict.name} is currently logged in as supervisor. Contact them to hand off access.`
+          `Supervisor already logged in as ${conflict.name}. Contact them to hand off access.`
         );
         return;
       }
