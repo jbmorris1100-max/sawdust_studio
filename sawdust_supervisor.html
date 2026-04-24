@@ -166,14 +166,6 @@ function App() {
 
   // ── Supabase: initial fetch + real-time subscriptions ─────────────────────
   useEffect(() => {
-    // Expire stale supervisor sessions (older than 4h) before checking for conflicts
-    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
-    sb.from("supervisor_sessions")
-      .update({ is_active: false, logged_out_at: new Date().toISOString() })
-      .eq("is_active", true)
-      .lt("logged_in_at", fourHoursAgo)
-      .then(() => {}).catch(() => {});
-
     // Fetch all tables on mount
     Promise.all([
       sb.from("inventory_needs").select("*").order("created_at", { ascending: false }),
@@ -421,17 +413,19 @@ function App() {
 
     // AI auto-capture — log this QC check as a learning data point
     const _now = new Date();
-    sb.from("ai_learning_log").insert({
-      job_id:          qcJob.jobId,
-      job_type:        qcJob.type,
-      stage:           qcType,
-      dept:            "QC",
-      concurrent_jobs: jobs.filter(j => j.status === "active").length,
-      day_of_week:     _now.getDay(),
-      hour_of_day:     _now.getHours(),
-      had_qc_fail:     result === "fail",
-      date:            today(),
-    }).catch(() => {});
+    try {
+      await sb.from("ai_learning_log").insert({
+        job_id:          qcJob.jobId,
+        job_type:        qcJob.type,
+        stage:           qcType,
+        dept:            "QC",
+        concurrent_jobs: jobs.filter(j => j.status === "active").length,
+        day_of_week:     _now.getDay(),
+        hour_of_day:     _now.getHours(),
+        had_qc_fail:     result === "fail",
+        date:            today(),
+      });
+    } catch (e) {}
 
     setView("dashboard");
   };
@@ -644,17 +638,17 @@ function App() {
     setSupLoginLoading(true);
     setSupLoginError("");
     const deviceId = getWebDeviceId();
-    const cutoff = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const { data: activeSessions } = await sb.from("supervisor_sessions")
       .select("name, device_id").eq("is_active", true).gte("logged_in_at", cutoff);
-    const conflict = activeSessions?.find(s => s.name.toLowerCase() !== name.toLowerCase());
+    const conflict = activeSessions?.find(s => s.device_id !== deviceId);
     if (conflict) {
-      setSupLoginError("Supervisor already logged in as " + conflict.name + ". Contact them to hand off access.");
+      setSupLoginError("Supervisor already logged in as " + conflict.name + ". Only one session is allowed at a time.");
       setSupLoginLoading(false);
       return;
     }
     await sb.from("supervisor_sessions").insert({ name, device_id: deviceId, is_active: true });
-    await sb.from("login_log").insert({ worker_name: name, dept: "Management", role: "supervisor", device_id: deviceId, app_version: "web" }).catch(() => {});
+    try { await sb.from("login_log").insert({ worker_name: name, dept: "Management", role: "supervisor", device_id: deviceId, app_version: "web" }); } catch (e) {}
     localStorage.setItem("supervisor_name", name);
     setSupervisorName(name);
     setSupLoginName("");
@@ -664,21 +658,14 @@ function App() {
   const supervisorLogout = async () => {
     if (!confirm("Sign out of the supervisor dashboard?")) return;
     const deviceId = getWebDeviceId();
-    await sb.from("supervisor_sessions")
-      .update({ is_active: false, logged_out_at: new Date().toISOString() })
-      .eq("device_id", deviceId).eq("is_active", true).catch(() => {});
+    try {
+      await sb.from("supervisor_sessions")
+        .update({ is_active: false, logged_out_at: new Date().toISOString() })
+        .eq("device_id", deviceId).eq("is_active", true);
+    } catch (e) {}
     localStorage.removeItem("supervisor_name");
     setSupervisorName("");
     setSupLoginName("");
-  };
-
-  const clearAllSessions = async () => {
-    setSupLoginLoading(true);
-    await sb.from("supervisor_sessions")
-      .update({ is_active: false, logged_out_at: new Date().toISOString() })
-      .eq("is_active", true).catch(() => {});
-    setSupLoginError("");
-    setSupLoginLoading(false);
   };
 
   // ── Login Audit ───────────────────────────────────────────────────────────
@@ -835,14 +822,7 @@ function App() {
           autoFocus:true,
           style:{fontSize:14,background:"#1a1a1a",border:"1px solid #2a2a2a",borderRadius:6,color:"#e5e5e5",padding:"10px 14px",width:"100%",outline:"none",marginBottom:10,fontFamily:"'DM Mono','Courier New',monospace"},
         }),
-        supLoginError && h("div",{style:{fontSize:12,color:"#f87171",marginBottom:4,padding:"8px 12px",background:"#2e1a1a",borderRadius:6,border:"1px solid #7f1d1d"}}, supLoginError),
-        supLoginError && h("div",{style:{marginBottom:10,textAlign:"right"}},
-          h("button",{
-            onClick:clearAllSessions,
-            disabled:supLoginLoading,
-            style:{fontSize:11,color:"#f87171",background:"none",border:"none",cursor:"pointer",textDecoration:"underline",padding:0,opacity:supLoginLoading?0.4:1},
-          }, supLoginLoading?"clearing…":"Clear stuck session")
-        ),
+        supLoginError && h("div",{style:{fontSize:12,color:"#f87171",marginBottom:10,padding:"8px 12px",background:"#2e1a1a",borderRadius:6,border:"1px solid #7f1d1d"}}, supLoginError),
         h("button",{
           className:"bp",
           onClick:supervisorLogin,

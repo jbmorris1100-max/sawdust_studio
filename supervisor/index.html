@@ -413,17 +413,19 @@ function App() {
 
     // AI auto-capture — log this QC check as a learning data point
     const _now = new Date();
-    sb.from("ai_learning_log").insert({
-      job_id:          qcJob.jobId,
-      job_type:        qcJob.type,
-      stage:           qcType,
-      dept:            "QC",
-      concurrent_jobs: jobs.filter(j => j.status === "active").length,
-      day_of_week:     _now.getDay(),
-      hour_of_day:     _now.getHours(),
-      had_qc_fail:     result === "fail",
-      date:            today(),
-    }).catch(() => {});
+    try {
+      await sb.from("ai_learning_log").insert({
+        job_id:          qcJob.jobId,
+        job_type:        qcJob.type,
+        stage:           qcType,
+        dept:            "QC",
+        concurrent_jobs: jobs.filter(j => j.status === "active").length,
+        day_of_week:     _now.getDay(),
+        hour_of_day:     _now.getHours(),
+        had_qc_fail:     result === "fail",
+        date:            today(),
+      });
+    } catch (e) {}
 
     setView("dashboard");
   };
@@ -646,7 +648,7 @@ function App() {
       return;
     }
     await sb.from("supervisor_sessions").insert({ name, device_id: deviceId, is_active: true });
-    await sb.from("login_log").insert({ worker_name: name, dept: "Management", role: "supervisor", device_id: deviceId, app_version: "web" }).catch(() => {});
+    try { await sb.from("login_log").insert({ worker_name: name, dept: "Management", role: "supervisor", device_id: deviceId, app_version: "web" }); } catch (e) {}
     localStorage.setItem("supervisor_name", name);
     setSupervisorName(name);
     setSupLoginName("");
@@ -656,9 +658,11 @@ function App() {
   const supervisorLogout = async () => {
     if (!confirm("Sign out of the supervisor dashboard?")) return;
     const deviceId = getWebDeviceId();
-    await sb.from("supervisor_sessions")
-      .update({ is_active: false, logged_out_at: new Date().toISOString() })
-      .eq("device_id", deviceId).eq("is_active", true).catch(() => {});
+    try {
+      await sb.from("supervisor_sessions")
+        .update({ is_active: false, logged_out_at: new Date().toISOString() })
+        .eq("device_id", deviceId).eq("is_active", true);
+    } catch (e) {}
     localStorage.removeItem("supervisor_name");
     setSupervisorName("");
     setSupLoginName("");
