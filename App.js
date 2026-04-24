@@ -336,8 +336,8 @@ export default function App() {
     const deviceId = await getDeviceId();
 
     if (selectedRole === 'supervisor' && name) {
-      // Check for an existing active session from a different device (24h window)
-      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      // Check for an existing active session from a different device (12h window)
+      const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
       const { data: activeSessions } = await supabase
         .from('supervisor_sessions')
         .select('name, device_id')
@@ -347,8 +347,8 @@ export default function App() {
       const conflict = activeSessions?.find((s) => s.device_id !== deviceId);
       if (conflict) {
         Alert.alert(
-          'Supervisor Already Logged In',
-          `A supervisor is already logged in as ${conflict.name}. Only one supervisor session is allowed at a time.`
+          'Supervisor Already Live',
+          `${conflict.name} is currently logged in as supervisor. Contact them to hand off access.`
         );
         return;
       }

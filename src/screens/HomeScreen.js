@@ -26,6 +26,7 @@ const CLOCK_ID_KEY     = '@sawdust_clock_record_id';
 const BREAK_START_KEY  = '@sawdust_break_start';
 const BREAK_MINS_KEY   = '@sawdust_break_minutes';
 const LAST_READ_KEY    = '@sawdust_last_read';
+const DEVICE_ID_KEY    = '@sawdust_device_id';
 
 const DEPARTMENTS = [
   'Cutting',
@@ -70,6 +71,7 @@ export default function HomeScreen({ navigation, route }) {
   const [userName, setUserName]             = useState('');
   const [userDept, setUserDept]             = useState('');
   const [setupVisible, setSetupVisible]     = useState(false);
+  const [deptOnlyMode, setDeptOnlyMode]     = useState(false);
   const [draftName, setDraftName]           = useState('');
   const [draftDept, setDraftDept]           = useState('');
   const [openInventory, setOpenInventory]   = useState(0);
@@ -209,6 +211,23 @@ export default function HomeScreen({ navigation, route }) {
 
   // ── Setup ─────────────────────────────────────────────────
   const handleSaveSetup = async () => {
+    if (deptOnlyMode) {
+      if (!draftDept) return;
+      await AsyncStorage.setItem(STORAGE_KEY_DEPT, draftDept);
+      const deviceId = (await AsyncStorage.getItem(DEVICE_ID_KEY)) || 'unknown';
+      // Update dept on device_tokens so supervisor sees the change
+      supabase.from('device_tokens').update({ dept: draftDept }).eq('id', deviceId).catch(() => {});
+      // Audit log
+      supabase.from('login_log').insert({
+        worker_name: userName, dept: draftDept, role: 'dept_change',
+        device_id: deviceId, app_version: '2',
+      }).catch(() => {});
+      setUserDept(draftDept);
+      setSetupVisible(false);
+      setDeptOnlyMode(false);
+      fetchAlerts(draftDept);
+      return;
+    }
     if (!draftName.trim() || !draftDept) return;
     await Promise.all([
       AsyncStorage.setItem(STORAGE_KEY_NAME, draftName.trim()),
@@ -223,12 +242,20 @@ export default function HomeScreen({ navigation, route }) {
   const handleSwitchRole = () => {
     Alert.alert('Settings', null, [
       {
+        text: 'Switch Department',
+        onPress: () => {
+          setDeptOnlyMode(true);
+          setDraftDept(userDept);
+          setSetupVisible(true);
+        },
+      },
+      {
         text: 'Switch Role',
         style: 'destructive',
         onPress: async () => {
           await Promise.all([
-            AsyncStorage.removeItem('@sawdust_user_name'),
-            AsyncStorage.removeItem('@sawdust_user_dept'),
+            AsyncStorage.removeItem(STORAGE_KEY_NAME),
+            AsyncStorage.removeItem(STORAGE_KEY_DEPT),
             AsyncStorage.removeItem('@sawdust_user_role'),
           ]);
           if (onResetRole) onResetRole();
@@ -541,20 +568,31 @@ export default function HomeScreen({ navigation, route }) {
       </ScrollView>
 
       {/* Setup Modal */}
-      <Modal visible={setupVisible} animationType="slide" transparent>
+      <Modal
+        visible={setupVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => { setSetupVisible(false); setDeptOnlyMode(false); }}
+      >
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Who are you?</Text>
+            <Text style={styles.modalTitle}>
+              {deptOnlyMode ? 'Switch Department' : 'Who are you?'}
+            </Text>
 
-            <Text style={styles.fieldLabel}>Your Name</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. Jake Morris"
-              placeholderTextColor={C.muted}
-              value={draftName}
-              onChangeText={setDraftName}
-              autoFocus
-            />
+            {!deptOnlyMode && (
+              <>
+                <Text style={styles.fieldLabel}>Your Name</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. Jake Morris"
+                  placeholderTextColor={C.muted}
+                  value={draftName}
+                  onChangeText={setDraftName}
+                  autoFocus
+                />
+              </>
+            )}
 
             <Text style={styles.fieldLabel}>Department</Text>
             <FlatList
@@ -582,12 +620,26 @@ export default function HomeScreen({ navigation, route }) {
             />
 
             <TouchableOpacity
-              style={[styles.saveBtn, (!draftName.trim() || !draftDept) && styles.saveBtnDisabled]}
+              style={[
+                styles.saveBtn,
+                (deptOnlyMode ? !draftDept : (!draftName.trim() || !draftDept)) && styles.saveBtnDisabled,
+              ]}
               onPress={handleSaveSetup}
-              disabled={!draftName.trim() || !draftDept}
+              disabled={deptOnlyMode ? !draftDept : (!draftName.trim() || !draftDept)}
             >
-              <Text style={styles.saveBtnText}>Let's Go</Text>
+              <Text style={styles.saveBtnText}>
+                {deptOnlyMode ? 'Switch Department' : "Let's Go"}
+              </Text>
             </TouchableOpacity>
+
+            {deptOnlyMode && (
+              <TouchableOpacity
+                style={{ alignItems: 'center', paddingTop: 14 }}
+                onPress={() => { setSetupVisible(false); setDeptOnlyMode(false); }}
+              >
+                <Text style={{ color: C.muted, fontSize: 14 }}>Cancel</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </Modal>

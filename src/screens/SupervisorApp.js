@@ -14,6 +14,8 @@ import {
   Platform,
   Alert,
   Switch,
+  Animated,
+  PanResponder,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
@@ -92,6 +94,45 @@ const FEATURE_LABELS = {
 const formatDate = (iso) =>
   new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
 
+// ── Swipeable row (left-swipe to reveal Delete) ───────────────
+function SwipeableRow({ onDelete, children }) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const DELETE_WIDTH = 72;
+
+  const panResponder = useRef(PanResponder.create({
+    onMoveShouldSetPanResponder: (_, g) =>
+      Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 6,
+    onPanResponderMove: (_, g) => {
+      if (g.dx < 0) translateX.setValue(Math.max(g.dx, -DELETE_WIDTH - 20));
+    },
+    onPanResponderRelease: (_, g) => {
+      if (g.dx < -DELETE_WIDTH / 2) {
+        Animated.spring(translateX, { toValue: -DELETE_WIDTH, useNativeDriver: true }).start();
+      } else {
+        Animated.spring(translateX, { toValue: 0, useNativeDriver: true }).start();
+      }
+    },
+  })).current;
+
+  const handleDelete = () => {
+    Animated.timing(translateX, { toValue: -400, duration: 180, useNativeDriver: true })
+      .start(() => onDelete());
+  };
+
+  return (
+    <View style={{ overflow: 'hidden' }}>
+      <View style={[styles.swipeDeleteBg, { width: DELETE_WIDTH }]}>
+        <TouchableOpacity onPress={handleDelete} style={styles.swipeDeleteBtn}>
+          <Text style={styles.swipeDeleteText}>Delete</Text>
+        </TouchableOpacity>
+      </View>
+      <Animated.View style={{ transform: [{ translateX }] }} {...panResponder.panHandlers}>
+        {children}
+      </Animated.View>
+    </View>
+  );
+}
+
 const formatTime = (iso) =>
   new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -128,7 +169,7 @@ const FilterChips = ({ options, value, onChange }) => (
 );
 
 // ── Overview Tab ──────────────────────────────────────────────
-function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole, todayClockEntries }) {
+function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole, todayClockEntries, dismissedMsgIds, onDismissMsg, onOpenThread }) {
   // Tick every second to keep elapsed times live
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -264,19 +305,31 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
       {recent.length > 0 && (
         <>
           <Text style={[styles.sectionLabel, { marginTop: 20 }]}>RECENT MESSAGES</Text>
-          {recent.map((m) => (
-            <View key={m.id} style={styles.activityRow}>
-              <View style={[styles.activityDot, { backgroundColor: m.sender_name === 'Supervisor' ? C.accent : C.success }]} />
-              <View style={styles.activityBody}>
-                <Text style={styles.activitySender}>
-                  {m.sender_name}
-                  {m.dept ? <Text style={styles.activityDept}> · {m.dept}</Text> : null}
-                </Text>
-                <Text style={styles.activityMsg} numberOfLines={1}>{m.body}</Text>
-              </View>
-              <Text style={styles.activityTime}>{formatTime(m.created_at)}</Text>
-            </View>
-          ))}
+          {recent
+            .filter((m) => !dismissedMsgIds?.includes(m.id))
+            .map((m) => {
+              const thread = threads.find((t) => t.name === m.sender_name);
+              return (
+                <SwipeableRow key={m.id} onDelete={() => onDismissMsg(m.id)}>
+                  <TouchableOpacity
+                    style={styles.activityRow}
+                    onPress={() => thread && onOpenThread({ name: thread.name, dept: thread.dept })}
+                    activeOpacity={0.7}
+                  >
+                    <View style={[styles.activityDot, { backgroundColor: m.sender_name === 'Supervisor' ? C.accent : C.success }]} />
+                    <View style={styles.activityBody}>
+                      <Text style={styles.activitySender}>
+                        {m.sender_name}
+                        {m.dept ? <Text style={styles.activityDept}> · {m.dept}</Text> : null}
+                      </Text>
+                      <Text style={styles.activityMsg} numberOfLines={1}>{m.body}</Text>
+                    </View>
+                    <Text style={styles.activityTime}>{formatTime(m.created_at)}</Text>
+                    <Ionicons name="chevron-forward" size={14} color={C.border} style={{ marginLeft: 2 }} />
+                  </TouchableOpacity>
+                </SwipeableRow>
+              );
+            })}
         </>
       )}
     </ScrollView>
@@ -884,14 +937,7 @@ export default function SupervisorApp({ route, userName: userNameProp, onResetRo
       {
         text: 'Switch Role',
         style: 'destructive',
-        onPress: async () => {
-          await Promise.all([
-            AsyncStorage.removeItem('@sawdust_user_name'),
-            AsyncStorage.removeItem('@sawdust_user_dept'),
-            AsyncStorage.removeItem('@sawdust_user_role'),
-          ]);
-          onResetRole?.();
-        },
+        onPress: () => onResetRole?.(),
       },
     ]);
   };
@@ -908,6 +954,8 @@ export default function SupervisorApp({ route, userName: userNameProp, onResetRo
   const [needsFilter,       setNeedsFilter]       = useState('pending');
   const [damageFilter,      setDamageFilter]      = useState('open');
   const [todayClockEntries, setTodayClockEntries] = useState([]);
+
+  const [dismissedMsgIds, setDismissedMsgIds] = useState([]);
 
   const msgListRef = useRef(null);
   const channels   = useRef([]);
@@ -929,6 +977,9 @@ export default function SupervisorApp({ route, userName: userNameProp, onResetRo
   }, []);
 
   useEffect(() => {
+    AsyncStorage.getItem('@sawdust_dismissed_msgs').then((val) => {
+      if (val) setDismissedMsgIds(JSON.parse(val));
+    });
     fetchAll();
 
     const msgCh = supabase.channel('sup-app-messages')
@@ -1025,6 +1076,20 @@ export default function SupervisorApp({ route, userName: userNameProp, onResetRo
     await supabase.from('damage_reports').update({ status }).eq('id', id);
   };
 
+  const dismissMessage = useCallback((id) => {
+    setDismissedMsgIds((prev) => {
+      const next = [...prev, id];
+      AsyncStorage.setItem('@sawdust_dismissed_msgs', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const openThread = useCallback((thread) => {
+    setActiveThread(thread);
+    setActiveTab('messages');
+    setUnreadMsgs(0);
+  }, []);
+
   const handleTabPress = (key) => {
     if (key === 'messages') setUnreadMsgs(0);
     if (key !== 'messages' && activeThread) setActiveThread(null);
@@ -1070,6 +1135,9 @@ export default function SupervisorApp({ route, userName: userNameProp, onResetRo
                 userName={userName}
                 onSwitchRole={handleSwitchRole}
                 todayClockEntries={todayClockEntries}
+                dismissedMsgIds={dismissedMsgIds}
+                onDismissMsg={dismissMessage}
+                onOpenThread={openThread}
               />
             )}
             {activeTab === 'messages' && (
@@ -1429,6 +1497,15 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   aiInfoText: { flex: 1, fontSize: 11, color: '#93c5fd', lineHeight: 16 },
+
+  // Swipeable delete
+  swipeDeleteBg: {
+    position: 'absolute', right: 0, top: 0, bottom: 0,
+    backgroundColor: C.error, justifyContent: 'center', alignItems: 'center',
+    borderRadius: 10,
+  },
+  swipeDeleteBtn: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 14 },
+  swipeDeleteText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
   // Clock crew rows (Overview tab)
   clockNoneText: { fontSize: 12, color: C.muted, marginBottom: 12 },
