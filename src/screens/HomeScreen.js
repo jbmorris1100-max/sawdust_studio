@@ -11,6 +11,7 @@ import {
   SafeAreaView,
   StatusBar,
   Alert,
+  Platform,
   ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -89,6 +90,7 @@ export default function HomeScreen({ navigation, route }) {
   const [isOnBreak,         setIsOnBreak]         = useState(false);
   const [breakStartTime,    setBreakStartTime]    = useState(null);
   const [totalBreakMinutes, setTotalBreakMinutes] = useState(0);
+  const [settingsModalVisible, setSettingsModalVisible] = useState(false);
 
   // Ref so the realtime subscription always reads the latest lastSeenAt
   const lastSeenAtRef = useRef('');
@@ -246,22 +248,26 @@ export default function HomeScreen({ navigation, route }) {
   };
 
   const handleSwitchRole = () => {
-    Alert.alert('Settings', null, [
-      {
-        text: 'Switch Department',
-        onPress: () => {
-          setDeptOnlyMode(true);
-          setDraftDept(userDept);
-          setSetupVisible(true);
+    if (Platform.OS === 'web') {
+      setSettingsModalVisible(true);
+    } else {
+      Alert.alert('Settings', null, [
+        {
+          text: 'Switch Department',
+          onPress: () => {
+            setDeptOnlyMode(true);
+            setDraftDept(userDept);
+            setSetupVisible(true);
+          },
         },
-      },
-      {
-        text: 'Switch Role',
-        style: 'destructive',
-        onPress: () => resetRole?.(),
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+        {
+          text: 'Switch Role',
+          style: 'destructive',
+          onPress: () => resetRole?.(),
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
   };
 
   // ── Clock actions ─────────────────────────────────────────
@@ -284,7 +290,11 @@ export default function HomeScreen({ navigation, route }) {
       setClockRecordId(data.id);
       setClockedIn(true);
     } catch (e) {
-      Alert.alert('Clock In Failed', e.message || 'Could not record clock-in. Check network.');
+      if (Platform.OS === 'web') {
+        window.alert('Clock In Failed: ' + (e.message || 'Could not record clock-in. Check network.'));
+      } else {
+        Alert.alert('Clock In Failed', e.message || 'Could not record clock-in. Check network.');
+      }
     } finally {
       setClockLoading(false);
     }
@@ -316,52 +326,58 @@ export default function HomeScreen({ navigation, route }) {
     }
   };
 
+  const doClockOut = async () => {
+    setClockLoading(true);
+    try {
+      const now = new Date().toISOString();
+      const currentBreakMs = isOnBreak && breakStartTime
+        ? Math.round(Date.now() - new Date(breakStartTime).getTime())
+        : 0;
+      const finalBreakMinutes = totalBreakMinutes + Math.round(currentBreakMs / 60000);
+      const netMs = Math.max(0,
+        Date.now() - new Date(clockInTime).getTime()
+        - totalBreakMinutes * 60000
+        - currentBreakMs
+      );
+      const totalHours = +(netMs / 3600000).toFixed(4);
+      const { error } = await supabase
+        .from('time_clock')
+        .update({ clock_out: now, total_hours: totalHours, break_minutes: finalBreakMinutes })
+        .eq('id', clockRecordId);
+      if (error) throw new Error(error.message);
+      await Promise.all([
+        AsyncStorage.removeItem(CLOCK_IN_KEY),
+        AsyncStorage.removeItem(CLOCK_ID_KEY),
+        AsyncStorage.removeItem(BREAK_START_KEY),
+        AsyncStorage.removeItem(BREAK_MINS_KEY),
+      ]);
+      setClockedIn(false);
+      setClockInTime(null);
+      setClockRecordId(null);
+      setElapsed('00:00:00');
+      setIsOnBreak(false);
+      setBreakStartTime(null);
+      setTotalBreakMinutes(0);
+    } catch (e) {
+      if (Platform.OS === 'web') {
+        window.alert('Could not record clock-out. Check network.');
+      } else {
+        Alert.alert('Clock Out Failed', 'Could not record clock-out. Check network.');
+      }
+    } finally {
+      setClockLoading(false);
+    }
+  };
+
   const handleClockOut = () => {
-    Alert.alert('Clock Out', 'End your shift?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Clock Out',
-        style: 'destructive',
-        onPress: async () => {
-          setClockLoading(true);
-          try {
-            const now = new Date().toISOString();
-            const currentBreakMs = isOnBreak && breakStartTime
-              ? Math.round(Date.now() - new Date(breakStartTime).getTime())
-              : 0;
-            const finalBreakMinutes = totalBreakMinutes + Math.round(currentBreakMs / 60000);
-            const netMs = Math.max(0,
-              Date.now() - new Date(clockInTime).getTime()
-              - totalBreakMinutes * 60000
-              - currentBreakMs
-            );
-            const totalHours = +(netMs / 3600000).toFixed(4);
-            const { error } = await supabase
-              .from('time_clock')
-              .update({ clock_out: now, total_hours: totalHours, break_minutes: finalBreakMinutes })
-              .eq('id', clockRecordId);
-            if (error) throw new Error(error.message);
-            await Promise.all([
-              AsyncStorage.removeItem(CLOCK_IN_KEY),
-              AsyncStorage.removeItem(CLOCK_ID_KEY),
-              AsyncStorage.removeItem(BREAK_START_KEY),
-              AsyncStorage.removeItem(BREAK_MINS_KEY),
-            ]);
-            setClockedIn(false);
-            setClockInTime(null);
-            setClockRecordId(null);
-            setElapsed('00:00:00');
-            setIsOnBreak(false);
-            setBreakStartTime(null);
-            setTotalBreakMinutes(0);
-          } catch (e) {
-            Alert.alert('Clock Out Failed', 'Could not record clock-out. Check network.');
-          } finally {
-            setClockLoading(false);
-          }
-        },
-      },
-    ]);
+    if (Platform.OS === 'web') {
+      if (window.confirm('End your shift?')) doClockOut();
+    } else {
+      Alert.alert('Clock Out', 'End your shift?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Clock Out', style: 'destructive', onPress: doClockOut },
+      ]);
+    }
   };
 
   // ── Helpers ───────────────────────────────────────────────
@@ -639,6 +655,53 @@ export default function HomeScreen({ navigation, route }) {
                 <Text style={{ color: C.muted, fontSize: 14 }}>Cancel</Text>
               </TouchableOpacity>
             )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Settings Modal — used on web where Alert.alert silently fails */}
+      <Modal
+        visible={settingsModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setSettingsModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Settings</Text>
+
+            <TouchableOpacity
+              style={styles.settingsBtn}
+              onPress={() => {
+                setSettingsModalVisible(false);
+                setDeptOnlyMode(true);
+                setDraftDept(userDept);
+                setSetupVisible(true);
+              }}
+            >
+              <Text style={styles.settingsBtnText}>Switch Department</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.settingsBtn, styles.settingsBtnDanger]}
+              onPress={() => {
+                setSettingsModalVisible(false);
+                setTimeout(() => {
+                  if (window.confirm('Switch role? This will log you out.')) {
+                    resetRole?.();
+                  }
+                }, 50);
+              }}
+            >
+              <Text style={[styles.settingsBtnText, { color: C.danger }]}>Switch Role</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={{ alignItems: 'center', paddingTop: 14 }}
+              onPress={() => setSettingsModalVisible(false)}
+            >
+              <Text style={{ color: C.muted, fontSize: 14 }}>Cancel</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -935,4 +998,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#2a1a00', paddingVertical: 10, paddingHorizontal: 24,
   },
   returnBreakBtnText: { color: C.accent, fontSize: 15, fontWeight: '700' },
+
+  // Settings modal buttons
+  settingsBtn: {
+    marginTop: 14,
+    backgroundColor: C.input,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: C.border,
+    paddingVertical: 15,
+    alignItems: 'center',
+  },
+  settingsBtnDanger: {
+    borderColor: '#7f1d1d',
+    backgroundColor: '#1a0a0a',
+  },
+  settingsBtnText: {
+    color: C.text,
+    fontSize: 16,
+    fontWeight: '600',
+  },
 });
