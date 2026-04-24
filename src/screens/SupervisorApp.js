@@ -212,6 +212,12 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
       showsVerticalScrollIndicator={false}
       contentContainerStyle={styles.overviewScroll}
     >
+      {/* Nuclear switch-role card */}
+      <TouchableOpacity style={styles.switchRoleCard} onPress={onSwitchRole} activeOpacity={0.8}>
+        <Ionicons name="log-out-outline" size={18} color="#fff" style={{ marginRight: 8 }} />
+        <Text style={styles.switchRoleCardText}>SWITCH ROLE</Text>
+      </TouchableOpacity>
+
       {/* Header */}
       <View style={styles.overviewHeader}>
         <View>
@@ -929,19 +935,21 @@ function AIControlCenterTab({ userName }) {
 
 // ── Main Screen ───────────────────────────────────────────────
 export default function SupervisorApp({ route, userName: userNameProp }) {
-  const userName    = route?.params?.userName ?? userNameProp ?? 'Supervisor';
-  const resetRole   = useContext(RoleContext);
+  const userName  = route?.params?.userName ?? userNameProp ?? 'Supervisor';
+  const resetRole = useContext(RoleContext);
 
-  const handleSwitchRole = () => {
-    console.log('[SupervisorApp] handleSwitchRole called, resetRole=', typeof resetRole);
-    Alert.alert('Switch Role', 'Leave the supervisor dashboard?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Switch Role',
-        style: 'destructive',
-        onPress: () => resetRole?.(),
-      },
+  useEffect(() => {
+    console.log('[SupervisorApp] RoleContext value on mount:', typeof resetRole);
+  }, []);
+
+  const handleSwitchRole = async () => {
+    console.log('[SWITCH ROLE PRESSED]');
+    await AsyncStorage.multiRemove([
+      '@sawdust_user_name',
+      '@sawdust_user_dept',
+      '@sawdust_user_role',
     ]);
+    resetRole?.();
   };
 
   const [messages,     setMessages]     = useState([]);
@@ -1207,6 +1215,14 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
             </TouchableOpacity>
           );
         })}
+        <TouchableOpacity
+          style={styles.tabSwitchBtn}
+          onPress={handleSwitchRole}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="log-out-outline" size={20} color={C.error} />
+          <Text style={styles.tabSwitchLabel}>Exit</Text>
+        </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
@@ -1434,6 +1450,17 @@ const styles = StyleSheet.create({
     minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 3,
   },
   tabBadgeText: { color: '#fff', fontSize: 9, fontWeight: '700' },
+  tabSwitchBtn: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    borderLeftWidth: 1, borderLeftColor: C.border,
+  },
+  tabSwitchLabel: { fontSize: 10, fontWeight: '700', color: C.error, marginTop: 3 },
+  switchRoleCard: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: C.error, borderRadius: 12,
+    paddingVertical: 14, marginTop: 12, marginBottom: 4,
+  },
+  switchRoleCardText: { color: '#fff', fontSize: 14, fontWeight: '800', letterSpacing: 0.5 },
 
   // AI Control Center
   aiScroll: { paddingHorizontal: 16, paddingBottom: 32, paddingTop: 16 },
