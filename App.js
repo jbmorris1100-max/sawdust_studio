@@ -403,23 +403,32 @@ export default function App() {
   };
 
   const handleResetRole = useCallback(async () => {
-    if (role === 'supervisor') {
-      const deviceId = await getDeviceId();
-      await supabase
-        .from('supervisor_sessions')
-        .update({ is_active: false, logged_out_at: new Date().toISOString() })
-        .eq('device_id', deviceId)
-        .eq('is_active', true)
-        .catch(console.warn);
+    try {
+      console.log('[handleResetRole] step 1: starting, current role =', role);
+      if (role === 'supervisor') {
+        console.log('[handleResetRole] step 2: updating supervisor session');
+        const deviceId = await getDeviceId();
+        await supabase
+          .from('supervisor_sessions')
+          .update({ is_active: false, logged_out_at: new Date().toISOString() })
+          .eq('device_id', deviceId)
+          .eq('is_active', true)
+          .catch(console.warn);
+      }
+      console.log('[handleResetRole] step 3: clearing AsyncStorage');
+      await Promise.all([
+        AsyncStorage.removeItem(STORAGE.NAME),
+        AsyncStorage.removeItem(STORAGE.DEPT),
+        AsyncStorage.removeItem(STORAGE.ROLE),
+      ]);
+      console.log('[handleResetRole] step 4: calling setRole(\'\')');
+      setRole('');
+      setUserName('');
+      setUserDept('');
+      console.log('[handleResetRole] step 5: done');
+    } catch (err) {
+      console.error('[handleResetRole] ERROR:', err);
     }
-    await Promise.all([
-      AsyncStorage.removeItem(STORAGE.NAME),
-      AsyncStorage.removeItem(STORAGE.DEPT),
-      AsyncStorage.removeItem(STORAGE.ROLE),
-    ]);
-    setRole('');
-    setUserName('');
-    setUserDept('');
   }, [role]);
 
   // Stable ref so context consumers always call the latest handleResetRole
