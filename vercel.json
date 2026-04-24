@@ -1,8 +1,9 @@
 {
-  "buildCommand": "npx expo export --platform web",
+  "buildCommand": "npx expo export --platform web && cp -r supervisor dist/supervisor",
   "outputDirectory": "dist",
   "framework": null,
   "rewrites": [
+    { "source": "/supervisor", "destination": "/supervisor/index.html" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

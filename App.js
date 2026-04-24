@@ -13,6 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { supabase } from './src/lib/supabase';
 import { registerForPushNotifications } from './src/lib/notifications';
+import { RoleContext } from './src/lib/RoleContext';
 import HomeScreen      from './src/screens/HomeScreen';
 import PartsScreen     from './src/screens/PartsScreen';
 import InventoryScreen from './src/screens/InventoryScreen';
@@ -246,7 +247,7 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount, onRese
 
 // ── Supervisor Tab Navigator ──────────────────────────────────
 const SupervisorTab = createBottomTabNavigator();
-function SupervisorNavigator({ userName, onResetRole }) {
+function SupervisorNavigator({ userName }) {
   return (
     <SupervisorTab.Navigator
       screenOptions={{
@@ -257,7 +258,7 @@ function SupervisorNavigator({ userName, onResetRole }) {
       <SupervisorTab.Screen
         name="SupervisorMain"
         component={SupervisorApp}
-        initialParams={{ userName, onResetRole }}
+        initialParams={{ userName }}
       />
     </SupervisorTab.Navigator>
   );
@@ -417,19 +418,21 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <NavigationContainer>
-        {role === 'supervisor' ? (
-          <SupervisorNavigator userName={userName} onResetRole={handleResetRole} />
-        ) : (
-          <CrewNavigator
-            userName={userName}
-            userDept={userDept}
-            unreadCount={unreadCount}
-            setUnreadCount={setUnreadCount}
-            onResetRole={handleResetRole}
-          />
-        )}
-      </NavigationContainer>
+      <RoleContext.Provider value={handleResetRole}>
+        <NavigationContainer>
+          {role === 'supervisor' ? (
+            <SupervisorNavigator userName={userName} />
+          ) : (
+            <CrewNavigator
+              userName={userName}
+              userDept={userDept}
+              unreadCount={unreadCount}
+              setUnreadCount={setUnreadCount}
+              onResetRole={handleResetRole}
+            />
+          )}
+        </NavigationContainer>
+      </RoleContext.Provider>
     </SafeAreaProvider>
   );
 }

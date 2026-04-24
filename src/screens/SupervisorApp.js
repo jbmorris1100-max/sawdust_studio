@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
+import { RoleContext } from '../lib/RoleContext';
 
 // ── Design tokens ─────────────────────────────────────────────
 const C = {
@@ -126,7 +127,7 @@ function SwipeableRow({ onDelete, children }) {
           <Text style={styles.swipeDeleteText}>Delete</Text>
         </TouchableOpacity>
       </View>
-      <Animated.View style={{ transform: [{ translateX }] }} {...panResponder.panHandlers}>
+      <Animated.View style={{ transform: [{ translateX }], backgroundColor: C.bg }} {...panResponder.panHandlers}>
         {children}
       </Animated.View>
     </View>
@@ -927,17 +928,18 @@ function AIControlCenterTab({ userName }) {
 }
 
 // ── Main Screen ───────────────────────────────────────────────
-export default function SupervisorApp({ route, userName: userNameProp, onResetRole: onResetRoleProp }) {
-  const userName    = route?.params?.userName    ?? userNameProp    ?? 'Supervisor';
-  const onResetRole = route?.params?.onResetRole ?? onResetRoleProp ?? null;
+export default function SupervisorApp({ route, userName: userNameProp }) {
+  const userName    = route?.params?.userName ?? userNameProp ?? 'Supervisor';
+  const resetRole   = useContext(RoleContext);
 
   const handleSwitchRole = () => {
+    console.log('[SupervisorApp] handleSwitchRole called, resetRole=', typeof resetRole);
     Alert.alert('Switch Role', 'Leave the supervisor dashboard?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Switch Role',
         style: 'destructive',
-        onPress: () => onResetRole?.(),
+        onPress: () => resetRole?.(),
       },
     ]);
   };

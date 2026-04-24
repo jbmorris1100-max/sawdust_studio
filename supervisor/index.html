@@ -1,0 +1,1628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sawdust Studio — Shop Supervisor</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d0d0d;color:#e5e5e5;font-family:'DM Mono','Courier New',monospace;min-height:100vh}
+#root{max-width:1100px;margin:0 auto;padding:28px 24px 60px}
+input,select,textarea{
+  font-family:'DM Mono','Courier New',monospace;font-size:13px;
+  background:#1a1a1a;border:1px solid #2a2a2a;border-radius:6px;
+  color:#e5e5e5;padding:8px 12px;width:100%;outline:none;
+}
+input:focus,select:focus,textarea:focus{border-color:#f59e0b;box-shadow:0 0 0 2px rgba(245,158,11,.12)}
+select option{background:#1a1a1a;color:#e5e5e5}
+textarea{resize:vertical}
+button{
+  font-family:'DM Mono','Courier New',monospace;font-size:11px;cursor:pointer;
+  border-radius:6px;border:1px solid #2a2a2a;background:transparent;
+  color:#aaa;padding:7px 14px;letter-spacing:.05em;
+  transition:background .1s,color .1s,border-color .1s;
+}
+button:hover{background:#1a1a1a;color:#e5e5e5}
+.bp{background:#f59e0b;color:#1a0900;border-color:#f59e0b;font-weight:500}
+.bp:hover{background:#d97706;border-color:#d97706;color:#0d0500}
+.bd{color:#f87171;border-color:#7f1d1d}.bd:hover{background:#2e1a1a}
+.bg{color:#4ade80;border-color:#14532d}.bg:hover{background:#1a2e1a}
+.chk{
+  width:18px;height:18px;min-width:18px;border:1px solid #333;border-radius:4px;
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  font-size:11px;background:#141414;transition:all .15s;flex-shrink:0;
+}
+.chk.on{background:#22c55e;border-color:#22c55e;color:#061206;font-weight:500}
+/* message bubbles */
+.bubble-in{background:#2a2a2a;border-radius:0 14px 14px 14px;padding:9px 14px;word-break:break-word;word-wrap:break-word;overflow-wrap:break-word}
+.bubble-out{background:#f59e0b;border-radius:14px 0 14px 14px;padding:9px 14px;word-break:break-word;word-wrap:break-word;overflow-wrap:break-word}
+.toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#22c55e;color:#0a1f0a;border-radius:8px;padding:12px 22px;font-size:13px;font-weight:500;z-index:300;box-shadow:0 4px 24px rgba(0,0,0,.5);white-space:nowrap;pointer-events:none;font-family:'DM Mono','Courier New',monospace}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- Supabase -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<!-- React -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+
+<script>
+// ── Supabase client ───────────────────────────────────────────────────────────
+const SUPABASE_URL      = "https://suwadpgtqifwufmlwhpk.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN1d2FkcGd0cWlmd3VmbWx3aHBrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYyODIxMzQsImV4cCI6MjA5MTg1ODEzNH0.iVC__gcDTj4nF8JpwfdWRElUDrFGhI0HNGcpoU4vmoI";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const { useState, useEffect, useRef } = React;
+const h = React.createElement;
+
+// ── localStorage keys (supervisor-only data) ──────────────────────────────────
+const K = { j:"ssj6", c:"ssc6", sd:"sssd3", inv:"ssinv3" };
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const CL = [
+  { id:"dm", label:"Dimensions match shop drawings" },
+  { id:"sq", label:"Cabinet is square / plumb" },
+  { id:"eb", label:"Edge banding flush and clean" },
+  { id:"hw", label:"Hardware locations correct" },
+  { id:"cu", label:"Cut quality — no tearout or chipping" },
+  { id:"rv", label:"Door / drawer reveal consistent" },
+  { id:"lb", label:"Part labeling correct" },
+  { id:"df", label:"No visible surface defects" },
+  { id:"jt", label:"Joints tight / fasteners set" },
+];
+const CTYPES = ["Base cabinet","Upper cabinet","Tall cabinet","Island","Drawer box","Door","Custom"];
+const STAGES = ["Cutting","Edgebanding","Assembly","Finishing","Shipping","Install"];
+const UNITS      = ["sheets","pcs","lbs","ft","rolls","boxes","gallons"];
+const CREW_DEPTS = ["Cutting","Edgebanding","Assembly","Finishing","Shipping","Install","Craftsman","Management"];
+const AM = "#f59e0b";
+const SM = {
+  active:  { bar:"#3b82f6", bg:"#1e2a3a", txt:"#60a5fa" },
+  passed:  { bar:"#22c55e", bg:"#1a2e1a", txt:"#4ade80" },
+  flagged: { bar:"#ef4444", bg:"#2e1a1a", txt:"#f87171" },
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const uid   = () => Date.now() + "_" + Math.random().toString(36).slice(2,5);
+const fmtD  = iso => new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric"});
+const fmtDT = iso => fmtD(iso) + " " + new Date(iso).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+const today = () => new Date().toISOString().slice(0,10);
+const dimStr = p => [p.width,p.height,p.depth].filter(v => v && v.trim()).join(" x ");
+
+const getWebDeviceId = () => {
+  let id = localStorage.getItem("web_device_id");
+  if (!id) {
+    id = "web_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2,8);
+    localStorage.setItem("web_device_id", id);
+  }
+  return id;
+};
+
+// localStorage (supervisor-local tables only)
+const load = (k, d=[]) => { try { const v=localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
+const sv   = (k, v)    => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+
+// Shared styles
+const CS  = { background:"#141414", border:"1px solid #222", borderRadius:6, padding:"12px 16px", marginBottom:8 };
+const CS2 = { background:"#111",    border:"1px solid #222", borderRadius:6, padding:"14px 16px", marginBottom:10 };
+const IS  = { fontSize:13, fontFamily:"'DM Mono','Courier New',monospace", background:"#1a1a1a", border:"1px solid #2a2a2a", borderRadius:6, color:"#e5e5e5", padding:"8px 12px", width:"100%", outline:"none" };
+
+// ── Mini components ───────────────────────────────────────────────────────────
+const Badge = ({s}) => {
+  const m = SM[s] || SM.active;
+  return h("span",{style:{background:m.bg,color:m.txt,fontSize:10,padding:"2px 9px",borderRadius:99,border:`1px solid ${m.bar}50`,fontWeight:500,letterSpacing:".04em"}},s);
+};
+const Stat = ({label,val,color}) =>
+  h("div",{style:{background:"#141414",borderRadius:6,padding:"14px 16px",borderTop:`3px solid ${color}`}},
+    h("div",{style:{fontSize:28,fontWeight:500,color}}, val),
+    h("div",{style:{fontSize:10,color:"#555",marginTop:4,letterSpacing:".07em"}}, label)
+  );
+const Pill = ({label,color}) =>
+  h("span",{style:{fontSize:10,background:color+"20",color,padding:"2px 9px",borderRadius:99,border:`1px solid ${color}40`,whiteSpace:"nowrap",letterSpacing:".04em"}}, label);
+const Divider = ({label}) =>
+  h("div",{style:{display:"flex",alignItems:"center",gap:10,margin:"20px 0 12px"}},
+    h("div",{style:{height:1,flex:1,background:"#1e1e1e"}}),
+    h("span",{style:{fontSize:10,color:"#444",letterSpacing:".1em",whiteSpace:"nowrap"}}, label),
+    h("div",{style:{height:1,flex:1,background:"#1e1e1e"}})
+  );
+const Empty = ({msg}) =>
+  h("div",{style:{textAlign:"center",padding:"64px 0",color:"#333",fontSize:13}}, msg);
+const FBtn = ({val,cur,set}) =>
+  h("button",{onClick:()=>set(val),style:{fontSize:11,padding:"5px 12px",background:cur===val?"#1a1a1a":"transparent",color:cur===val?"#e5e5e5":"#555",borderColor:cur===val?"#333":"#1e1e1e"}}, val);
+const StatusDot = ({ok}) =>
+  h("span",{style:{display:"inline-block",width:7,height:7,borderRadius:"50%",background:ok?"#22c55e":"#ef4444",marginRight:6}});
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+function App() {
+  const [view,      setView]      = useState("dashboard");
+
+  // ── Supervisor session ─────────────────────────────────────────────────────
+  const [supervisorName,   setSupervisorName]   = useState(() => localStorage.getItem("supervisor_name") || "");
+  const [supLoginName,     setSupLoginName]     = useState("");
+  const [supLoginError,    setSupLoginError]    = useState("");
+  const [supLoginLoading,  setSupLoginLoading]  = useState(false);
+
+  // ── Supervisor-local state (localStorage) ──────────────────────────────────
+  const [jobs,      setJobs]      = useState(() => load(K.j));
+  const [checks,    setChecks]    = useState(() => load(K.c));
+  const [sd,        setSd]        = useState(() => load(K.sd));
+  const [inv,       setInv]       = useState(() => load(K.inv));
+
+  // ── Supabase-backed state ─────────────────────────────────────────────────
+  const [miss,         setMiss]         = useState([]);   // inventory_needs
+  const [damageRpts,   setDamageRpts]   = useState([]);   // damage_reports
+  const [messages,     setMessages]     = useState([]);   // messages
+  const [sbReady,      setSbReady]      = useState(false);// connection status
+  const [damageF,      setDamageF]      = useState("open"); // damage-only filter
+
+  // ── Message compose ───────────────────────────────────────────────────────
+  const [msgBody,       setMsgBody]       = useState("");
+  const [sending,       setSending]       = useState(false);
+  const [unread,        setUnread]        = useState(0);
+  const [activeThread,  setActiveThread]  = useState(null); // { name, dept } | null
+  const msgListRef = useRef(null);
+
+  // ── Supabase: initial fetch + real-time subscriptions ─────────────────────
+  useEffect(() => {
+    // Fetch all tables on mount
+    Promise.all([
+      sb.from("inventory_needs").select("*").order("created_at", { ascending: false }),
+      sb.from("damage_reports").select("*").order("created_at",  { ascending: false }),
+      sb.from("messages").select("*").order("created_at",        { ascending: true  }).limit(200),
+      sb.from("sops").select("*").order("updated_at",            { ascending: false }),
+      sb.from("sop_views").select("*").order("viewed_at",        { ascending: false }),
+      sb.from("time_clock").select("*").eq("date", today()).order("clock_in", { ascending: true }),
+    ]).then(([ni, dr, ms, so, sv, tc]) => {
+      if (ni.data) setMiss(ni.data);
+      if (dr.data) setDamageRpts(dr.data);
+      if (ms.data) setMessages(ms.data);
+      if (so.data) setSops(so.data);
+      if (sv.data) setSopViews(sv.data);
+      if (tc.data) setTcToday(tc.data);
+      setSbReady(true);
+    });
+
+    // Real-time: inventory_needs
+    const invCh = sb.channel("sup-inventory")
+      .on("postgres_changes", { event: "*", schema: "public", table: "inventory_needs" }, payload => {
+        if (payload.eventType === "INSERT") {
+          setMiss(p => [payload.new, ...p]);
+        } else if (payload.eventType === "UPDATE") {
+          setMiss(p => p.map(r => r.id === payload.new.id ? payload.new : r));
+        } else if (payload.eventType === "DELETE") {
+          setMiss(p => p.filter(r => r.id !== payload.old.id));
+        }
+      })
+      .subscribe();
+
+    // Real-time: damage_reports
+    const dmgCh = sb.channel("sup-damage")
+      .on("postgres_changes", { event: "*", schema: "public", table: "damage_reports" }, payload => {
+        if (payload.eventType === "INSERT") {
+          setDamageRpts(p => [payload.new, ...p]);
+        } else if (payload.eventType === "UPDATE") {
+          setDamageRpts(p => p.map(r => r.id === payload.new.id ? payload.new : r));
+        } else if (payload.eventType === "DELETE") {
+          setDamageRpts(p => p.filter(r => r.id !== payload.old.id));
+        }
+      })
+      .subscribe();
+
+    // Real-time: messages
+    const msgCh = sb.channel("sup-messages")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, payload => {
+        setMessages(p => {
+          if (p.some(m => m.id === payload.new.id)) return p;
+          return [...p, payload.new];
+        });
+        // only badge for incoming crew messages, not supervisor's own sends
+        if (payload.new.sender_name !== "Supervisor") setUnread(n => n + 1);
+      })
+      .subscribe();
+
+    const sopCh = sb.channel("sup-sops")
+      .on("postgres_changes", { event: "*", schema: "public", table: "sops" }, payload => {
+        if (payload.eventType === "INSERT")      setSops(p => [payload.new, ...p]);
+        else if (payload.eventType === "UPDATE") setSops(p => p.map(s => s.id === payload.new.id ? payload.new : s));
+        else if (payload.eventType === "DELETE") setSops(p => p.filter(s => s.id !== payload.old.id));
+      })
+      .subscribe();
+
+    const sopViewCh = sb.channel("sup-sop-views")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sop_views" }, payload => {
+        setSopViews(p => [payload.new, ...p]);
+      })
+      .subscribe();
+
+    // Real-time: time_clock
+    const tcCh = sb.channel("sup-timeclock")
+      .on("postgres_changes", { event: "*", schema: "public", table: "time_clock" }, payload => {
+        const tod = today();
+        if (payload.eventType === "INSERT" && payload.new.date === tod)
+          setTcToday(p => [...p, payload.new]);
+        else if (payload.eventType === "UPDATE")
+          setTcToday(p => p.map(e => e.id === payload.new.id ? payload.new : e));
+        else if (payload.eventType === "DELETE")
+          setTcToday(p => p.filter(e => e.id !== payload.old.id));
+      })
+      .subscribe();
+
+    return () => {
+      sb.removeChannel(invCh);
+      sb.removeChannel(dmgCh);
+      sb.removeChannel(msgCh);
+      sb.removeChannel(sopCh);
+      sb.removeChannel(sopViewCh);
+      sb.removeChannel(tcCh);
+    };
+  }, []);
+
+  // Update tcNow every 30s so elapsed hours in the report stay fresh
+  useEffect(() => {
+    const t = setInterval(() => setTcNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Auto-scroll messages list when new messages arrive
+  useEffect(() => {
+    if (view === "messages" && msgListRef.current) {
+      msgListRef.current.scrollTop = msgListRef.current.scrollHeight;
+    }
+  }, [messages, view]);
+
+  // Clear unread badge when opening messages tab
+  const openMessages = () => { setView("messages"); setUnread(0); };
+
+  // ── localStorage setters (supervisor-local) ───────────────────────────────
+  const UJ = u => { setJobs(u);   sv(K.j,  u); };
+  const UC = u => { setChecks(u); sv(K.c,  u); };
+  const US = u => { setSd(u);     sv(K.sd, u); };
+  const UI = u => { setInv(u);    sv(K.inv,u); };
+
+  // ── QC ────────────────────────────────────────────────────────────────────
+  const [qcJob,        setQcJob]        = useState(null);
+  const [qcType,       setQcType]       = useState("first-article");
+  const [qcI,          setQcI]          = useState({});
+  const [qcN,          setQcN]          = useState("");
+  const [partChecks,   setPartChecks]   = useState({});
+  const [expandedPart, setExpandedPart] = useState(null);
+
+  // ── Job detail ────────────────────────────────────────────────────────────
+  const [detailJob,   setDetailJob]   = useState(null);
+  const [showAddPart, setShowAddPart] = useState(false);
+  const [pf,          setPf]          = useState({partNum:"",desc:"",qty:1,width:"",height:"",depth:"",material:""});
+
+  // ── Dashboard ─────────────────────────────────────────────────────────────
+  const [showAJ, setShowAJ] = useState(false);
+  const [nj,     setNj]     = useState({id:"",desc:"",type:"Base cabinet"});
+  const [jobF,   setJobF]   = useState("all");
+  const [csvData,setCsvData]= useState(null);
+  const [colMap, setColMap] = useState({job:0,part:1,qty:-1,w:-1,h:-1,d:-1,mat:-1});
+
+  // ── Missing parts (Supabase inventory_needs) ──────────────────────────────
+  const [showAM, setShowAM] = useState(false);
+  const [nm,     setNm]     = useState({jobId:"",part:"",qty:1,stage:"Cutting",notes:""});
+  const [missF,  setMissF]  = useState("pending");
+
+  // ── Standup ───────────────────────────────────────────────────────────────
+  const [showSD, setShowSD] = useState(false);
+  const [nsd,    setNsd]    = useState({date:today(),priorities:"",crew:"",issues:"",notes:""});
+
+  // ── Inventory (local) ─────────────────────────────────────────────────────
+  const [showAI, setShowAI] = useState(false);
+  const [ni,     setNi]     = useState({name:"",unit:"sheets",qty:0,threshold:5});
+
+  // ── Report ────────────────────────────────────────────────────────────────
+  const [report, setReport] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  // ── Toast ─────────────────────────────────────────────────────────────────
+  const [toast, setToast] = useState(null);
+  const showToastMsg = msg => { setToast(msg); setTimeout(() => setToast(null), 3000); };
+
+  // ── Crew management (Supabase device_tokens) ─────────────────────────────
+  const [crewMembers,   setCrewMembers]   = useState([]);
+  const [crewDeptEdits, setCrewDeptEdits] = useState({});
+  const [crewLoading,   setCrewLoading]   = useState(false);
+  const [crewSubView,   setCrewSubView]   = useState("devices");
+  const [loginAudit,    setLoginAudit]    = useState([]);
+  const [auditLoading,  setAuditLoading]  = useState(false);
+  const [auditSearch,   setAuditSearch]   = useState("");
+
+  // ── Time Clock (Supabase) ─────────────────────────────────────────────────
+  const [tcToday,      setTcToday]      = useState([]);
+  const [tcNow,        setTcNow]        = useState(Date.now()); // tick for live elapsed
+
+  // ── SOPs (Supabase) ───────────────────────────────────────────────────────
+  const [sops,         setSops]         = useState([]);
+  const [sopViews,     setSopViews]     = useState([]);
+  const [showSopModal, setShowSopModal] = useState(false);
+  const [editSopId,    setEditSopId]    = useState(null);
+  const defaultSopForm = { title:"", dept:"Assembly", description:"", steps:[{instruction:"",warning:""}], pdf_url:"" };
+  const [sopForm,      setSopForm]      = useState(defaultSopForm);
+
+  // ── Job actions ───────────────────────────────────────────────────────────
+  const addJob = () => {
+    if (!nj.id.trim()) return;
+    UJ([{ uid:uid(), jobId:nj.id.trim(), desc:nj.desc.trim(), type:nj.type,
+          status:"active", created:new Date().toISOString(), parts:[] }, ...jobs]);
+    setNj({id:"",desc:"",type:"Base cabinet"}); setShowAJ(false);
+  };
+
+  const openDetail = job => {
+    setDetailJob({...job}); setShowAddPart(false);
+    setPf({partNum:"",desc:"",qty:1,width:"",height:"",depth:"",material:""});
+    setView("job_detail");
+  };
+
+  // ── Part actions ──────────────────────────────────────────────────────────
+  const addPart = () => {
+    if (!pf.desc.trim()) return;
+    const part = { uid:uid(), ...pf, qty:Number(pf.qty)||1 };
+    const updJ = { ...detailJob, parts:[...(detailJob.parts||[]), part] };
+    setDetailJob(updJ);
+    UJ(jobs.map(j => j.uid === detailJob.uid ? updJ : j));
+    setPf({partNum:"",desc:"",qty:1,width:"",height:"",depth:"",material:""}); setShowAddPart(false);
+  };
+
+  const delPart = puid => {
+    const updJ = { ...detailJob, parts:(detailJob.parts||[]).filter(p => p.uid !== puid) };
+    setDetailJob(updJ);
+    UJ(jobs.map(j => j.uid === detailJob.uid ? updJ : j));
+  };
+
+  // ── QC actions ────────────────────────────────────────────────────────────
+  const startCheck = job => {
+    setQcJob(job); setQcI({}); setQcN(""); setPartChecks({}); setExpandedPart(null);
+    setQcType("first-article"); setView("check");
+  };
+
+  const togglePart = puid =>
+    setPartChecks(p => ({ ...p, [puid]:{ ...p[puid], checked:!p[puid]?.checked } }));
+
+  const setPartNote = (puid, note) =>
+    setPartChecks(p => ({ ...p, [puid]:{ ...p[puid], note } }));
+
+  const submitCheck = async () => {
+    const items = CL.map(i => ({ ...i, passed:qcI[i.id]===true, failed:qcI[i.id]===false }));
+    const parts = qcJob.parts || [];
+    const anyFail = items.some(i => i.failed);
+    const allPass = items.every(i => i.passed);
+    const partsOk = parts.length === 0 || parts.every(p => partChecks[p.uid]?.checked);
+    const hasNotes = parts.some(p => partChecks[p.uid]?.note?.trim());
+    const result = (anyFail || (!partsOk && parts.length > 0)) ? "fail"
+                 : (allPass && partsOk && !hasNotes)           ? "pass" : "partial";
+
+    // Save locally
+    UC([{ uid:uid(), jobUid:qcJob.uid, jobId:qcJob.jobId, type:qcType, items,
+          partResults:partChecks, partsTotal:parts.length,
+          partsVerified:parts.filter(p => partChecks[p.uid]?.checked).length,
+          notes:qcN, result, timestamp:new Date().toISOString() }, ...checks]);
+    UJ(jobs.map(j => j.uid === qcJob.uid
+      ? { ...j, status: result==="fail"?"flagged" : result==="pass"?"passed" : j.status }
+      : j));
+
+    // Write QC result to Supabase messages so crew sees it
+    const emoji = result === "pass" ? "✅" : result === "fail" ? "❌" : "⚠️";
+    const body = `${emoji} QC ${result.toUpperCase()} — Job #${qcJob.jobId} (${qcType})` +
+      (qcN ? `\n${qcN}` : "") +
+      (parts.length > 0 ? `\nParts verified: ${parts.filter(p=>partChecks[p.uid]?.checked).length}/${parts.length}` : "");
+    await sb.from("messages").insert({ sender_name:"Supervisor", dept:"QC", body });
+
+    // AI auto-capture — log this QC check as a learning data point
+    const _now = new Date();
+    sb.from("ai_learning_log").insert({
+      job_id:          qcJob.jobId,
+      job_type:        qcJob.type,
+      stage:           qcType,
+      dept:            "QC",
+      concurrent_jobs: jobs.filter(j => j.status === "active").length,
+      day_of_week:     _now.getDay(),
+      hour_of_day:     _now.getHours(),
+      had_qc_fail:     result === "fail",
+      date:            today(),
+    }).catch(() => {});
+
+    setView("dashboard");
+  };
+
+  // ── Missing parts → Supabase inventory_needs ─────────────────────────────
+  const addMiss = async () => {
+    if (!nm.part.trim()) return;
+    const { data, error } = await sb.from("inventory_needs")
+      .insert({
+        item:   nm.part.trim(),
+        dept:   nm.stage,
+        job_id: nm.jobId.trim() || null,
+        qty:    Number(nm.qty) || 1,
+        status: "pending",
+      })
+      .select().single();
+    if (!error && data) setMiss(p => [data, ...p]);
+    setNm({jobId:"",part:"",qty:1,stage:"Cutting",notes:""}); setShowAM(false);
+  };
+
+  const resolveMiss = async id => {
+    setMiss(p => p.map(m => m.id === id ? { ...m, status:"received" } : m));
+    await sb.from("inventory_needs").update({ status:"received" }).eq("id", id);
+  };
+
+  const deleteMiss = async id => {
+    setMiss(p => p.filter(m => m.id !== id));
+    await sb.from("inventory_needs").delete().eq("id", id);
+  };
+
+  // ── Damage reports: status update ─────────────────────────────────────────
+  const updateDamageStatus = async (id, status) => {
+    setDamageRpts(p => p.map(d => d.id === id ? { ...d, status } : d));
+    await sb.from("damage_reports").update({ status }).eq("id", id);
+  };
+
+  // ── Standup → localStorage + Supabase messages ────────────────────────────
+  const addSD = async () => {
+    US([{ uid:uid(), ...nsd, created:new Date().toISOString() }, ...sd]);
+
+    // Post a standup summary to shared messages
+    const body = [
+      `📋 STANDUP — ${nsd.date}`,
+      nsd.priorities && `Priority jobs: ${nsd.priorities}`,
+      nsd.crew       && `Crew: ${nsd.crew}`,
+      nsd.issues     && `Open issues: ${nsd.issues}`,
+      nsd.notes      && `Notes: ${nsd.notes}`,
+    ].filter(Boolean).join("\n");
+    await sb.from("messages").insert({ sender_name:"Supervisor", dept:"Management", body });
+
+    setNsd({date:today(),priorities:"",crew:"",issues:"",notes:""}); setShowSD(false);
+  };
+
+  // ── Messages: supervisor reply (threaded) ────────────────────────────────
+  const sendMessage = async () => {
+    const trimmed = msgBody.trim();
+    if (!trimmed || sending || !activeThread) return;
+
+    const payload = {
+      sender_name: "Supervisor",
+      dept:        "Management",
+      body:        trimmed,
+    };
+    const optimistic = { id:"opt-"+Date.now(), ...payload, created_at:new Date().toISOString() };
+
+    // Clear input and show optimistic message immediately
+    setMsgBody("");
+    setMessages(p => [...p, optimistic]);
+    setSending(true);
+
+    try {
+      const { data, error } = await sb.from("messages").insert(payload).select().single();
+      if (error) {
+        console.error("[sendMessage] insert failed:", error.message, error.code, error.details);
+        setMessages(p => p.filter(m => m.id !== optimistic.id));
+      } else {
+        // Remove the optimistic row, then add the confirmed row only if
+        // real-time hasn't already inserted it (avoids duplicates when the
+        // realtime event races ahead of the insert response).
+        setMessages(p => {
+          const without = p.filter(m => m.id !== optimistic.id);
+          if (without.some(m => m.id === data.id)) return without;
+          return [...without, data];
+        });
+      }
+    } catch(err) {
+      console.error("[sendMessage] unexpected error:", err);
+      setMessages(p => p.filter(m => m.id !== optimistic.id));
+    } finally {
+      // Always re-enable the button, regardless of success or failure
+      setSending(false);
+    }
+  };
+
+  // ── Local inventory ───────────────────────────────────────────────────────
+  const addInv = () => {
+    if (!ni.name.trim()) return;
+    UI([...inv, { uid:uid(), ...ni, qty:Number(ni.qty), threshold:Number(ni.threshold), updated:new Date().toISOString() }]);
+    setNi({name:"",unit:"sheets",qty:0,threshold:5}); setShowAI(false);
+  };
+  const updQ = (id, q) => UI(inv.map(i => i.uid===id ? { ...i, qty:Number(q), updated:new Date().toISOString() } : i));
+  const iStatus = i => i.qty===0 ? "critical" : i.qty<=i.threshold ? "low" : "ok";
+  const iColor  = s => s==="critical" ? "#ef4444" : s==="low" ? "#f59e0b" : "#22c55e";
+
+  // ── CSV import ────────────────────────────────────────────────────────────
+  const handleCSV = e => {
+    const file = e.target.files[0]; if (!file) return;
+    const r = new FileReader();
+    r.onload = ev => {
+      const lines = ev.target.result.split("\n").filter(l => l.trim());
+      if (lines.length < 2) return;
+      const headers = lines[0].split(",").map(h => h.trim().replace(/"/g,""));
+      const all = lines.slice(1).map(l => l.split(",").map(c => c.trim().replace(/"/g,"")));
+      const ji = headers.findIndex(h => /(^job$|job.?no|job.?num|wo\b|work.?order)/i.test(h));
+      const pi = headers.findIndex(h => /(part|desc|cabinet|item|name|product|component)/i.test(h));
+      const qi = headers.findIndex(h => /^(qty|quantity)$/i.test(h));
+      const wi = headers.findIndex(h => /^(width|w|wd)$/i.test(h));
+      const hi = headers.findIndex(h => /^(height|h|ht)$/i.test(h));
+      const di = headers.findIndex(h => /^(depth|d|dp|length|len)$/i.test(h));
+      const mi = headers.findIndex(h => /(mat|material|species|finish)/i.test(h));
+      setColMap({ job:ji>=0?ji:0, part:pi>=0?pi:1, qty:qi>=0?qi:-1, w:wi>=0?wi:-1, h:hi>=0?hi:-1, d:di>=0?di:-1, mat:mi>=0?mi:-1 });
+      setCsvData({ headers, preview:all.slice(0,5), all });
+    };
+    r.readAsText(file);
+  };
+
+  const setCol = (field, val) => setColMap(p => ({ ...p, [field]:Number(val) }));
+
+  const importCSV = () => {
+    const grouped = {};
+    csvData.all.forEach(row => {
+      const jid = row[colMap.job]?.trim();
+      if (!jid) return;
+      if (!grouped[jid]) grouped[jid] = [];
+      grouped[jid].push(row);
+    });
+    const cm = colMap;
+    const newJobs = Object.entries(grouped).map(([jid, rows]) => ({
+      uid: uid(), jobId: jid, desc: "", type: "Base cabinet",
+      status: "active", created: new Date().toISOString(),
+      parts: rows.map(row => ({
+        uid:      uid(),
+        partNum:  cm.part >= 0 ? (row[cm.part]?.trim()  || "") : "",
+        desc:     cm.part >= 0 ? (row[cm.part]?.trim()  || "") : "",
+        qty:      cm.qty  >= 0 ? (Number(row[cm.qty])   || 1)  : 1,
+        width:    cm.w    >= 0 ? (row[cm.w]?.trim()     || "") : "",
+        height:   cm.h    >= 0 ? (row[cm.h]?.trim()     || "") : "",
+        depth:    cm.d    >= 0 ? (row[cm.d]?.trim()     || "") : "",
+        material: cm.mat  >= 0 ? (row[cm.mat]?.trim()   || "") : "",
+      }))
+    }));
+    UJ([...newJobs, ...jobs]);
+    setCsvData(null);
+  };
+
+  // ── Report ────────────────────────────────────────────────────────────────
+  const genReport = () => {
+    const wk     = new Date(Date.now() - 7*24*3600*1000);
+    const rc     = checks.filter(c => new Date(c.timestamp) > wk);
+    const openM  = miss.filter(m => m.status === "pending");
+    const openD  = damageRpts.filter(d => d.status === "open");
+    const lowI   = inv.filter(i => i.qty <= i.threshold);
+    const stageMap = {};
+    miss.forEach(m => { stageMap[m.dept] = (stageMap[m.dept]||0) + 1; });
+    const flagged = jobs.filter(j => j.status === "flagged");
+    const tcActive = tcToday.filter(e => !e.clock_out);
+    const tcDeptHrs = {};
+    tcToday.forEach(e => {
+      const h = e.clock_out ? (e.total_hours||0) : (Date.now() - new Date(e.clock_in).getTime()) / 3600000;
+      tcDeptHrs[e.dept] = (tcDeptHrs[e.dept]||0) + h;
+    });
+    const tcTotal = Object.values(tcDeptHrs).reduce((a,b)=>a+b,0);
+
+    const lines = [
+      "SAWDUST STUDIO — QC WEEKLY REPORT",
+      "Generated: " + fmtDT(new Date().toISOString()),
+      "",
+      "-- QC CHECKS (LAST 7 DAYS) --",
+      "Total: " + rc.length + "  |  Passed: " + rc.filter(c=>c.result==="pass").length + "  |  Failed: " + rc.filter(c=>c.result==="fail").length,
+      "",
+      "-- FLAGGED JOBS --",
+      ...(flagged.length ? flagged.map(j => "  * #" + j.jobId + "  " + j.desc) : ["  None"]),
+      "",
+      "-- INVENTORY NEEDS (" + openM.length + " pending) --",
+      ...(openM.length ? openM.map(m => "  * #" + (m.job_id||"--") + "  " + m.item + "  (" + m.qty + " pcs)  @  " + m.dept) : ["  None"]),
+      "",
+      "-- INVENTORY NEEDS BY DEPT --",
+      ...Object.entries(stageMap).sort((a,b)=>b[1]-a[1]).map(([s,n]) => "  " + s + ": " + n),
+      "",
+      "-- DAMAGE REPORTS (" + openD.length + " open) --",
+      ...(openD.length ? openD.map(d => "  * #" + (d.job_id||"--") + "  " + d.part_name + "  @  " + d.dept + (d.notes ? "  — "+d.notes : "")) : ["  None"]),
+      "",
+      "-- LOW INVENTORY (" + lowI.length + " items) --",
+      ...(lowI.length ? lowI.map(i => "  * " + i.name + ": " + i.qty + " " + i.unit + "  (min: " + i.threshold + ")") : ["  None"]),
+      "",
+      "-- TIME CLOCK TODAY (" + tcToday.length + " sessions, " + tcTotal.toFixed(1) + "h total) --",
+      "  Active now: " + tcActive.length + " crew",
+      ...Object.entries(tcDeptHrs).sort((a,b)=>b[1]-a[1]).map(([dept,hrs]) => "  " + dept + ": " + hrs.toFixed(1) + "h"),
+    ];
+    setReport(lines.join("\n"));
+  };
+
+  const copyReport = () =>
+    navigator.clipboard.writeText(report).then(() => { setCopied(true); setTimeout(()=>setCopied(false), 2000); });
+
+  // ── Supervisor session ────────────────────────────────────────────────────
+  const supervisorLogin = async () => {
+    const name = supLoginName.trim();
+    if (!name) return;
+    setSupLoginLoading(true);
+    setSupLoginError("");
+    const deviceId = getWebDeviceId();
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: activeSessions } = await sb.from("supervisor_sessions")
+      .select("name, device_id").eq("is_active", true).gte("logged_in_at", cutoff);
+    const conflict = activeSessions?.find(s => s.device_id !== deviceId);
+    if (conflict) {
+      setSupLoginError("Supervisor already logged in as " + conflict.name + ". Only one session is allowed at a time.");
+      setSupLoginLoading(false);
+      return;
+    }
+    await sb.from("supervisor_sessions").insert({ name, device_id: deviceId, is_active: true });
+    await sb.from("login_log").insert({ worker_name: name, dept: "Management", role: "supervisor", device_id: deviceId, app_version: "web" }).catch(() => {});
+    localStorage.setItem("supervisor_name", name);
+    setSupervisorName(name);
+    setSupLoginName("");
+    setSupLoginLoading(false);
+  };
+
+  const supervisorLogout = async () => {
+    if (!confirm("Sign out of the supervisor dashboard?")) return;
+    const deviceId = getWebDeviceId();
+    await sb.from("supervisor_sessions")
+      .update({ is_active: false, logged_out_at: new Date().toISOString() })
+      .eq("device_id", deviceId).eq("is_active", true).catch(() => {});
+    localStorage.removeItem("supervisor_name");
+    setSupervisorName("");
+    setSupLoginName("");
+  };
+
+  // ── Login Audit ───────────────────────────────────────────────────────────
+  const loadLoginAudit = async () => {
+    setAuditLoading(true);
+    const { data } = await sb.from("login_log").select("*").order("logged_in_at", { ascending: false }).limit(50);
+    if (data) setLoginAudit(data);
+    setAuditLoading(false);
+  };
+
+  const exportAuditCSV = () => {
+    const rows = [["Name","Dept","Role","Device","Time","Version"]];
+    loginAudit.forEach(r => rows.push([r.worker_name, r.dept||"", r.role, r.device_id, fmtDT(r.logged_in_at), r.app_version||""]));
+    const csv = rows.map(r => r.map(c => '"'+String(c).replace(/"/g,'""')+'"').join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+    a.download = "login_audit_" + today() + ".csv";
+    a.click();
+  };
+
+  // ── Crew management ───────────────────────────────────────────────────────
+  const loadCrewMembers = async () => {
+    setCrewLoading(true);
+    const { data } = await sb.from("device_tokens").select("id,name,dept,token").order("name");
+    if (data) setCrewMembers(data);
+    setCrewLoading(false);
+  };
+
+  const updateCrewDept = async (id, dept) => {
+    const { error } = await sb.from("device_tokens").update({ dept }).eq("id", id);
+    if (!error) {
+      setCrewMembers(p => p.map(m => m.id === id ? { ...m, dept } : m));
+      setCrewDeptEdits(p => { const n = {...p}; delete n[id]; return n; });
+      showToastMsg("Department updated — crew member sees this on next reload");
+    }
+  };
+
+  // ── SOPs ──────────────────────────────────────────────────────────────────
+  const saveSop = async () => {
+    if (!sopForm.title.trim()) return;
+    const steps = sopForm.steps.map((s, i) => ({
+      step_number: i + 1,
+      instruction: s.instruction,
+      warning:     s.warning || null,
+    }));
+    const payload = {
+      title:       sopForm.title.trim(),
+      dept:        sopForm.dept,
+      description: sopForm.description.trim() || null,
+      steps,
+      pdf_url:     sopForm.pdf_url.trim() || null,
+      updated_at:  new Date().toISOString(),
+    };
+    if (editSopId) {
+      const { data, error } = await sb.from("sops").update(payload).eq("id", editSopId).select().single();
+      if (!error && data) setSops(p => p.map(s => s.id === editSopId ? data : s));
+    } else {
+      const { data, error } = await sb.from("sops").insert({ ...payload, created_by: "Supervisor" }).select().single();
+      if (!error && data) setSops(p => [data, ...p]);
+    }
+    setShowSopModal(false);
+    showToastMsg("SOP saved — crew can see it immediately");
+  };
+
+  const deleteSop = async id => {
+    if (!confirm("Delete this SOP? This cannot be undone.")) return;
+    await sb.from("sops").delete().eq("id", id);
+    setSops(p => p.filter(s => s.id !== id));
+  };
+
+  // ── Derived ───────────────────────────────────────────────────────────────
+  const filtJobs = jobF === "all" ? jobs : jobs.filter(j => j.status === jobF);
+  const filtMiss = missF === "all" ? miss : miss.filter(m => m.status === missF);
+  const isDash   = ["dashboard","check","job_detail"].includes(view);
+  const sevenDayPasses = checks.filter(c => c.result==="pass" && new Date(c.timestamp) > new Date(Date.now()-7*24*3600*1000)).length;
+
+  // ── Nav ───────────────────────────────────────────────────────────────────
+  const TABS = [
+    {id:"dashboard", label:"Dashboard",   onClick:()=>setView("dashboard")},
+    {id:"missing",   label:"Needs",        onClick:()=>setView("missing")},
+    {id:"damage",    label:"Damage",       onClick:()=>setView("damage")},
+    {id:"standup",   label:"Standup",      onClick:()=>setView("standup")},
+    {id:"inventory", label:"Inventory",    onClick:()=>setView("inventory")},
+    {id:"messages",  label:`Messages${unread>0?" ("+unread+")":""}`, onClick:openMessages},
+    {id:"crew",       label:"Crew",          onClick:()=>{ setView("crew"); setCrewSubView("devices"); loadCrewMembers(); }},
+    {id:"sops",       label:"SOPs",          onClick:()=>setView("sops")},
+    {id:"report",    label:"Report",       onClick:()=>setView("report")},
+  ];
+
+  const navBtn = t => {
+    const active = t.id === "dashboard" ? isDash : view === t.id;
+    return h("button", { key:t.id, onClick:t.onClick, style:{
+      fontSize:11, padding:"7px 14px",
+      background:  active ? AM : "transparent",
+      color:       active ? "#1a0900" : t.id==="messages"&&unread>0 ? "#f59e0b" : "#666",
+      borderColor: active ? AM : t.id==="messages"&&unread>0 ? "#78350f" : "#1e1e1e",
+      fontWeight:  active ? 500 : 400,
+    }}, t.label);
+  };
+
+  // ── CSV column selector ───────────────────────────────────────────────────
+  const colSel = (field, label) => {
+    const optional = ["w","h","d","qty","mat"].includes(field);
+    return h("div", null,
+      h("div", {style:{fontSize:10,color:"#444",marginBottom:4,letterSpacing:".06em"}}, label),
+      h("select", {value:colMap[field], onChange:e=>setCol(field,e.target.value), style:{...IS,padding:"6px 10px"}},
+        optional ? [h("option",{key:-1,value:-1},"— none —"), ...(csvData?.headers||[]).map((hd,i)=>h("option",{key:i,value:i},hd))]
+                 : (csvData?.headers||[]).map((hd,i)=>h("option",{key:i,value:i},hd))
+      )
+    );
+  };
+
+  // ── QC checklist row ──────────────────────────────────────────────────────
+  const qcRow = item => {
+    const v = qcI[item.id];
+    return h("div", { key:item.id, style:{
+      display:"flex", alignItems:"center", justifyContent:"space-between",
+      padding:"11px 14px", marginBottom:6, borderRadius:6,
+      background: v===true ? "#1a2e1a" : v===false ? "#2e1a1a" : "#141414",
+      border: `1px solid ${v===true?"#166534":v===false?"#7f1d1d":"#222"}`,
+    }},
+      h("span", {style:{fontSize:13, color:v===true?"#4ade80":v===false?"#f87171":"#ccc"}}, item.label),
+      h("div", {style:{display:"flex",gap:6}},
+        h("button", { onClick:()=>setQcI(p=>({...p,[item.id]:v===true?undefined:true})), style:{
+          fontSize:11, padding:"4px 13px",
+          background:   v===true ? "#22c55e" : "transparent",
+          color:        v===true ? "#061206" : "#4ade80",
+          borderColor:  v===true ? "#22c55e" : "#166534",
+        }}, "pass"),
+        h("button", { onClick:()=>setQcI(p=>({...p,[item.id]:v===false?undefined:false})), style:{
+          fontSize:11, padding:"4px 13px",
+          background:  v===false ? "#ef4444" : "transparent",
+          color:       v===false ? "#fff" : "#f87171",
+          borderColor: v===false ? "#ef4444" : "#7f1d1d",
+        }}, "fail")
+      )
+    );
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  return h("div", null,
+
+    // SUPERVISOR LOGIN MODAL
+    !supervisorName && h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:24}},
+      h("div",{style:{background:"#141414",borderRadius:12,border:"1px solid #2a2a2a",padding:28,width:"100%",maxWidth:400}},
+        h("div",{style:{fontSize:10,color:AM,letterSpacing:".15em",marginBottom:8,fontWeight:500}}, "SAWDUST STUDIO"),
+        h("div",{style:{fontSize:20,fontWeight:500,color:"#e5e5e5",marginBottom:4}}, "Supervisor Sign In"),
+        h("div",{style:{fontSize:12,color:"#555",marginBottom:20}}, "One supervisor session at a time. Enter your name to continue."),
+        h("input",{
+          placeholder:"Your name (e.g. Mike Torres)",
+          value:supLoginName,
+          onChange:e=>{ setSupLoginName(e.target.value); setSupLoginError(""); },
+          onKeyDown:e=>{ if(e.key==="Enter") supervisorLogin(); },
+          autoFocus:true,
+          style:{fontSize:14,background:"#1a1a1a",border:"1px solid #2a2a2a",borderRadius:6,color:"#e5e5e5",padding:"10px 14px",width:"100%",outline:"none",marginBottom:10,fontFamily:"'DM Mono','Courier New',monospace"},
+        }),
+        supLoginError && h("div",{style:{fontSize:12,color:"#f87171",marginBottom:10,padding:"8px 12px",background:"#2e1a1a",borderRadius:6,border:"1px solid #7f1d1d"}}, supLoginError),
+        h("button",{
+          className:"bp",
+          onClick:supervisorLogin,
+          disabled:!supLoginName.trim()||supLoginLoading,
+          style:{width:"100%",padding:"11px 0",opacity:(!supLoginName.trim()||supLoginLoading)?0.4:1},
+        }, supLoginLoading?"checking…":"Enter Supervisor Dashboard")
+      )
+    ),
+
+    // HEADER
+    h("div", {style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.75rem",paddingBottom:"1.25rem",borderBottom:"1px solid #1a1a1a"}},
+      h("div", null,
+        h("div", {style:{fontSize:10,color:AM,letterSpacing:".15em",marginBottom:4,fontWeight:500}}, "SAWDUST STUDIO"),
+        h("div", {style:{display:"flex",alignItems:"center",gap:10}},
+          h("div", {style:{fontSize:22,fontWeight:500,letterSpacing:"-.3px"}}, "shop supervisor"),
+          h("div", {style:{display:"flex",alignItems:"center",gap:4,fontSize:10,color:sbReady?"#22c55e":"#f59e0b"}},
+            h(StatusDot,{ok:sbReady}),
+            sbReady ? "live" : "connecting…"
+          ),
+          supervisorName && h("div",{style:{display:"flex",alignItems:"center",gap:6,marginLeft:8}},
+            h("span",{style:{fontSize:11,color:"#555",background:"#141414",padding:"2px 10px",borderRadius:99,border:"1px solid #222"}}, supervisorName),
+            h("button",{onClick:supervisorLogout,style:{fontSize:10,padding:"3px 10px",color:"#f87171",borderColor:"#7f1d1d"}}, "sign out")
+          )
+        )
+      ),
+      h("div", {style:{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}, TABS.map(navBtn))
+    ),
+
+    // ── DASHBOARD ─────────────────────────────────────────────────────────────
+    view==="dashboard" && h("div", null,
+      h("div", {style:{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10,marginBottom:"1.5rem"}},
+        h(Stat, {label:"qc passes 7d",         val:sevenDayPasses,                               color:"#22c55e"}),
+        h(Stat, {label:"flagged jobs",           val:jobs.filter(j=>j.status==="flagged").length,  color:"#ef4444"}),
+        h(Stat, {label:"pending inventory needs",val:miss.filter(m=>m.status==="pending").length,  color:"#f59e0b"}),
+        h(Stat, {label:"open damage reports",    val:damageRpts.filter(d=>d.status==="open").length,color:"#3b82f6"})
+      ),
+
+      h("div", {style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+        h("div", {style:{display:"flex",gap:6}}, ["all","active","passed","flagged"].map(f => h(FBtn,{key:f,val:f,cur:jobF,set:setJobF}))),
+        h("div", {style:{display:"flex",gap:8}},
+          h("button", {className:"bp", onClick:()=>{setShowAJ(v=>!v);setCsvData(null)}}, "+ add job"),
+          h("label", {style:{fontSize:11,cursor:"pointer",borderRadius:6,border:"1px solid #1e1e1e",background:"transparent",color:"#555",padding:"7px 14px",letterSpacing:".05em",display:"inline-block",whiteSpace:"nowrap"}},
+            "↑ import csv",
+            h("input", {type:"file",accept:".csv,.txt",onChange:handleCSV,onClick:e=>{e.target.value=""},style:{display:"none"}})
+          )
+        )
+      ),
+
+      showAJ && h("div", {style:CS2},
+        h("div", {style:{display:"grid",gridTemplateColumns:"1fr 2fr 1fr",gap:10,marginBottom:10}},
+          h("input", {placeholder:"Job / WO #",  value:nj.id,   onChange:e=>setNj({...nj,id:e.target.value}),   style:IS}),
+          h("input", {placeholder:"Description", value:nj.desc, onChange:e=>setNj({...nj,desc:e.target.value}), style:IS}),
+          h("select",{value:nj.type,onChange:e=>setNj({...nj,type:e.target.value}),style:IS}, CTYPES.map(t=>h("option",{key:t},t)))
+        ),
+        h("div",{style:{display:"flex",gap:8}},
+          h("button",{className:"bp",onClick:addJob},"create"),
+          h("button",{onClick:()=>setShowAJ(false)},"cancel")
+        )
+      ),
+
+      csvData && h("div", {style:CS2},
+        h("div",{style:{fontSize:12,fontWeight:500,marginBottom:3,color:"#e5e5e5"}}, "csv column mapping"),
+        h("div",{style:{fontSize:11,color:"#444",marginBottom:12}}, "rows are grouped by job # — each row becomes a part under that job"),
+        h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:8,marginBottom:8}},
+          colSel("job","job / wo # (required)"), colSel("part","part description (required)"), colSel("qty","qty"), colSel("mat","material")
+        ),
+        h("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:8,marginBottom:12}},
+          colSel("w","width"), colSel("h","height"), colSel("d","depth")
+        ),
+        h("div",{style:{fontSize:10,color:"#444",marginBottom:6}}, "preview — first 5 rows"),
+        h("div",{style:{background:"#0d0d0d",borderRadius:6,border:"1px solid #1e1e1e",padding:"10px 12px",marginBottom:12}},
+          csvData.preview.map((row,i) => {
+            const dims = [colMap.w>=0&&row[colMap.w], colMap.h>=0&&row[colMap.h], colMap.d>=0&&row[colMap.d]].filter(Boolean).join("x");
+            return h("div",{key:i,style:{fontSize:12,color:"#888",padding:"4px 0",display:"flex",gap:14}},
+              h("span",{style:{color:AM,minWidth:70,fontWeight:500}}, row[colMap.job]||"—"),
+              h("span",{style:{flex:1,color:"#ccc"}}, colMap.part>=0 ? row[colMap.part] : ""),
+              dims && h("span",{style:{color:"#444"}}, dims),
+              colMap.mat>=0 && row[colMap.mat] && h("span",{style:{color:"#444"}}, row[colMap.mat])
+            );
+          })
+        ),
+        h("div",{style:{display:"flex",gap:8}},
+          h("button",{className:"bp",onClick:importCSV},
+            "import " + Object.keys(csvData.all.reduce((g,r)=>{const k=r[colMap.job]?.trim();if(k)g[k]=1;return g},{})).length + " jobs"
+          ),
+          h("button",{onClick:()=>setCsvData(null)}, "cancel")
+        )
+      ),
+
+      filtJobs.length===0 && h(Empty, {msg: jobF==="all" ? "No jobs yet. Add one above or import from a Microvellum CSV export." : "No "+jobF+" jobs."}),
+
+      filtJobs.map(job =>
+        h("div",{key:job.uid,style:{...CS,borderLeft:`3px solid ${SM[job.status]?.bar||"#333"}`,display:"flex",alignItems:"center",justifyContent:"space-between"}},
+          h("div",null,
+            h("div",{style:{display:"flex",alignItems:"center",gap:10,marginBottom:job.desc?5:0}},
+              h("span",{style:{fontWeight:500,color:AM,fontSize:15}}, "#"+job.jobId),
+              h("span",{style:{fontSize:11,color:"#444"}}, job.type),
+              h(Badge,{s:job.status}),
+              (job.parts||[]).length>0 && h(Pill,{label:(job.parts||[]).length+" parts",color:"#555"})
+            ),
+            job.desc && h("div",{style:{fontSize:12,color:"#666"}}, job.desc)
+          ),
+          h("div",{style:{display:"flex",gap:8}},
+            h("button",{onClick:()=>openDetail(job),style:{color:"#60a5fa",borderColor:"#1e3a5f"}}, "parts →"),
+            h("button",{onClick:()=>startCheck(job),style:{color:AM,borderColor:"#78350f"}},        "qc →"),
+            h("button",{className:"bd",onClick:()=>UJ(jobs.filter(j=>j.uid!==job.uid)),style:{padding:"7px 10px"}}, "✕")
+          )
+        )
+      )
+    ),
+
+    // ── JOB DETAIL ────────────────────────────────────────────────────────────
+    view==="job_detail" && detailJob && h("div", null,
+      h("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.25rem",paddingBottom:"0.75rem",borderBottom:"1px solid #1a1a1a"}},
+        h("div",{style:{display:"flex",alignItems:"center",gap:12}},
+          h("button",{onClick:()=>setView("dashboard"),style:{fontSize:11,padding:"5px 12px"}}, "← back"),
+          h("span",{style:{fontWeight:500,color:AM,fontSize:16}}, "#"+detailJob.jobId),
+          detailJob.desc && h("span",{style:{fontSize:13,color:"#555"}}, detailJob.desc)
+        ),
+        h("button",{className:"bp",onClick:()=>startCheck(jobs.find(j=>j.uid===detailJob.uid)||detailJob)}, "qc check →")
+      ),
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+        h("div",{style:{fontSize:11,color:"#444"}}, (detailJob.parts||[]).length+" parts / components"),
+        h("button",{className:"bp",onClick:()=>setShowAddPart(v=>!v)}, "+ add part")
+      ),
+      showAddPart && h("div",{style:CS2},
+        h("div",{style:{display:"grid",gridTemplateColumns:"1fr 3fr 60px",gap:10,marginBottom:10}},
+          h("input",{placeholder:"Part #",                 value:pf.partNum, onChange:e=>setPf({...pf,partNum:e.target.value}),style:IS}),
+          h("input",{placeholder:"Description",            value:pf.desc,    onChange:e=>setPf({...pf,desc:e.target.value}),   style:IS}),
+          h("input",{placeholder:"Qty",type:"number",min:1,value:pf.qty,     onChange:e=>setPf({...pf,qty:e.target.value}),    style:IS})
+        ),
+        h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 2fr",gap:10,marginBottom:10}},
+          h("input",{placeholder:"Width",    value:pf.width,    onChange:e=>setPf({...pf,width:e.target.value}),    style:IS}),
+          h("input",{placeholder:"Height",   value:pf.height,   onChange:e=>setPf({...pf,height:e.target.value}),   style:IS}),
+          h("input",{placeholder:"Depth",    value:pf.depth,    onChange:e=>setPf({...pf,depth:e.target.value}),    style:IS}),
+          h("input",{placeholder:"Material", value:pf.material, onChange:e=>setPf({...pf,material:e.target.value}), style:IS})
+        ),
+        h("div",{style:{display:"flex",gap:8}},
+          h("button",{className:"bp",onClick:addPart},       "add part"),
+          h("button",{onClick:()=>setShowAddPart(false)},    "cancel")
+        )
+      ),
+      (detailJob.parts||[]).length===0 && !showAddPart && h(Empty,{msg:"No parts yet. Add manually or import via CSV from the dashboard."}),
+      (detailJob.parts||[]).map((p,idx) =>
+        h("div",{key:p.uid,style:{...CS,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}},
+          h("div",{style:{display:"flex",alignItems:"center",gap:10,flex:1,minWidth:0}},
+            h("span",{style:{fontSize:11,color:"#333",minWidth:24,textAlign:"right",fontWeight:500}}, String(idx+1).padStart(2,"0")),
+            h("div",{style:{flex:1,minWidth:0}},
+              h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
+                p.partNum && h("span",{style:{fontSize:11,color:AM,fontWeight:500}}, p.partNum),
+                h("span",{style:{fontSize:13,color:"#e5e5e5"}}, p.desc||"—"),
+                h("span",{style:{fontSize:11,color:"#444"}}, "×"+p.qty)
+              ),
+              (dimStr(p)||p.material) && h("div",{style:{fontSize:11,color:"#444",marginTop:3}}, [dimStr(p),p.material].filter(Boolean).join("  ·  "))
+            )
+          ),
+          h("button",{className:"bd",onClick:()=>delPart(p.uid),style:{padding:"5px 10px",flexShrink:0}}, "✕")
+        )
+      )
+    ),
+
+    // ── QC CHECK ──────────────────────────────────────────────────────────────
+    view==="check" && qcJob && h("div", null,
+      h("div",{style:{display:"flex",alignItems:"center",gap:12,marginBottom:"1rem"}},
+        h("button",{onClick:()=>setView("dashboard"),style:{fontSize:11,padding:"5px 12px"}}, "← back"),
+        h("div",null,
+          h("span",{style:{fontWeight:500,color:AM,fontSize:15}}, "#"+qcJob.jobId+" "),
+          h("span",{style:{fontSize:13,color:"#555"}}, qcJob.desc)
+        )
+      ),
+      h("div",{style:{display:"flex",gap:8,marginBottom:"1.25rem"}},
+        ["first-article","in-process"].map(t =>
+          h("button",{key:t,onClick:()=>setQcType(t),style:{
+            background:  qcType===t ? AM : "transparent",
+            color:       qcType===t ? "#1a0900" : "#555",
+            borderColor: qcType===t ? AM : "#1e1e1e",
+            fontWeight:  qcType===t ? 500 : 400,
+          }}, t)
+        )
+      ),
+      h(Divider,{label:"STANDARD CHECKLIST"}),
+      CL.map(qcRow),
+      (qcJob.parts||[]).length > 0 && h("div",null,
+        h(Divider,{label:"PARTS VERIFICATION — " + (qcJob.parts||[]).filter(p=>partChecks[p.uid]?.checked).length + " / " + (qcJob.parts||[]).length + " verified"}),
+        (qcJob.parts||[]).map((p,idx) => {
+          const checked  = !!partChecks[p.uid]?.checked;
+          const note     = partChecks[p.uid]?.note || "";
+          const expanded = expandedPart === p.uid;
+          return h("div",{key:p.uid,style:{marginBottom:6}},
+            h("div",{style:{
+              display:"flex",alignItems:"center",gap:10,padding:"11px 14px",
+              background:   checked ? "#1a2e1a" : "#141414",
+              borderRadius: expanded ? "6px 6px 0 0" : 6,
+              border:       `1px solid ${checked?"#166534":"#222"}`,
+              borderBottom: expanded ? "none" : "",
+            }},
+              h("div",{className:"chk"+(checked?" on":""),onClick:()=>togglePart(p.uid)}, checked?"✓":""),
+              h("div",{style:{flex:1,minWidth:0}},
+                h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
+                  p.partNum && h("span",{style:{fontSize:11,color:AM,fontWeight:500}}, p.partNum),
+                  h("span",{style:{fontSize:13,color:checked?"#4ade80":"#ccc"}}, p.desc||"part "+(idx+1)),
+                  h("span",{style:{fontSize:11,color:"#444"}}, "×"+p.qty),
+                  dimStr(p) && h("span",{style:{fontSize:11,color:"#444"}}, dimStr(p))
+                )
+              ),
+              h("button",{onClick:()=>setExpandedPart(expanded?null:p.uid),style:{fontSize:10,padding:"3px 10px",color:"#444",borderColor:"#1e1e1e"}}, expanded?"▲":"note")
+            ),
+            expanded && h("div",{style:{background:"#0d0d0d",borderRadius:"0 0 6px 6px",border:"1px solid #222",borderTop:"none",padding:"8px 14px"}},
+              h("textarea",{placeholder:"Note any issue with this part...",value:note,onChange:e=>setPartNote(p.uid,e.target.value),rows:2,style:{...IS,fontSize:12,resize:"none"}})
+            )
+          );
+        })
+      ),
+      h(Divider,{label:"OVERALL NOTES"}),
+      h("textarea",{placeholder:"Overall notes / issues / rework required...",value:qcN,onChange:e=>setQcN(e.target.value),rows:2,style:{...IS,marginBottom:14}}),
+      h("div",{style:{display:"flex",gap:8}},
+        h("button",{className:"bp",onClick:submitCheck}, "submit check + notify crew"),
+        h("button",{onClick:()=>setView("dashboard")},   "cancel")
+      )
+    ),
+
+    // ── INVENTORY NEEDS (Supabase) ─────────────────────────────────────────────
+    view==="missing" && h("div", null,
+      h("div", {style:{display:"grid",gridTemplateColumns:"repeat(6,minmax(0,1fr))",gap:8,marginBottom:"1.5rem"}},
+        STAGES.map(s => {
+          const n = miss.filter(m => m.dept===s && m.status==="pending").length;
+          const c = n>2 ? "#ef4444" : n>0 ? "#f59e0b" : "#222";
+          return h("div",{key:s,style:{background:"#141414",borderRadius:6,padding:"10px 12px",borderTop:`2px solid ${n>0?c:"#1a1a1a"}`}},
+            h("div",{style:{fontSize:24,fontWeight:500,color:n>0?c:"#333"}}, String(n)),
+            h("div",{style:{fontSize:10,color:"#444",letterSpacing:".06em",marginTop:3}}, s.toLowerCase())
+          );
+        })
+      ),
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}},
+        h("div",{style:{display:"flex",gap:6}}, ["pending","received","all"].map(f=>h(FBtn,{key:f,val:f,cur:missF,set:setMissF}))),
+        h("button",{className:"bp",onClick:()=>setShowAM(v=>!v)}, "+ log inventory need")
+      ),
+      showAM && h("div",{style:CS2},
+        h("div",{style:{display:"grid",gridTemplateColumns:"1fr 2fr 70px 1fr",gap:10,marginBottom:10}},
+          h("input",{placeholder:"Job #",           value:nm.jobId,onChange:e=>setNm({...nm,jobId:e.target.value}),style:IS}),
+          h("input",{placeholder:"Part / item",     value:nm.part, onChange:e=>setNm({...nm,part:e.target.value}), style:IS}),
+          h("input",{placeholder:"Qty",type:"number",min:1,value:nm.qty,onChange:e=>setNm({...nm,qty:e.target.value}),style:IS}),
+          h("select",{value:nm.stage,onChange:e=>setNm({...nm,stage:e.target.value}),style:IS}, STAGES.map(s=>h("option",{key:s},s)))
+        ),
+        h("div",{style:{display:"flex",gap:8}},
+          h("button",{className:"bp",onClick:addMiss}, "log it"),
+          h("button",{onClick:()=>setShowAM(false)},  "cancel")
+        )
+      ),
+      filtMiss.length===0 && h(Empty,{msg:"No "+missF+" inventory needs."}),
+      filtMiss.map(m =>
+        h("div",{key:m.id,style:{...CS,borderLeft:`3px solid ${m.status==="pending"?"#f59e0b":"#22c55e"}`,display:"flex",alignItems:"center",justifyContent:"space-between"}},
+          h("div",null,
+            h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:4}},
+              h("span",{style:{color:AM,fontWeight:500}}, "#"+(m.job_id||"—")),
+              h("span",{style:{fontSize:13,color:"#ccc"}}, m.item),
+              h("span",{style:{fontSize:11,color:"#444"}}, m.qty+" pcs"),
+              h(Pill,{label:m.dept,color:"#3b82f6"}),
+              m.status!=="pending" && h(Pill,{label:m.status,color:"#22c55e"})
+            ),
+            h("div",{style:{fontSize:11,color:"#444"}}, fmtD(m.created_at))
+          ),
+          h("div",{style:{display:"flex",gap:6}},
+            m.status==="pending" && h("button",{className:"bg",onClick:()=>resolveMiss(m.id)}, "received"),
+            h("button",{className:"bd",onClick:()=>deleteMiss(m.id),style:{padding:"7px 10px"}}, "✕")
+          )
+        )
+      )
+    ),
+
+    // ── DAMAGE REPORTS (Supabase) ─────────────────────────────────────────────
+    view==="damage" && h("div", null,
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+        h("div",{style:{fontSize:11,color:"#444"}}, damageRpts.filter(d=>d.status==="open").length+" open reports"),
+        h("div",{style:{display:"flex",gap:6}},
+          ["open","reviewed","resolved","all"].map(f=>h(FBtn,{key:f,val:f,cur:damageF,set:setDamageF}))
+        )
+      ),
+      (damageF==="all" ? damageRpts : damageRpts.filter(d=>d.status===damageF)).length===0
+        && h(Empty,{msg:"No "+damageF+" damage reports."}),
+      (damageF==="all" ? damageRpts : damageRpts.filter(d=>d.status===damageF)).map(d => {
+        const col = d.status==="open" ? "#ef4444" : d.status==="reviewed" ? "#f59e0b" : "#22c55e";
+        return h("div",{key:d.id,style:{...CS,borderLeft:`3px solid ${col}`,display:"flex",alignItems:"center",justifyContent:"space-between"}},
+          h("div",{style:{flex:1}},
+            h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:4}},
+              h("span",{style:{color:AM,fontWeight:500}}, "#"+(d.job_id||"—")),
+              h("span",{style:{fontSize:13,color:"#ccc"}}, d.part_name),
+              h(Pill,{label:d.dept,color:"#3b82f6"}),
+              h(Pill,{label:d.status,color:col})
+            ),
+            d.notes && h("div",{style:{fontSize:12,color:"#666",marginBottom:4,fontStyle:"italic"}}, d.notes),
+            h("div",{style:{fontSize:11,color:"#444"}}, fmtD(d.created_at))
+          ),
+          h("div",{style:{display:"flex",gap:6,flexShrink:0,marginLeft:12}},
+            d.status==="open"     && h("button",{style:{color:"#60a5fa",borderColor:"#1e3a5f"},onClick:()=>updateDamageStatus(d.id,"reviewed")},  "reviewed"),
+            d.status==="reviewed" && h("button",{className:"bg",onClick:()=>updateDamageStatus(d.id,"resolved")}, "resolved")
+          )
+        );
+      })
+    ),
+
+    // ── STANDUP ───────────────────────────────────────────────────────────────
+    view==="standup" && h("div", null,
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+        h("div",{style:{fontSize:11,color:"#444"}}, sd.length+" logs total — posted to crew messages"),
+        h("button",{className:"bp",onClick:()=>setShowSD(v=>!v)}, "+ log standup")
+      ),
+      showSD && h("div",{style:CS2},
+        h("div",{style:{marginBottom:10}},
+          h("input",{type:"date",value:nsd.date,onChange:e=>setNsd({...nsd,date:e.target.value}),style:{...IS,width:"auto"}})
+        ),
+        ...[["Priority jobs today","priorities"],["Crew assignments","crew"],["Open issues from prior shift","issues"],["Notes","notes"]].map(([ph,k]) =>
+          h("textarea",{key:k,placeholder:ph,value:nsd[k],onChange:e=>setNsd({...nsd,[k]:e.target.value}),rows:2,style:{...IS,marginBottom:8}})
+        ),
+        h("div",{style:{display:"flex",gap:8}},
+          h("button",{className:"bp",onClick:addSD},         "save + post to crew"),
+          h("button",{onClick:()=>setShowSD(false)},         "cancel")
+        )
+      ),
+      sd.length===0 && !showSD && h(Empty,{msg:"No standups logged yet."}),
+      sd.map(s =>
+        h("div",{key:s.uid,style:{...CS,borderLeft:"3px solid #3b82f6"}},
+          h("div",{style:{fontSize:12,fontWeight:500,color:AM,marginBottom:10}}, s.date),
+          ...[
+            s.priorities && ["Priority jobs", s.priorities],
+            s.crew       && ["Crew",           s.crew],
+            s.issues     && ["Open issues",    s.issues],
+            s.notes      && ["Notes",          s.notes],
+          ].filter(Boolean).map(([label,val]) =>
+            h("div",{key:label,style:{marginBottom:8}},
+              h("div",{style:{fontSize:10,color:"#333",letterSpacing:".08em",marginBottom:3}}, label.toUpperCase()),
+              h("div",{style:{fontSize:13,color:"#ccc",whiteSpace:"pre-wrap"}}, val)
+            )
+          )
+        )
+      )
+    ),
+
+    // ── LOCAL INVENTORY ───────────────────────────────────────────────────────
+    view==="inventory" && h("div", null,
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+        h("div",{style:{fontSize:11,color:"#444"}}, inv.filter(i=>iStatus(i)!=="ok").length+" items need attention"),
+        h("button",{className:"bp",onClick:()=>setShowAI(v=>!v)}, "+ add material")
+      ),
+      showAI && h("div",{style:CS2},
+        h("div",{style:{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:10,marginBottom:10}},
+          h("input", {placeholder:"Material name",value:ni.name,     onChange:e=>setNi({...ni,name:e.target.value}),     style:IS}),
+          h("select",{value:ni.unit,               onChange:e=>setNi({...ni,unit:e.target.value}),                       style:IS}, UNITS.map(u=>h("option",{key:u},u))),
+          h("input", {placeholder:"On hand",type:"number",min:0,value:ni.qty,       onChange:e=>setNi({...ni,qty:e.target.value}),       style:IS}),
+          h("input", {placeholder:"Min level",type:"number",min:0,value:ni.threshold,onChange:e=>setNi({...ni,threshold:e.target.value}), style:IS})
+        ),
+        h("div",{style:{display:"flex",gap:8}},
+          h("button",{className:"bp",onClick:addInv},    "add"),
+          h("button",{onClick:()=>setShowAI(false)},     "cancel")
+        )
+      ),
+      inv.length===0 && h(Empty,{msg:"No materials tracked yet."}),
+      inv.map(i => {
+        const st=iStatus(i), co=iColor(st);
+        return h("div",{key:i.uid,style:{...CS,borderLeft:`3px solid ${co}`,display:"flex",alignItems:"center",justifyContent:"space-between",gap:14}},
+          h("div",{style:{flex:1}},
+            h("div",{style:{display:"flex",alignItems:"center",gap:10,marginBottom:8}},
+              h("span",{style:{fontWeight:500,fontSize:14}}, i.name),
+              h("span",{style:{fontSize:10,background:co+"20",color:co,padding:"2px 9px",borderRadius:99,border:`1px solid ${co}40`,fontWeight:500}}, st)
+            ),
+            h("div",{style:{display:"flex",alignItems:"center",gap:10}},
+              h("input",{type:"number",min:0,value:i.qty,onChange:e=>updQ(i.uid,e.target.value),style:{...IS,width:90,padding:"5px 10px",fontSize:12}}),
+              h("span",{style:{fontSize:12,color:"#444"}}, i.unit+"  /  min: "+i.threshold)
+            )
+          ),
+          h("button",{className:"bd",onClick:()=>UI(inv.filter(x=>x.uid!==i.uid)),style:{flexShrink:0,padding:"7px 10px"}}, "✕")
+        );
+      })
+    ),
+
+    // ── MESSAGES (threaded) ───────────────────────────────────────────────────
+    view==="messages" && (() => {
+      // Build thread list: unique crew senders, sorted by most recent message
+      const threadMap = {};
+      messages.forEach(m => {
+        const key = m.sender_name;
+        if (m.sender_name === "Supervisor") return; // skip outgoing
+        if (!threadMap[key]) threadMap[key] = { name: m.sender_name, dept: m.dept, messages: [], lastTime: m.created_at };
+        threadMap[key].messages.push(m);
+        if (m.created_at > threadMap[key].lastTime) threadMap[key].lastTime = m.created_at;
+      });
+      const threads = Object.values(threadMap).sort((a,b) => b.lastTime.localeCompare(a.lastTime));
+
+      // Messages visible in the active thread.
+      // Without a to_name column, show all messages from this crew member
+      // plus all supervisor messages (supervisor replies are shared context).
+      const threadMsgs = activeThread
+        ? messages
+            .filter(m =>
+              m.sender_name === activeThread.name ||
+              m.sender_name === "Supervisor"
+            )
+            .sort((a,b) => a.created_at.localeCompare(b.created_at))
+        : [];
+
+      // Bubble row renderer
+      const MsgRow = (m) => {
+        const isOwn = m.sender_name === "Supervisor";
+        return h("div",{
+          key: m.id,
+          style:{
+            display:"flex", flexDirection:"column",
+            alignItems: isOwn ? "flex-end" : "flex-start",
+            alignSelf:  isOwn ? "flex-end" : "flex-start",
+            maxWidth:"72%", marginBottom:12,
+          }
+        },
+          !isOwn && h("div",{style:{fontSize:10,color:"#555",marginBottom:3,marginLeft:2}},
+            m.sender_name + (m.dept ? " · "+m.dept : "")
+          ),
+          h("div",{ className: isOwn ? "bubble-out" : "bubble-in" },
+            h("span",{style:{fontSize:13,color:isOwn?"#1a0900":"#e5e5e5",whiteSpace:"pre-wrap",lineHeight:1.5}}, m.body)
+          ),
+          h("div",{style:{fontSize:10,color:"#444",marginTop:3}},
+            new Date(m.created_at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})
+          )
+        );
+      };
+
+      // ── Thread list ──────────────────────────────────────────────────────
+      if (!activeThread) return h("div", null,
+        h("div",{style:{fontSize:11,color:"#444",marginBottom:14}},
+          threads.length + " crew member" + (threads.length!==1?"s":"") + " · click a name to open their conversation"
+        ),
+        threads.length === 0 && h(Empty,{msg:"No crew messages yet."}),
+        threads.map(t => {
+          const last = t.messages[t.messages.length-1];
+          const replyCount = messages.filter(m => m.sender_name==="Supervisor" && new Date(m.created_at) >= new Date(t.messages[0]?.created_at)).length;
+          return h("div",{
+            key: t.name,
+            onClick: ()=>{ setActiveThread({name:t.name,dept:t.dept}); setUnread(0); },
+            style:{
+              ...CS, cursor:"pointer", display:"flex", alignItems:"center",
+              justifyContent:"space-between", gap:14,
+              borderLeft:"3px solid "+AM,
+              transition:"background .1s",
+            },
+            onMouseEnter: e=>e.currentTarget.style.background="#1a1a1a",
+            onMouseLeave: e=>e.currentTarget.style.background=CS.background,
+          },
+            h("div",{style:{flex:1,minWidth:0}},
+              h("div",{style:{display:"flex",alignItems:"center",gap:10,marginBottom:5}},
+                h("span",{style:{fontWeight:500,fontSize:14,color:AM}}, t.name),
+                h("span",{style:{fontSize:10,color:"#555",background:"#1a1a1a",padding:"2px 8px",borderRadius:99,border:"1px solid #222"}}, t.dept),
+                replyCount>0 && h("span",{style:{fontSize:10,color:"#4ade80"}}, replyCount+" repl"+(replyCount===1?"y":"ies"))
+              ),
+              last && h("div",{style:{fontSize:12,color:"#555",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+                last.body
+              )
+            ),
+            h("div",{style:{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,flexShrink:0}},
+              h("span",{style:{fontSize:10,color:"#444"}},
+                new Date(t.lastTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})
+              ),
+              h("span",{style:{fontSize:10,color:"#555"}}, t.messages.length+" msg"+(t.messages.length!==1?"s":"")),
+              h("span",{style:{fontSize:11,color:"#666"}}, "→")
+            )
+          );
+        })
+      );
+
+      // ── Individual thread conversation ───────────────────────────────────
+      return h("div", null,
+        // Thread header
+        h("div",{style:{display:"flex",alignItems:"center",gap:12,marginBottom:14,paddingBottom:12,borderBottom:"1px solid #1a1a1a"}},
+          h("button",{onClick:()=>{ setActiveThread(null); setMsgBody(""); }}, "← all conversations"),
+          h("span",{style:{fontWeight:500,color:AM,fontSize:15}}, activeThread.name),
+          h("span",{style:{fontSize:11,color:"#555",background:"#1a1a1a",padding:"2px 8px",borderRadius:99,border:"1px solid #222"}}, activeThread.dept)
+        ),
+        // Message list
+        h("div",{
+          ref: msgListRef,
+          style:{
+            height:400, overflowY:"auto", background:"#0d0d0d", borderRadius:8,
+            border:"1px solid #1a1a1a", padding:"16px", marginBottom:12,
+            display:"flex", flexDirection:"column",
+          }
+        },
+          threadMsgs.length===0
+            ? h(Empty,{msg:"No messages in this thread yet."})
+            : threadMsgs.map(MsgRow)
+        ),
+        // Compose
+        h("div",{style:{display:"flex",gap:10,alignItems:"flex-end"}},
+          h("textarea",{
+            placeholder:`Reply to ${activeThread.name}…`,
+            value:msgBody,
+            onChange:e=>setMsgBody(e.target.value),
+            onKeyDown:e=>{ if(e.key==="Enter"&&(e.metaKey||e.ctrlKey)) sendMessage(); },
+            rows:2,
+            style:{...IS,flex:1,resize:"none"},
+          }),
+          h("button",{
+            className:"bp",
+            onClick:sendMessage,
+            disabled:!msgBody.trim()||sending,
+            style:{padding:"10px 18px",opacity:(!msgBody.trim()||sending)?0.4:1,flexShrink:0},
+          }, sending?"…":"send")
+        ),
+        h("div",{style:{fontSize:10,color:"#333",marginTop:6}}, "Cmd/Ctrl+Enter to send · only "+activeThread.name+" sees this reply")
+      );
+    })(),
+
+    // ── REPORT ────────────────────────────────────────────────────────────────
+    view==="report" && (() => {
+      const activeTc = tcToday.filter(e => !e.clock_out);
+      const tcTotalHours = tcToday.reduce((sum, e) => {
+        if (e.clock_out) return sum + (e.total_hours || 0);
+        return sum + (tcNow - new Date(e.clock_in).getTime()) / 3600000;
+      }, 0);
+      const deptHours = {};
+      tcToday.forEach(e => {
+        const h = e.clock_out ? (e.total_hours || 0) : (tcNow - new Date(e.clock_in).getTime()) / 3600000;
+        deptHours[e.dept] = (deptHours[e.dept] || 0) + h;
+      });
+      const fmtT = iso => new Date(iso).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+      const fmtElapsed = isoStart => {
+        const diff = Math.floor((tcNow - new Date(isoStart).getTime()) / 1000);
+        const hh = Math.floor(diff / 3600), mm = Math.floor((diff % 3600) / 60);
+        return hh > 0 ? `${hh}h ${mm}m` : `${mm}m`;
+      };
+
+      return h("div", null,
+        // ── Time Clock section ────────────────────────────────────────
+        h(Divider, {label:"TIME CLOCK — TODAY"}),
+        h("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:10,marginBottom:16}},
+          h(Stat,{label:"clocked in now",  val:activeTc.length,              color:"#22c55e"}),
+          h(Stat,{label:"sessions today",  val:tcToday.length,               color:"#3b82f6"}),
+          h(Stat,{label:"total labor hrs", val:tcTotalHours.toFixed(1)+"h",  color:AM})
+        ),
+
+        // Currently clocked in
+        activeTc.length > 0 && h("div",{style:{marginBottom:14}},
+          h("div",{style:{fontSize:10,color:"#555",marginBottom:8,letterSpacing:".08em"}},"CURRENTLY CLOCKED IN"),
+          activeTc.map(e => h("div",{key:e.id,style:{...CS,borderLeft:"3px solid #22c55e",display:"flex",alignItems:"center",justifyContent:"space-between"}},
+            h("div",null,
+              h("span",{style:{fontWeight:500,color:"#e5e5e5",fontSize:14}}, e.worker_name),
+              h("span",{style:{fontSize:11,color:"#555",marginLeft:10,background:"#1a1a1a",padding:"2px 8px",borderRadius:99,border:"1px solid #222"}}, e.dept)
+            ),
+            h("div",{style:{textAlign:"right"}},
+              h("div",{style:{fontSize:12,color:"#22c55e",fontWeight:500}}, "since "+fmtT(e.clock_in)),
+              h("div",{style:{fontSize:11,color:"#555",marginTop:2}}, fmtElapsed(e.clock_in)+" elapsed")
+            )
+          ))
+        ),
+
+        // Today's full log
+        tcToday.length > 0 && h("div",{style:{marginBottom:14}},
+          h("div",{style:{fontSize:10,color:"#555",marginBottom:8,letterSpacing:".08em"}},"TODAY'S CLOCK LOG"),
+          h("div",{style:{background:"#0d0d0d",borderRadius:8,border:"1px solid #1a1a1a",overflow:"hidden"}},
+            h("div",{style:{display:"grid",gridTemplateColumns:"1fr 100px 80px 80px 60px",padding:"8px 14px",borderBottom:"1px solid #1a1a1a",fontSize:10,color:"#444",letterSpacing:".06em"}},
+              h("span",null,"CREW"), h("span",null,"DEPT"), h("span",null,"IN"), h("span",null,"OUT"), h("span",null,"HRS")
+            ),
+            tcToday.map(e => {
+              const hrs = e.clock_out ? (e.total_hours||0) : (tcNow - new Date(e.clock_in).getTime()) / 3600000;
+              return h("div",{key:e.id,style:{display:"grid",gridTemplateColumns:"1fr 100px 80px 80px 60px",padding:"8px 14px",borderBottom:"1px solid #111",fontSize:12,alignItems:"center"}},
+                h("span",{style:{color:"#e5e5e5",fontWeight:500}}, e.worker_name),
+                h("span",{style:{color:"#555"}}, e.dept),
+                h("span",{style:{color:"#888"}}, fmtT(e.clock_in)),
+                h("span",{style:{color:e.clock_out?"#888":"#22c55e"}}, e.clock_out ? fmtT(e.clock_out) : "active"),
+                h("span",{style:{color:AM,fontWeight:500}}, hrs.toFixed(1)+"h")
+              );
+            })
+          )
+        ),
+
+        // Hours by department
+        Object.keys(deptHours).length > 0 && h("div",{style:{marginBottom:20}},
+          h("div",{style:{fontSize:10,color:"#555",marginBottom:8,letterSpacing:".08em"}},"LABOR HOURS BY DEPARTMENT"),
+          h("div",{style:{display:"flex",flexWrap:"wrap",gap:8}},
+            Object.entries(deptHours).sort((a,b)=>b[1]-a[1]).map(([dept,hrs]) =>
+              h("div",{key:dept,style:{background:"#141414",borderRadius:8,border:"1px solid #222",padding:"10px 16px",minWidth:110}},
+                h("div",{style:{fontSize:20,fontWeight:500,color:AM}}, hrs.toFixed(1)+"h"),
+                h("div",{style:{fontSize:10,color:"#555",marginTop:3,letterSpacing:".04em"}}, dept)
+              )
+            )
+          )
+        ),
+
+        // ── Text report ───────────────────────────────────────────────
+        h(Divider, {label:"WEEKLY TEXT REPORT"}),
+        h("div",{style:{marginBottom:12,fontSize:12,color:"#444"}}, "Plain-text weekly summary — paste into a message or email."),
+        h("div",{style:{display:"flex",gap:8,marginBottom:14}},
+          h("button",{className:"bp",onClick:genReport}, "generate report"),
+          report && h("button",{onClick:copyReport,style:{color:copied?"#4ade80":"#aaa",borderColor:copied?"#14532d":"#1e1e1e"}}, copied?"copied ✓":"copy to clipboard")
+        ),
+        report && h("textarea",{value:report,readOnly:true,rows:26,style:{...IS,fontSize:12,color:"#666",lineHeight:1.7,resize:"none",background:"#0d0d0d",border:"1px solid #1a1a1a"}})
+      );
+    })(),
+
+    // ── CREW MANAGEMENT ───────────────────────────────────────────────────────
+    view==="crew" && h("div", null,
+      // Sub-tab switcher
+      h("div",{style:{display:"flex",gap:6,marginBottom:16}},
+        h("button",{
+          onClick:()=>setCrewSubView("devices"),
+          style:{fontSize:11,padding:"6px 14px",background:crewSubView==="devices"?AM:"transparent",color:crewSubView==="devices"?"#1a0900":"#666",borderColor:crewSubView==="devices"?AM:"#1e1e1e"},
+        }, "Devices"),
+        h("button",{
+          onClick:()=>{ setCrewSubView("audit"); if(loginAudit.length===0) loadLoginAudit(); },
+          style:{fontSize:11,padding:"6px 14px",background:crewSubView==="audit"?AM:"transparent",color:crewSubView==="audit"?"#1a0900":"#666",borderColor:crewSubView==="audit"?AM:"#1e1e1e"},
+        }, "Login Audit")
+      ),
+
+      // ── Devices sub-view ────────────────────────────────────────────────────
+      crewSubView==="devices" && h("div", null,
+        h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}},
+          h("div",{style:{fontSize:11,color:"#444"}},
+            crewMembers.length+" device"+(crewMembers.length!==1?"s":"")+" registered — change a department and click update"
+          ),
+          h("button",{onClick:loadCrewMembers,style:{fontSize:11}}, crewLoading?"loading…":"↺ refresh")
+        ),
+        crewLoading && h("div",{style:{textAlign:"center",padding:"48px 0",color:"#444",fontSize:13}}, "Loading…"),
+        !crewLoading && crewMembers.length===0 && h(Empty,{msg:"No crew devices registered yet. Crew members appear here after they first log into the app."}),
+        !crewLoading && crewMembers.map(m => {
+          const pendingDept  = crewDeptEdits[m.id];
+          const selectedDept = pendingDept !== undefined ? pendingDept : (m.dept || "");
+          const changed      = selectedDept !== (m.dept || "");
+          return h("div",{key:m.id,style:{...CS,display:"flex",alignItems:"center",justifyContent:"space-between",gap:14}},
+            h("div",{style:{flex:1}},
+              h("div",{style:{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}},
+                h("span",{style:{fontWeight:500,fontSize:14,color:"#e5e5e5"}}, m.name||"(unnamed)"),
+                h(Pill,{label:m.dept||"—",color:"#3b82f6"})
+              )
+            ),
+            h("div",{style:{display:"flex",alignItems:"center",gap:8}},
+              h("select",{
+                value:    selectedDept,
+                onChange: e => setCrewDeptEdits(p => ({...p,[m.id]:e.target.value})),
+                style:    {...IS, width:170},
+              }, CREW_DEPTS.map(d => h("option",{key:d,value:d},d))),
+              h("button",{
+                className: changed ? "bp" : "",
+                disabled:  !changed,
+                onClick:   () => updateCrewDept(m.id, selectedDept),
+                style:     {opacity: changed ? 1 : 0.3, whiteSpace:"nowrap"},
+              }, "update")
+            )
+          );
+        })
+      ),
+
+      // ── Login Audit sub-view ────────────────────────────────────────────────
+      crewSubView==="audit" && h("div", null,
+        h("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:14,flexWrap:"wrap"}},
+          h("input",{
+            placeholder:"Search name or dept…",
+            value:auditSearch,
+            onChange:e=>setAuditSearch(e.target.value),
+            style:{...IS,maxWidth:240,padding:"6px 12px"},
+          }),
+          h("button",{onClick:loadLoginAudit,style:{fontSize:11}}, auditLoading?"loading…":"↺ refresh"),
+          loginAudit.length>0 && h("button",{onClick:exportAuditCSV,style:{fontSize:11,color:"#4ade80",borderColor:"#14532d"}}, "↓ export csv"),
+          h("div",{style:{fontSize:11,color:"#444",marginLeft:"auto"}},
+            "last 50 logins · blue = supervisor · ⚠ = multi-dept · 🌙 = off-hours"
+          )
+        ),
+        auditLoading && h("div",{style:{textAlign:"center",padding:"48px 0",color:"#444",fontSize:13}}, "Loading…"),
+        !auditLoading && loginAudit.length===0 && h(Empty,{msg:"No login records yet. Records appear after crew or supervisors log in."}),
+        !auditLoading && (() => {
+          const q = auditSearch.toLowerCase();
+          const filtered = loginAudit.filter(r =>
+            !q || r.worker_name.toLowerCase().includes(q) || (r.dept||"").toLowerCase().includes(q)
+          );
+          // Detect multi-dept workers (same name, different depts in audit window)
+          const workerDepts = {};
+          loginAudit.forEach(r => {
+            if (!workerDepts[r.worker_name]) workerDepts[r.worker_name] = new Set();
+            workerDepts[r.worker_name].add(r.dept||"");
+          });
+          return filtered.map(r => {
+            const isSup    = r.role === "supervisor";
+            const isOffHrs = (() => { const h2 = new Date(r.logged_in_at).getHours(); return h2 < 6 || h2 >= 22; })();
+            const multiDep = (workerDepts[r.worker_name]?.size || 0) > 1;
+            return h("div",{key:r.id,style:{
+              ...CS,
+              borderLeft:"3px solid "+(isSup?"#3b82f6":"#2a2a2a"),
+              display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap",
+            }},
+              h("div",{style:{flex:1,minWidth:0}},
+                h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:3}},
+                  h("span",{style:{fontWeight:500,fontSize:13,color:isSup?"#60a5fa":"#e5e5e5"}}, r.worker_name),
+                  h(Pill,{label:r.role,color:isSup?"#3b82f6":"#22c55e"}),
+                  r.dept && h(Pill,{label:r.dept,color:"#555"}),
+                  multiDep && h("span",{style:{fontSize:11,color:"#f59e0b"}}, "⚠ multi-dept"),
+                  isOffHrs && h("span",{style:{fontSize:11,color:"#818cf8"}}, "🌙 off-hours")
+                ),
+                h("div",{style:{fontSize:11,color:"#444"}},
+                  fmtDT(r.logged_in_at) + (r.device_id ? "  ·  " + r.device_id.slice(0,18) + "…" : "")
+                )
+              )
+            );
+          });
+        })()
+      )
+    ),
+
+    // ── SOPs ──────────────────────────────────────────────────────────────────
+    view==="sops" && h("div", null,
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}},
+        h("div",{style:{fontSize:11,color:"#444"}}, sops.length+" procedure"+(sops.length!==1?"s":"")+" defined"),
+        h("button",{className:"bp",onClick:()=>{setSopForm(defaultSopForm);setEditSopId(null);setShowSopModal(true)}}, "+ add sop")
+      ),
+      sops.length===0 && h(Empty,{msg:"No SOPs yet. Add one above."}),
+      ...Object.entries(
+        sops.reduce((acc,sop)=>{ (acc[sop.dept]=acc[sop.dept]||[]).push(sop); return acc; },{})
+      ).sort(([a],[b])=>a.localeCompare(b)).map(([dept,deptSops]) =>
+        h("div",{key:dept},
+          h(Divider,{label:dept.toUpperCase()}),
+          deptSops.map(sop => {
+            const uniqueViewers = new Set(sopViews.filter(v=>v.sop_id===sop.id).map(v=>v.viewer_name)).size;
+            return h("div",{key:sop.id,style:{...CS,borderLeft:"3px solid #f59e0b",display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}},
+              h("div",{style:{flex:1,minWidth:0}},
+                h("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}},
+                  h("span",{style:{fontWeight:500,fontSize:14,color:"#e5e5e5"}}, sop.title),
+                  h(Pill,{label:sop.dept,color:"#f59e0b"}),
+                  sop.pdf_url && h(Pill,{label:"PDF",color:"#3b82f6"})
+                ),
+                sop.description && h("div",{style:{fontSize:12,color:"#666",marginBottom:6,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:500}}, sop.description),
+                h("div",{style:{display:"flex",alignItems:"center",gap:16,fontSize:11,color:"#444",flexWrap:"wrap"}},
+                  h("span",null, (sop.steps||[]).length+" step"+(sop.steps?.length!==1?"s":"")),
+                  h("span",null, "updated "+fmtD(sop.updated_at)),
+                  uniqueViewers>0 && h("span",{style:{color:"#4ade80"}}, uniqueViewers+" crew member"+(uniqueViewers!==1?"s":"")+" viewed")
+                )
+              ),
+              h("div",{style:{display:"flex",gap:6,flexShrink:0}},
+                h("button",{style:{color:"#60a5fa",borderColor:"#1e3a5f"},onClick:()=>{
+                  setSopForm({
+                    title:       sop.title,
+                    dept:        sop.dept,
+                    description: sop.description||"",
+                    steps:       (sop.steps&&sop.steps.length ? sop.steps : [{instruction:"",warning:""}]).map(st=>({instruction:st.instruction,warning:st.warning||""})),
+                    pdf_url:     sop.pdf_url||"",
+                  });
+                  setEditSopId(sop.id);
+                  setShowSopModal(true);
+                }}, "edit"),
+                h("button",{className:"bd",onClick:()=>deleteSop(sop.id),style:{padding:"7px 10px"}}, "✕")
+              )
+            );
+          })
+        )
+      ),
+
+      // SOP modal
+      showSopModal && h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",zIndex:100,display:"flex",alignItems:"flex-start",justifyContent:"center",overflowY:"auto",padding:"40px 16px"}},
+        h("div",{style:{background:"#141414",borderRadius:10,border:"1px solid #2a2a2a",width:"100%",maxWidth:640,padding:24,marginBottom:40}},
+          h("div",{style:{fontSize:14,fontWeight:500,color:"#e5e5e5",marginBottom:18}}, editSopId?"edit sop":"new sop"),
+          h("div",{style:{display:"grid",gridTemplateColumns:"2fr 1fr",gap:10,marginBottom:10}},
+            h("input",{placeholder:"Title",value:sopForm.title,onChange:e=>setSopForm(p=>({...p,title:e.target.value})),style:IS,autoFocus:!editSopId}),
+            h("select",{value:sopForm.dept,onChange:e=>setSopForm(p=>({...p,dept:e.target.value})),style:IS},
+              ["All","Cutting","Edgebanding","Assembly","Finishing","Craftsman","Install"].map(d=>h("option",{key:d,value:d},d))
+            )
+          ),
+          h("textarea",{placeholder:"Short description (optional)",value:sopForm.description,onChange:e=>setSopForm(p=>({...p,description:e.target.value})),rows:2,style:{...IS,marginBottom:10,resize:"vertical"}}),
+          h("input",{placeholder:"PDF URL (optional)",value:sopForm.pdf_url,onChange:e=>setSopForm(p=>({...p,pdf_url:e.target.value})),style:{...IS,marginBottom:18}}),
+          h("div",{style:{fontSize:10,color:"#555",letterSpacing:".08em",marginBottom:10}}, "STEPS"),
+          ...sopForm.steps.map((step,idx)=>
+            h("div",{key:idx,style:{background:"#111",borderRadius:6,border:"1px solid #1e1e1e",padding:"10px 12px",marginBottom:8}},
+              h("div",{style:{display:"flex",alignItems:"center",gap:6,marginBottom:8}},
+                h("span",{style:{fontSize:11,color:"#555",minWidth:22,fontWeight:500,fontFamily:"'DM Mono',monospace"}}, String(idx+1).padStart(2,"0")),
+                h("button",{
+                  onClick:()=>setSopForm(p=>{const st=p.steps.filter((_,i)=>i!==idx);return {...p,steps:st.length?st:[{instruction:"",warning:""}]};}),
+                  style:{marginLeft:"auto",fontSize:10,padding:"2px 8px",color:"#f87171",borderColor:"#7f1d1d"}
+                }, "remove")
+              ),
+              h("textarea",{
+                placeholder:"What should the crew do?",
+                value:step.instruction,
+                onChange:e=>{const st=[...sopForm.steps];st[idx]={...st[idx],instruction:e.target.value};setSopForm(p=>({...p,steps:st}));},
+                rows:2,
+                style:{...IS,marginBottom:7,resize:"vertical",fontSize:12}
+              }),
+              h("input",{
+                placeholder:"⚠  Warning or caution (optional)",
+                value:step.warning||"",
+                onChange:e=>{const st=[...sopForm.steps];st[idx]={...st[idx],warning:e.target.value};setSopForm(p=>({...p,steps:st}));},
+                style:{...IS,fontSize:12}
+              })
+            )
+          ),
+          h("button",{
+            onClick:()=>setSopForm(p=>({...p,steps:[...p.steps,{instruction:"",warning:""}]})),
+            style:{fontSize:11,color:"#f59e0b",borderColor:"#78350f",marginBottom:18,display:"block"}
+          }, "+ add step"),
+          h("div",{style:{display:"flex",gap:8}},
+            h("button",{className:"bp",onClick:saveSop}, editSopId?"save changes":"create sop"),
+            h("button",{onClick:()=>setShowSopModal(false)}, "cancel")
+          )
+        )
+      )
+    ),
+
+    // Toast
+    toast && h("div",{className:"toast"}, toast)
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(h(App, null));
+</script>
+</body>
+</html>
