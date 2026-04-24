@@ -391,13 +391,17 @@ export default function App() {
     // Log this login for audit trail
     const displayName = name || (await AsyncStorage.getItem(STORAGE.NAME)) || 'Unknown';
     const dept = selectedRole === 'supervisor' ? 'Management' : (await AsyncStorage.getItem(STORAGE.DEPT)) || '';
-    await supabase.from('login_log').insert({
-      worker_name:  displayName,
-      dept,
-      role:         selectedRole,
-      device_id:    deviceId,
-      app_version:  '2',
-    }).catch(console.warn);
+    try {
+      await supabase.from('login_log').insert({
+        worker_name:  displayName,
+        dept,
+        role:         selectedRole,
+        device_id:    deviceId,
+        app_version:  '2',
+      });
+    } catch (e) {
+      console.warn('[handleLogin] login_log insert failed:', e);
+    }
 
     setRole(selectedRole);
   };
@@ -408,12 +412,15 @@ export default function App() {
       if (role === 'supervisor') {
         console.log('[handleResetRole] step 2: updating supervisor session');
         const deviceId = await getDeviceId();
-        await supabase
-          .from('supervisor_sessions')
-          .update({ is_active: false, logged_out_at: new Date().toISOString() })
-          .eq('device_id', deviceId)
-          .eq('is_active', true)
-          .catch(console.warn);
+        try {
+          await supabase
+            .from('supervisor_sessions')
+            .update({ is_active: false, logged_out_at: new Date().toISOString() })
+            .eq('device_id', deviceId)
+            .eq('is_active', true);
+        } catch (e) {
+          console.warn('[handleResetRole] session update failed:', e);
+        }
       }
       console.log('[handleResetRole] step 3: clearing AsyncStorage');
       await Promise.all([

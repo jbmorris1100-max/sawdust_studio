@@ -218,12 +218,16 @@ export default function HomeScreen({ navigation, route }) {
       await AsyncStorage.setItem(STORAGE_KEY_DEPT, draftDept);
       const deviceId = (await AsyncStorage.getItem(DEVICE_ID_KEY)) || 'unknown';
       // Update dept on device_tokens so supervisor sees the change
-      supabase.from('device_tokens').update({ dept: draftDept }).eq('id', deviceId).catch(() => {});
+      try {
+        await supabase.from('device_tokens').update({ dept: draftDept }).eq('id', deviceId);
+      } catch (e) {}
       // Audit log
-      supabase.from('login_log').insert({
-        worker_name: userName, dept: draftDept, role: 'dept_change',
-        device_id: deviceId, app_version: '2',
-      }).catch(() => {});
+      try {
+        await supabase.from('login_log').insert({
+          worker_name: userName, dept: draftDept, role: 'dept_change',
+          device_id: deviceId, app_version: '2',
+        });
+      } catch (e) {}
       setUserDept(draftDept);
       setSetupVisible(false);
       setDeptOnlyMode(false);
