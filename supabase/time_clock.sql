@@ -9,8 +9,9 @@ create table if not exists time_clock (
   clock_in     timestamptz not null,
   clock_out    timestamptz,
   date         date    not null,
-  total_hours  numeric(8,4),
-  created_at   timestamptz not null default now()
+  total_hours    numeric(8,4),
+  break_minutes  integer not null default 0,
+  created_at     timestamptz not null default now()
 );
 
 create index if not exists idx_time_clock_date        on time_clock (date desc);

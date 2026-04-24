@@ -320,7 +320,7 @@ function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBo
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
+      keyboardVerticalOffset={90}
     >
       {/* Thread header */}
       <View style={styles.threadHeader}>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -23,6 +23,9 @@ const STORAGE_KEY_NAME = '@sawdust_user_name';
 const STORAGE_KEY_DEPT = '@sawdust_user_dept';
 const CLOCK_IN_KEY     = '@sawdust_clock_in_time';
 const CLOCK_ID_KEY     = '@sawdust_clock_record_id';
+const BREAK_START_KEY  = '@sawdust_break_start';
+const BREAK_MINS_KEY   = '@sawdust_break_minutes';
+const LAST_READ_KEY    = '@sawdust_last_read';
 
 const DEPARTMENTS = [
   'Cutting',
@@ -49,10 +52,18 @@ const ACTIONS = [
   { key: 'message',   label: 'Message Supervisor', screen: 'Messages',     icon: 'chatbubble-outline',  accentColor: '#22c55e' },
 ];
 
-// ── Main Component ────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────
 const formatMsgTime = (iso) =>
   new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+const fmtSecs = (secs) => {
+  const h = String(Math.floor(secs / 3600)).padStart(2, '0');
+  const m = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
+  const s = String(secs % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+};
+
+// ── Main Component ────────────────────────────────────────────
 export default function HomeScreen({ navigation, route }) {
   const { onResetRole, onClearUnread } = route?.params ?? {};
 
@@ -71,15 +82,25 @@ export default function HomeScreen({ navigation, route }) {
   const [clockRecordId, setClockRecordId]   = useState(null);
   const [elapsed,       setElapsed]         = useState('00:00:00');
   const [clockLoading,  setClockLoading]    = useState(false);
+  const [isOnBreak,         setIsOnBreak]         = useState(false);
+  const [breakStartTime,    setBreakStartTime]    = useState(null);
+  const [totalBreakMinutes, setTotalBreakMinutes] = useState(0);
 
+  // Ref so the realtime subscription always reads the latest lastSeenAt
+  const lastSeenAtRef = useRef('');
+  useEffect(() => { lastSeenAtRef.current = lastSeenAt; }, [lastSeenAt]);
+
+  // ── Load persisted state ──────────────────────────────────
   useEffect(() => {
     (async () => {
-      const [name, dept, seen, ciTime, ciId] = await Promise.all([
+      const [name, dept, seen, ciTime, ciId, bStart, bMins] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEY_NAME),
         AsyncStorage.getItem(STORAGE_KEY_DEPT),
-        AsyncStorage.getItem('@sawdust_last_msg_seen'),
+        AsyncStorage.getItem(LAST_READ_KEY),
         AsyncStorage.getItem(CLOCK_IN_KEY),
         AsyncStorage.getItem(CLOCK_ID_KEY),
+        AsyncStorage.getItem(BREAK_START_KEY),
+        AsyncStorage.getItem(BREAK_MINS_KEY),
       ]);
       if (seen) setLastSeenAt(seen);
       if (ciTime && ciId) {
@@ -87,6 +108,8 @@ export default function HomeScreen({ navigation, route }) {
         setClockInTime(ciTime);
         setClockRecordId(ciId);
       }
+      if (bStart) { setIsOnBreak(true); setBreakStartTime(bStart); }
+      if (bMins)  setTotalBreakMinutes(parseInt(bMins, 10) || 0);
       if (name && dept) {
         setUserName(name);
         setUserDept(dept);
@@ -95,6 +118,23 @@ export default function HomeScreen({ navigation, route }) {
       }
     })();
   }, []);
+
+  // ── Real-time message subscription ───────────────────────
+  useEffect(() => {
+    if (!userName) return;
+    const ch = supabase
+      .channel('home-messages')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
+        if (payload.new.sender_name === userName) return;
+        setRecentMessages((prev) => {
+          const ls = lastSeenAtRef.current;
+          if (ls && payload.new.created_at <= ls) return prev;
+          return [payload.new, ...prev].slice(0, 3);
+        });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [userName]);
 
   const fetchRecentMessages = useCallback(async (name, seenAt) => {
     let query = supabase
@@ -110,7 +150,7 @@ export default function HomeScreen({ navigation, route }) {
 
   const handleNotifPress = useCallback(async () => {
     const now = new Date().toISOString();
-    await AsyncStorage.setItem('@sawdust_last_msg_seen', now);
+    await AsyncStorage.setItem(LAST_READ_KEY, now);
     setLastSeenAt(now);
     setRecentMessages([]);
     onClearUnread?.();
@@ -121,29 +161,37 @@ export default function HomeScreen({ navigation, route }) {
     useCallback(() => {
       if (userDept) fetchAlerts(userDept);
       if (userName) {
-        AsyncStorage.getItem('@sawdust_last_msg_seen').then((seen) => {
-          if (seen !== null) setLastSeenAt(seen);
-          fetchRecentMessages(userName, seen);
+        AsyncStorage.getItem(LAST_READ_KEY).then((seen) => {
+          const s = seen ?? '';
+          if (s) setLastSeenAt(s);
+          fetchRecentMessages(userName, s);
         });
       }
     }, [userDept, userName, fetchRecentMessages])
   );
 
-  // Live elapsed timer while clocked in
+  // ── Elapsed timer (pauses during break) ──────────────────
   useEffect(() => {
     if (!clockedIn || !clockInTime) return;
-    const tick = () => {
-      const diff = Math.floor((Date.now() - new Date(clockInTime).getTime()) / 1000);
-      const h = String(Math.floor(diff / 3600)).padStart(2, '0');
-      const m = String(Math.floor((diff % 3600) / 60)).padStart(2, '0');
-      const s = String(diff % 60).padStart(2, '0');
-      setElapsed(`${h}:${m}:${s}`);
+    const breakSecs = totalBreakMinutes * 60;
+    const compute = () => {
+      if (isOnBreak && breakStartTime) {
+        // Freeze display at the moment break started
+        return Math.max(0, Math.floor(
+          (new Date(breakStartTime).getTime() - new Date(clockInTime).getTime()) / 1000
+        ) - breakSecs);
+      }
+      return Math.max(0, Math.floor(
+        (Date.now() - new Date(clockInTime).getTime()) / 1000
+      ) - breakSecs);
     };
-    tick();
-    const id = setInterval(tick, 1000);
+    setElapsed(fmtSecs(compute()));
+    if (isOnBreak) return;
+    const id = setInterval(() => setElapsed(fmtSecs(compute())), 1000);
     return () => clearInterval(id);
-  }, [clockedIn, clockInTime]);
+  }, [clockedIn, clockInTime, isOnBreak, breakStartTime, totalBreakMinutes]);
 
+  // ── Alerts ────────────────────────────────────────────────
   const fetchAlerts = async (dept) => {
     setAlertLoading(true);
     try {
@@ -159,6 +207,7 @@ export default function HomeScreen({ navigation, route }) {
     }
   };
 
+  // ── Setup ─────────────────────────────────────────────────
   const handleSaveSetup = async () => {
     if (!draftName.trim() || !draftDept) return;
     await Promise.all([
@@ -189,6 +238,7 @@ export default function HomeScreen({ navigation, route }) {
     ]);
   };
 
+  // ── Clock actions ─────────────────────────────────────────
   const handleClockIn = async () => {
     if (!userName || !userDept || clockLoading) return;
     setClockLoading(true);
@@ -214,6 +264,32 @@ export default function HomeScreen({ navigation, route }) {
     }
   };
 
+  const handleBreakStart = async () => {
+    if (!clockedIn || isOnBreak || clockLoading) return;
+    const now = new Date().toISOString();
+    await AsyncStorage.setItem(BREAK_START_KEY, now);
+    setBreakStartTime(now);
+    setIsOnBreak(true);
+  };
+
+  const handleBreakEnd = async () => {
+    if (!isOnBreak || clockLoading) return;
+    setClockLoading(true);
+    try {
+      const breakDuration = Math.round((Date.now() - new Date(breakStartTime).getTime()) / 60000);
+      const newTotal = totalBreakMinutes + breakDuration;
+      await Promise.all([
+        AsyncStorage.setItem(BREAK_MINS_KEY, String(newTotal)),
+        AsyncStorage.removeItem(BREAK_START_KEY),
+      ]);
+      setTotalBreakMinutes(newTotal);
+      setBreakStartTime(null);
+      setIsOnBreak(false);
+    } finally {
+      setClockLoading(false);
+    }
+  };
+
   const handleClockOut = () => {
     Alert.alert('Clock Out', 'End your shift?', [
       { text: 'Cancel', style: 'cancel' },
@@ -224,20 +300,34 @@ export default function HomeScreen({ navigation, route }) {
           setClockLoading(true);
           try {
             const now = new Date().toISOString();
-            const totalHours = +((Date.now() - new Date(clockInTime).getTime()) / 3600000).toFixed(4);
+            const currentBreakMs = isOnBreak && breakStartTime
+              ? Math.round(Date.now() - new Date(breakStartTime).getTime())
+              : 0;
+            const finalBreakMinutes = totalBreakMinutes + Math.round(currentBreakMs / 60000);
+            const netMs = Math.max(0,
+              Date.now() - new Date(clockInTime).getTime()
+              - totalBreakMinutes * 60000
+              - currentBreakMs
+            );
+            const totalHours = +(netMs / 3600000).toFixed(4);
             const { error } = await supabase
               .from('time_clock')
-              .update({ clock_out: now, total_hours: totalHours })
+              .update({ clock_out: now, total_hours: totalHours, break_minutes: finalBreakMinutes })
               .eq('id', clockRecordId);
             if (error) throw new Error(error.message);
             await Promise.all([
               AsyncStorage.removeItem(CLOCK_IN_KEY),
               AsyncStorage.removeItem(CLOCK_ID_KEY),
+              AsyncStorage.removeItem(BREAK_START_KEY),
+              AsyncStorage.removeItem(BREAK_MINS_KEY),
             ]);
             setClockedIn(false);
             setClockInTime(null);
             setClockRecordId(null);
             setElapsed('00:00:00');
+            setIsOnBreak(false);
+            setBreakStartTime(null);
+            setTotalBreakMinutes(0);
           } catch (e) {
             Alert.alert('Clock Out Failed', 'Could not record clock-out. Check network.');
           } finally {
@@ -248,6 +338,7 @@ export default function HomeScreen({ navigation, route }) {
     ]);
   };
 
+  // ── Helpers ───────────────────────────────────────────────
   const badgeFor = (key) => {
     if (key === 'inventory') return openInventory;
     if (key === 'damage')    return openDamage;
@@ -257,6 +348,7 @@ export default function HomeScreen({ navigation, route }) {
   const totalAlerts = openInventory + openDamage;
   const deptStyle = DEPT_COLORS[userDept] ?? { bg: '#1f1f1f', text: '#888' };
 
+  // ── Render ────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="light-content" backgroundColor={C.bg} />
@@ -295,28 +387,61 @@ export default function HomeScreen({ navigation, route }) {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Clock In / Out */}
+        {/* Clock In / Out / Break */}
         {userName ? (
           clockedIn ? (
-            <View style={styles.clockCard}>
-              <View style={styles.clockCardHeader}>
-                <View style={styles.clockCardDot} />
-                <Text style={styles.clockCardStatus}>CLOCKED IN</Text>
+            isOnBreak ? (
+              // ON BREAK card
+              <View style={styles.breakCard}>
+                <View style={styles.clockCardHeader}>
+                  <View style={[styles.clockCardDot, styles.breakDot]} />
+                  <Text style={styles.breakStatus}>ON BREAK</Text>
+                </View>
+                <Text style={styles.breakCardSub}>{userName} · {userDept}</Text>
+                <TouchableOpacity
+                  style={styles.returnBreakBtn}
+                  onPress={handleBreakEnd}
+                  disabled={clockLoading}
+                  activeOpacity={0.8}
+                >
+                  {clockLoading
+                    ? <ActivityIndicator size="small" color={C.accent} />
+                    : <Text style={styles.returnBreakBtnText}>Return from Break</Text>
+                  }
+                </TouchableOpacity>
               </View>
-              <Text style={styles.clockCardElapsed}>{elapsed}</Text>
-              <Text style={styles.clockCardSub}>{userName} · {userDept}</Text>
-              <TouchableOpacity
-                style={styles.clockOutBtn}
-                onPress={handleClockOut}
-                disabled={clockLoading}
-                activeOpacity={0.8}
-              >
-                {clockLoading
-                  ? <ActivityIndicator size="small" color="#ef4444" />
-                  : <Text style={styles.clockOutBtnText}>Clock Out</Text>
-                }
-              </TouchableOpacity>
-            </View>
+            ) : (
+              // CLOCKED IN card
+              <View style={styles.clockCard}>
+                <View style={styles.clockCardHeader}>
+                  <View style={styles.clockCardDot} />
+                  <Text style={styles.clockCardStatus}>CLOCKED IN</Text>
+                </View>
+                <Text style={styles.clockCardElapsed}>{elapsed}</Text>
+                <Text style={styles.clockCardSub}>{userName} · {userDept}</Text>
+                <View style={styles.clockBtnRow}>
+                  <TouchableOpacity
+                    style={styles.breakBtn}
+                    onPress={handleBreakStart}
+                    disabled={clockLoading}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.breakBtnText}>Take Break</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.clockOutBtn}
+                    onPress={handleClockOut}
+                    disabled={clockLoading}
+                    activeOpacity={0.8}
+                  >
+                    {clockLoading
+                      ? <ActivityIndicator size="small" color="#ef4444" />
+                      : <Text style={styles.clockOutBtnText}>Clock Out</Text>
+                    }
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )
           ) : (
             <TouchableOpacity
               style={[styles.clockInBtn, clockLoading && { opacity: 0.6 }]}
@@ -374,7 +499,9 @@ export default function HomeScreen({ navigation, route }) {
                       </Text>
                       <Text style={styles.notifTime}>{formatMsgTime(msg.created_at)}</Text>
                     </View>
-                    <Text style={styles.notifPreview} numberOfLines={1}>{msg.body}</Text>
+                    <Text style={styles.notifPreview} numberOfLines={1}>
+                      {(msg.body || '').slice(0, 40)}
+                    </Text>
                   </View>
                 </TouchableOpacity>
               );
@@ -713,6 +840,7 @@ const styles = StyleSheet.create({
     backgroundColor: C.accent, borderRadius: 16, paddingVertical: 18,
   },
   clockInBtnText: { color: '#000', fontSize: 17, fontWeight: '800', letterSpacing: 0.5 },
+
   clockCard: {
     marginHorizontal: 16, marginTop: 16,
     backgroundColor: '#0a1f10', borderRadius: 16,
@@ -725,10 +853,35 @@ const styles = StyleSheet.create({
   clockCardStatus: { color: '#22c55e', fontSize: 11, fontWeight: '700', letterSpacing: 0.8 },
   clockCardElapsed:{ color: '#22c55e', fontSize: 38, fontWeight: '700', letterSpacing: 2, marginBottom: 4 },
   clockCardSub:    { color: '#555555', fontSize: 13, marginBottom: 16 },
+
+  clockBtnRow: {
+    flexDirection: 'row', gap: 10, alignItems: 'center',
+  },
+  breakBtn: {
+    borderRadius: 12, borderWidth: 1.5, borderColor: '#78350f',
+    backgroundColor: '#1c1200', paddingVertical: 10, paddingHorizontal: 20,
+  },
+  breakBtnText: { color: C.accent, fontSize: 15, fontWeight: '700' },
   clockOutBtn: {
     borderRadius: 12, borderWidth: 1.5, borderColor: '#7f1d1d',
-    backgroundColor: '#2e1a1a', paddingVertical: 10, paddingHorizontal: 28,
+    backgroundColor: '#2e1a1a', paddingVertical: 10, paddingHorizontal: 20,
   },
   clockOutBtnText: { color: '#ef4444', fontSize: 15, fontWeight: '700' },
 
+  // Break card
+  breakCard: {
+    marginHorizontal: 16, marginTop: 16,
+    backgroundColor: '#1c1200', borderRadius: 16,
+    borderWidth: 1.5, borderColor: '#78350f',
+    paddingVertical: 16, paddingHorizontal: 20,
+    alignItems: 'center',
+  },
+  breakDot:    { backgroundColor: C.accent },
+  breakStatus: { color: C.accent, fontSize: 11, fontWeight: '700', letterSpacing: 0.8 },
+  breakCardSub:{ color: '#555555', fontSize: 13, marginBottom: 16 },
+  returnBreakBtn: {
+    borderRadius: 12, borderWidth: 1.5, borderColor: '#78350f',
+    backgroundColor: '#2a1a00', paddingVertical: 10, paddingHorizontal: 24,
+  },
+  returnBreakBtnText: { color: C.accent, fontSize: 15, fontWeight: '700' },
 });
