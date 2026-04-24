@@ -96,13 +96,15 @@ export default function HomeScreen({ navigation, route }) {
     })();
   }, []);
 
-  const fetchRecentMessages = useCallback(async (name) => {
-    const { data } = await supabase
+  const fetchRecentMessages = useCallback(async (name, seenAt) => {
+    let query = supabase
       .from('messages')
       .select('*')
       .neq('sender_name', name)
       .order('created_at', { ascending: false })
       .limit(3);
+    if (seenAt) query = query.gt('created_at', seenAt);
+    const { data } = await query;
     if (data) setRecentMessages(data);
   }, []);
 
@@ -118,7 +120,12 @@ export default function HomeScreen({ navigation, route }) {
   useFocusEffect(
     useCallback(() => {
       if (userDept) fetchAlerts(userDept);
-      if (userName) fetchRecentMessages(userName);
+      if (userName) {
+        AsyncStorage.getItem('@sawdust_last_msg_seen').then((seen) => {
+          if (seen !== null) setLastSeenAt(seen);
+          fetchRecentMessages(userName, seen);
+        });
+      }
     }, [userDept, userName, fetchRecentMessages])
   );
 
@@ -384,7 +391,11 @@ export default function HomeScreen({ navigation, route }) {
                 key={action.key}
                 style={[styles.card, { borderLeftColor: action.accentColor }]}
                 activeOpacity={0.7}
-                onPress={() => navigation.navigate(action.screen, { userName, userDept })}
+                onPress={() =>
+                  action.key === 'message'
+                    ? handleNotifPress()
+                    : navigation.navigate(action.screen, { userName, userDept })
+                }
               >
                 <View style={[styles.cardIconWrap, { backgroundColor: action.accentColor + '22' }]}>
                   <Ionicons name={action.icon} size={24} color={action.accentColor} />
