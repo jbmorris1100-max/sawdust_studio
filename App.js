@@ -14,12 +14,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './src/lib/supabase';
 import { registerForPushNotifications } from './src/lib/notifications';
 import { RoleContext } from './src/lib/RoleContext';
-import HomeScreen      from './src/screens/HomeScreen';
-import PartsScreen     from './src/screens/PartsScreen';
-import InventoryScreen from './src/screens/InventoryScreen';
-import MessagesScreen  from './src/screens/MessagesScreen';
-import SOPsScreen      from './src/screens/SOPsScreen';
-import SupervisorApp   from './src/screens/SupervisorApp';
+import HomeScreen        from './src/screens/HomeScreen';
+import PartsScreen       from './src/screens/PartsScreen';
+import InventoryScreen   from './src/screens/InventoryScreen';
+import MessagesScreen    from './src/screens/MessagesScreen';
+import SOPsScreen        from './src/screens/SOPsScreen';
+import SupervisorApp     from './src/screens/SupervisorApp';
+import OnboardingScreen  from './src/screens/OnboardingScreen';
 
 const Tab = createBottomTabNavigator();
 
@@ -267,10 +268,11 @@ function SupervisorNavigator({ userName }) {
 // ── App ───────────────────────────────────────────────────────
 export default function App() {
   // null = loading, '' = not set, 'crew', 'supervisor'
-  const [role,        setRole]        = useState(null);
-  const [userName,    setUserName]    = useState('');
-  const [userDept,    setUserDept]    = useState('');
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [role,          setRole]          = useState(null);
+  const [userName,      setUserName]      = useState('');
+  const [userDept,      setUserDept]      = useState('');
+  const [unreadCount,   setUnreadCount]   = useState(0);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const channelRef = useRef(null);
 
   useEffect(() => {
@@ -388,6 +390,16 @@ export default function App() {
       AsyncStorage.setItem(STORAGE.VERSION, '2'),
     ]);
 
+    // Show onboarding for first-time crew members who haven't set a name yet
+    if (selectedRole === 'crew' && !name) {
+      const storedName = await AsyncStorage.getItem(STORAGE.NAME);
+      if (!storedName) {
+        setRole('crew');
+        setShowOnboarding(true);
+        return;
+      }
+    }
+
     // Log this login for audit trail
     const displayName = name || (await AsyncStorage.getItem(STORAGE.NAME)) || 'Unknown';
     const dept = selectedRole === 'supervisor' ? 'Management' : (await AsyncStorage.getItem(STORAGE.DEPT)) || '';
@@ -444,12 +456,25 @@ export default function App() {
   resetRoleRef.current = handleResetRole;
   const stableReset = useCallback(() => resetRoleRef.current?.(), []);
 
+  const handleOnboardingComplete = useCallback((name) => {
+    setUserName(name);
+    setShowOnboarding(false);
+  }, []);
+
   if (role === null) return null; // loading
 
   if (role === '') {
     return (
       <SafeAreaProvider>
         <RolePicker onSelect={handleRoleSelect} />
+      </SafeAreaProvider>
+    );
+  }
+
+  if (role === 'crew' && showOnboarding) {
+    return (
+      <SafeAreaProvider>
+        <OnboardingScreen onComplete={handleOnboardingComplete} />
       </SafeAreaProvider>
     );
   }

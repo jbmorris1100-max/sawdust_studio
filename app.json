@@ -16,7 +16,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.munkey1100.sawdustcrew",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "Take photos of damaged parts for damage reports."
       }
     },
     "android": {
@@ -46,6 +47,12 @@
     },
     "plugins": [
       "expo-camera",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Allow Sawdust Studio to take photos of damaged parts."
+        }
+      ],
       [
         "expo-notifications",
         {

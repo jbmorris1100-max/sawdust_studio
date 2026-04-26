@@ -13,8 +13,11 @@ import {
   StatusBar,
   KeyboardAvoidingView,
   Platform,
+  Image,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 
@@ -101,6 +104,13 @@ const DamageItem = ({ item, onStatusChange }) => (
       </View>
       <StatusPill status={item.status} />
     </View>
+    {item.photo_url ? (
+      <Image
+        source={{ uri: item.photo_url }}
+        style={styles.photoThumb}
+        resizeMode="cover"
+      />
+    ) : null}
     <View style={styles.cardActions}>
       {DAMAGE_STATUSES.filter((s) => s !== item.status).map((s) => (
         <TouchableOpacity key={s} style={styles.actionBtn} onPress={() => onStatusChange(item.id, s)}>
@@ -142,6 +152,7 @@ export default function InventoryScreen({ route }) {
   const [dPart,  setDPart]  = useState('');
   const [dJob,   setDJob]   = useState('');
   const [dNotes, setDNotes] = useState('');
+  const [dPhoto, setDPhoto] = useState(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -168,7 +179,24 @@ export default function InventoryScreen({ route }) {
 
   const resetForms = () => {
     setNItem(''); setNJob(''); setNQty('1');
-    setDPart(''); setDJob(''); setDNotes('');
+    setDPart(''); setDJob(''); setDNotes(''); setDPhoto(null);
+  };
+
+  const handlePickPhoto = async () => {
+    if (Platform.OS !== 'web') {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission needed', 'Camera access is required to take photos.');
+        return;
+      }
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      quality: 0.7,
+    });
+    if (!result.canceled && result.assets?.[0]?.uri) {
+      setDPhoto(result.assets[0].uri);
+    }
   };
 
   const showToast = (msg, isError = false) => {
@@ -190,6 +218,7 @@ export default function InventoryScreen({ route }) {
       setModalVisible(false);
     } else {
       if (!dPart.trim()) return;
+      const photoUri = dPhoto; // capture before resetForms clears it
       const tempId = `opt-${Date.now()}`;
       const optimistic = {
         id: tempId,
@@ -197,14 +226,32 @@ export default function InventoryScreen({ route }) {
         dept: userDept,
         job_id: dJob.trim() || null,
         notes: dNotes.trim() || null,
+        photo_url: photoUri, // local URI for immediate preview
         status: 'open',
         created_at: new Date().toISOString(),
       };
       setDamage((prev) => [optimistic, ...prev]);
       setModalVisible(false);
       resetForms();
+
+      // Upload photo to Supabase Storage (if one was taken)
+      let photoUrl = null;
+      if (photoUri) {
+        try {
+          const resp = await fetch(photoUri);
+          const blob = await resp.blob();
+          const fname = `damage_${Date.now()}.jpg`;
+          const { error: upErr } = await supabase.storage
+            .from('damage-photos')
+            .upload(fname, blob, { contentType: 'image/jpeg', upsert: false });
+          if (!upErr) {
+            photoUrl = supabase.storage.from('damage-photos').getPublicUrl(fname).data.publicUrl;
+          }
+        } catch (_) {}
+      }
+
       const timeout = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('timeout')), 5000)
+        setTimeout(() => reject(new Error('timeout')), 10000)
       );
       try {
         const { data, error } = await Promise.race([
@@ -213,6 +260,7 @@ export default function InventoryScreen({ route }) {
             dept: optimistic.dept,
             job_id: optimistic.job_id,
             notes: optimistic.notes,
+            photo_url: photoUrl,
             status: 'open',
           }).select().single(),
           timeout,
@@ -360,6 +408,27 @@ export default function InventoryScreen({ route }) {
                       numberOfLines={3}
                       style={[styles.input, styles.inputMultiline]}
                     />
+                  </Field>
+                  <Field label="Photo (optional)">
+                    <TouchableOpacity style={styles.photoPickerBtn} onPress={handlePickPhoto} activeOpacity={0.75}>
+                      {dPhoto ? (
+                        <>
+                          <Image source={{ uri: dPhoto }} style={styles.photoPickerPreview} resizeMode="cover" />
+                          <TouchableOpacity
+                            style={styles.photoRemoveBtn}
+                            onPress={() => setDPhoto(null)}
+                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                          >
+                            <Ionicons name="close-circle" size={22} color="#ef4444" />
+                          </TouchableOpacity>
+                        </>
+                      ) : (
+                        <View style={styles.photoPickerEmpty}>
+                          <Ionicons name="camera-outline" size={26} color={C.muted} />
+                          <Text style={styles.photoPickerText}>Add Photo</Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
                   </Field>
                 </>
               )}
@@ -574,6 +643,42 @@ const styles = StyleSheet.create({
   },
   submitBtnDisabled: { opacity: 0.35 },
   submitBtnText: { color: '#000', fontSize: 16, fontWeight: '700' },
+
+  // Photo thumbnail on damage card
+  photoThumb: {
+    width: '100%',
+    height: 160,
+    borderRadius: 10,
+    marginTop: 10,
+    backgroundColor: '#1a1a1a',
+  },
+
+  // Photo picker in form
+  photoPickerBtn: {
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: C.border,
+    borderStyle: 'dashed',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  photoPickerEmpty: {
+    height: 90,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: C.input,
+  },
+  photoPickerText: { color: C.muted, fontSize: 13, fontWeight: '600' },
+  photoPickerPreview: {
+    width: '100%',
+    height: 140,
+  },
+  photoRemoveBtn: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+  },
 
   // Resolution badge (crew view of resolved damage)
   resolutionBadge: {

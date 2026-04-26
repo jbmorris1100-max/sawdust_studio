@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "expo start --tunnel",
+    "start": "bash scripts/keepalive.sh & expo start --tunnel",
+    "start:clean": "bash scripts/keepalive.sh & expo start --tunnel --clear",
+    "go": "bash scripts/start.sh",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
@@ -18,6 +20,7 @@
     "@supabase/supabase-js": "^2.103.2",
     "expo": "~54.0.33",
     "expo-camera": "~17.0.10",
+    "expo-image-picker": "~16.0.6",
     "expo-constants": "~18.0.4",
     "expo-dev-client": "~6.0.20",
     "expo-device": "~8.0.10",

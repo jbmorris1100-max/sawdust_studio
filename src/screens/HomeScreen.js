@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react';
 import {
   View,
   Text,
@@ -91,6 +91,7 @@ export default function HomeScreen({ navigation, route }) {
   const [breakStartTime,    setBreakStartTime]    = useState(null);
   const [totalBreakMinutes, setTotalBreakMinutes] = useState(0);
   const [settingsModalVisible, setSettingsModalVisible] = useState(false);
+  const [isOnline, setIsOnline] = useState(null);
 
   // Ref so the realtime subscription always reads the latest lastSeenAt
   const lastSeenAtRef = useRef('');
@@ -119,6 +120,12 @@ export default function HomeScreen({ navigation, route }) {
       if (name && dept) {
         setUserName(name);
         setUserDept(dept);
+      } else if (name && !dept) {
+        // Name set via onboarding — just need department
+        setUserName(name);
+        setDraftName(name);
+        setDeptOnlyMode(true);
+        setSetupVisible(true);
       } else {
         setSetupVisible(true);
       }
@@ -141,6 +148,24 @@ export default function HomeScreen({ navigation, route }) {
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [userName]);
+
+  // ── Connection status ─────────────────────────────────────
+  const checkConnection = useCallback(async () => {
+    try {
+      const { error } = await supabase.from('messages').select('id').limit(1);
+      const networkDown = error?.message?.toLowerCase().includes('fetch') ||
+                          error?.message?.toLowerCase().includes('network');
+      setIsOnline(!networkDown);
+    } catch {
+      setIsOnline(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    checkConnection();
+    const id = setInterval(checkConnection, 30000);
+    return () => clearInterval(id);
+  }, [checkConnection]);
 
   const fetchRecentMessages = useCallback(async (name, seenAt) => {
     let query = supabase
@@ -409,6 +434,9 @@ export default function HomeScreen({ navigation, route }) {
           ) : null}
         </View>
         <View style={styles.headerIcons}>
+          {isOnline !== null && (
+            <View style={[styles.connDot, { backgroundColor: isOnline ? '#22c55e' : '#ef4444' }]} />
+          )}
           <TouchableOpacity
             onPress={handleSwitchRole}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -423,6 +451,13 @@ export default function HomeScreen({ navigation, route }) {
           </TouchableOpacity>
         </View>
       </View>
+
+      {isOnline === false && (
+        <View style={styles.offlineBanner}>
+          <Ionicons name="cloud-offline-outline" size={14} color="#fca5a5" />
+          <Text style={styles.offlineBannerText}>You're offline — data will sync when connected</Text>
+        </View>
+      )}
 
       <ScrollView
         style={styles.flex}
@@ -945,6 +980,28 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
+  },
+  connDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+
+  // Offline banner
+  offlineBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: '#2e1a1a',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#7f1d1d',
+  },
+  offlineBannerText: {
+    color: '#fca5a5',
+    fontSize: 12,
+    fontWeight: '500',
   },
 
   // Clock in / out
