@@ -23,10 +23,10 @@ import { RoleContext } from '../lib/RoleContext';
 // ── Constants ─────────────────────────────────────────────────
 const STORAGE_KEY_NAME = '@sawdust_user_name';
 const STORAGE_KEY_DEPT = '@sawdust_user_dept';
-const CLOCK_IN_KEY     = '@sawdust_clock_in_time';
-const CLOCK_ID_KEY     = '@sawdust_clock_record_id';
-const BREAK_START_KEY  = '@sawdust_break_start';
-const BREAK_MINS_KEY   = '@sawdust_break_minutes';
+const clockInKey    = (n) => `@sawdust_clock_in_${n}`;
+const clockIdKey    = (n) => `@sawdust_clock_id_${n}`;
+const breakStartKey = (n) => `@sawdust_break_start_${n}`;
+const breakMinsKey  = (n) => `@sawdust_break_minutes_${n}`;
 const LAST_READ_KEY    = '@sawdust_last_read';
 const DEVICE_ID_KEY    = '@sawdust_device_id';
 
@@ -100,26 +100,30 @@ export default function HomeScreen({ navigation, route }) {
   // ── Load persisted state ──────────────────────────────────
   useEffect(() => {
     (async () => {
-      const [name, dept, seen, ciTime, ciId, bStart, bMins] = await Promise.all([
+      const [name, dept, seen] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEY_NAME),
         AsyncStorage.getItem(STORAGE_KEY_DEPT),
         AsyncStorage.getItem(LAST_READ_KEY),
-        AsyncStorage.getItem(CLOCK_IN_KEY),
-        AsyncStorage.getItem(CLOCK_ID_KEY),
-        AsyncStorage.getItem(BREAK_START_KEY),
-        AsyncStorage.getItem(BREAK_MINS_KEY),
       ]);
       if (seen) setLastSeenAt(seen);
-      if (ciTime && ciId) {
-        setClockedIn(true);
-        setClockInTime(ciTime);
-        setClockRecordId(ciId);
-      }
-      if (bStart) { setIsOnBreak(true); setBreakStartTime(bStart); }
-      if (bMins)  setTotalBreakMinutes(parseInt(bMins, 10) || 0);
       if (name && dept) {
         setUserName(name);
         setUserDept(dept);
+        // Load clock state using user-specific keys so two crew members on the
+        // same device don't share clock-in state
+        const [ciTime, ciId, bStart, bMins] = await Promise.all([
+          AsyncStorage.getItem(clockInKey(name)),
+          AsyncStorage.getItem(clockIdKey(name)),
+          AsyncStorage.getItem(breakStartKey(name)),
+          AsyncStorage.getItem(breakMinsKey(name)),
+        ]);
+        if (ciTime && ciId) {
+          setClockedIn(true);
+          setClockInTime(ciTime);
+          setClockRecordId(ciId);
+        }
+        if (bStart) { setIsOnBreak(true); setBreakStartTime(bStart); }
+        if (bMins)  setTotalBreakMinutes(parseInt(bMins, 10) || 0);
       } else if (name && !dept) {
         // Name set via onboarding — just need department
         setUserName(name);
@@ -308,8 +312,8 @@ export default function HomeScreen({ navigation, route }) {
         .single();
       if (error || !data) throw new Error(error?.message || 'Insert failed');
       await Promise.all([
-        AsyncStorage.setItem(CLOCK_IN_KEY, now),
-        AsyncStorage.setItem(CLOCK_ID_KEY, data.id),
+        AsyncStorage.setItem(clockInKey(userName), now),
+        AsyncStorage.setItem(clockIdKey(userName), data.id),
       ]);
       setClockInTime(now);
       setClockRecordId(data.id);
@@ -328,7 +332,7 @@ export default function HomeScreen({ navigation, route }) {
   const handleBreakStart = async () => {
     if (!clockedIn || isOnBreak || clockLoading) return;
     const now = new Date().toISOString();
-    await AsyncStorage.setItem(BREAK_START_KEY, now);
+    await AsyncStorage.setItem(breakStartKey(userName), now);
     setBreakStartTime(now);
     setIsOnBreak(true);
   };
@@ -340,8 +344,8 @@ export default function HomeScreen({ navigation, route }) {
       const breakDuration = Math.round((Date.now() - new Date(breakStartTime).getTime()) / 60000);
       const newTotal = totalBreakMinutes + breakDuration;
       await Promise.all([
-        AsyncStorage.setItem(BREAK_MINS_KEY, String(newTotal)),
-        AsyncStorage.removeItem(BREAK_START_KEY),
+        AsyncStorage.setItem(breakMinsKey(userName), String(newTotal)),
+        AsyncStorage.removeItem(breakStartKey(userName)),
       ]);
       setTotalBreakMinutes(newTotal);
       setBreakStartTime(null);
@@ -352,6 +356,23 @@ export default function HomeScreen({ navigation, route }) {
   };
 
   const doClockOut = async () => {
+    console.log('[doClockOut] clockRecordId =', clockRecordId);
+    // Recover record ID from storage if state was lost (e.g. app restart between clock-in and out)
+    let recordId = clockRecordId;
+    if (!recordId) {
+      recordId = await AsyncStorage.getItem(clockIdKey(userName));
+      console.log('[doClockOut] fetched recordId from storage:', recordId);
+      if (recordId) setClockRecordId(recordId);
+    }
+    if (!recordId) {
+      if (Platform.OS === 'web') {
+        window.alert('No active clock-in record found. You may already be clocked out.');
+      } else {
+        Alert.alert('Clock Out Error', 'No active clock-in record found. You may already be clocked out.');
+      }
+      return;
+    }
+
     setClockLoading(true);
     try {
       const now = new Date().toISOString();
@@ -368,13 +389,13 @@ export default function HomeScreen({ navigation, route }) {
       const { error } = await supabase
         .from('time_clock')
         .update({ clock_out: now, total_hours: totalHours, break_minutes: finalBreakMinutes })
-        .eq('id', clockRecordId);
+        .eq('id', recordId);
       if (error) throw new Error(error.message);
       await Promise.all([
-        AsyncStorage.removeItem(CLOCK_IN_KEY),
-        AsyncStorage.removeItem(CLOCK_ID_KEY),
-        AsyncStorage.removeItem(BREAK_START_KEY),
-        AsyncStorage.removeItem(BREAK_MINS_KEY),
+        AsyncStorage.removeItem(clockInKey(userName)),
+        AsyncStorage.removeItem(clockIdKey(userName)),
+        AsyncStorage.removeItem(breakStartKey(userName)),
+        AsyncStorage.removeItem(breakMinsKey(userName)),
       ]);
       setClockedIn(false);
       setClockInTime(null);

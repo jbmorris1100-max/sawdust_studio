@@ -155,15 +155,16 @@ export default function InventoryScreen({ route }) {
   const [dPhoto, setDPhoto] = useState(null);
 
   const fetchData = useCallback(async () => {
+    if (!userDept) return;
     setLoading(true);
     const [needsRes, damageRes] = await Promise.all([
-      supabase.from('inventory_needs').select('*').order('created_at', { ascending: false }),
-      supabase.from('damage_reports').select('*').order('created_at', { ascending: false }),
+      supabase.from('inventory_needs').select('*').eq('dept', userDept).order('created_at', { ascending: false }),
+      supabase.from('damage_reports').select('*').eq('dept', userDept).order('created_at', { ascending: false }),
     ]);
     if (needsRes.data)  setNeeds(needsRes.data);
     if (damageRes.data) setDamage(damageRes.data);
     setLoading(false);
-  }, []);
+  }, [userDept]);
 
   useFocusEffect(useCallback(() => { fetchData(); }, [fetchData]));
 

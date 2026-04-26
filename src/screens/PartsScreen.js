@@ -121,9 +121,11 @@ export default function PartsScreen({ route }) {
   useEffect(() => { fetchRecent(); }, []);
 
   const fetchRecent = async () => {
+    if (!dept) return;
     const { data } = await supabase
       .from('part_scans')
       .select('*')
+      .eq('dept', dept)
       .order('created_at', { ascending: false })
       .limit(5);
     if (data) setRecentScans(data);

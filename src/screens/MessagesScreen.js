@@ -114,18 +114,28 @@ export default function MessagesScreen({ route }) {
   const channelRef = useRef(null);
 
   const fetchMessages = useCallback(async () => {
+    if (!userName) return;
+    // Fetch own messages + Supervisor messages, then filter to this dept
     const { data, error } = await supabase
       .from('messages')
       .select('*')
+      .in('sender_name', [userName, 'Supervisor'])
       .order('created_at', { ascending: true })
-      .limit(200);
+      .limit(500);
 
     if (error) {
       console.error('[Messages] fetch failed:', error.message);
+      setLoading(false);
+      return;
     }
-    if (!error && data) setMessages(data);
+    // Only show own messages or supervisor replies targeted at this dept
+    const visible = (data || []).filter(
+      (m) => m.sender_name === userName ||
+             (m.sender_name === 'Supervisor' && m.dept === userDept)
+    );
+    setMessages(visible);
     setLoading(false);
-  }, []);
+  }, [userName, userDept]);
 
   useEffect(() => {
     fetchMessages();
@@ -136,9 +146,13 @@ export default function MessagesScreen({ route }) {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
         (payload) => {
+          const msg = payload.new;
+          const isOwn = msg.sender_name === userName;
+          const isSupToMyDept = msg.sender_name === 'Supervisor' && msg.dept === userDept;
+          if (!isOwn && !isSupToMyDept) return;
           setMessages((prev) => {
-            if (prev.some((m) => m.id === payload.new.id)) return prev;
-            return [...prev, payload.new];
+            if (prev.some((m) => m.id === msg.id)) return prev;
+            return [...prev, msg];
           });
         }
       )
