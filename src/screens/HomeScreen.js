@@ -259,10 +259,17 @@ export default function HomeScreen({ navigation, route }) {
           device_id: deviceId, app_version: '2',
         });
       } catch (e) {}
+      // IMPORTANT: clock state (clockedIn, clockInTime, clockRecordId, break state,
+      // and all clock AsyncStorage keys) is intentionally NOT touched here.
+      // A department switch must never interrupt an active shift.
       setUserDept(draftDept);
       setSetupVisible(false);
       setDeptOnlyMode(false);
       fetchAlerts(draftDept);
+      // Refresh HomeScreen message notifications for the new dept context
+      AsyncStorage.getItem(LAST_READ_KEY).then((seen) => {
+        fetchRecentMessages(userName, seen ?? '');
+      });
       return;
     }
     if (!draftName.trim() || !draftDept) return;
@@ -302,14 +309,22 @@ export default function HomeScreen({ navigation, route }) {
   // ── Clock actions ─────────────────────────────────────────
   const handleClockIn = async () => {
     if (!userName || !userDept || clockLoading) return;
-    setClockLoading(true);
+    setClockLoading(true); // spinner shows immediately while insert runs
     try {
       const now = new Date().toISOString();
-      const { data, error } = await supabase
-        .from('time_clock')
-        .insert({ worker_name: userName, dept: userDept, clock_in: now, date: now.slice(0, 10) })
-        .select()
-        .single();
+      const { data, error } = await Promise.race([
+        supabase
+          .from('time_clock')
+          .insert({ worker_name: userName, dept: userDept, clock_in: now, date: now.slice(0, 10) })
+          .select()
+          .single(),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error('Clock in timed out — check your network and try again.')),
+            3000
+          )
+        ),
+      ]);
       if (error || !data) throw new Error(error?.message || 'Insert failed');
       await Promise.all([
         AsyncStorage.setItem(clockInKey(userName), now),
@@ -465,7 +480,18 @@ export default function HomeScreen({ navigation, route }) {
             <Ionicons name="settings-outline" size={24} color={C.muted} />
           </TouchableOpacity>
           <TouchableOpacity
-            onPress={() => { setDraftName(userName); setDraftDept(userDept); setSetupVisible(true); }}
+            onPress={() => {
+              // If already set up, open in dept-only mode to prevent name changes
+              // that would silently diverge from clock-state AsyncStorage keys.
+              if (userName) {
+                setDeptOnlyMode(true);
+                setDraftDept(userDept);
+              } else {
+                setDraftName('');
+                setDraftDept('');
+              }
+              setSetupVisible(true);
+            }}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
             <Ionicons name="person-circle-outline" size={30} color={C.muted} />
