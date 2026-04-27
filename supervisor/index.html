@@ -88,7 +88,7 @@ const SM = {
 const uid   = () => Date.now() + "_" + Math.random().toString(36).slice(2,5);
 const fmtD  = iso => new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric"});
 const fmtDT = iso => fmtD(iso) + " " + new Date(iso).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-const today = () => new Date().toISOString().slice(0,10);
+const today = () => { const d = new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
 const dimStr = p => [p.width,p.height,p.depth].filter(v => v && v.trim()).join(" x ");
 
 const getWebDeviceId = () => {
@@ -195,7 +195,7 @@ function App() {
       if (ms.data) setMessages(ms.data);
       if (so.data) setSops(so.data);
       if (sv.data) setSopViews(sv.data);
-      if (tc.data) setTcToday(tc.data);
+      if (tc.data) { setTcToday(tc.data); console.log("[supervisor] time_clock fetch →", tc.data.length, "records for", today(), tc.data); }
       setSbReady(true);
     });
 
@@ -629,7 +629,7 @@ function App() {
     const resTypeMap = {};
     resolvedD.forEach(d => { resTypeMap[d.resolution_type] = (resTypeMap[d.resolution_type]||0) + 1; });
     const flagged = jobs.filter(j => j.status === "flagged");
-    const tcActive = tcToday.filter(e => !e.clock_out);
+    const tcActive = tcToday.filter(e => !e.clock_out || e.clock_out === "NULL");
     const tcDeptHrs = {};
     tcToday.forEach(e => {
       const h = e.clock_out ? (e.total_hours||0) : (Date.now() - new Date(e.clock_in).getTime()) / 3600000;
@@ -1386,7 +1386,7 @@ function App() {
 
     // ── REPORT ────────────────────────────────────────────────────────────────
     view==="report" && (() => {
-      const activeTc = tcToday.filter(e => !e.clock_out);
+      const activeTc = tcToday.filter(e => !e.clock_out || e.clock_out === "NULL");
       const tcTotalHours = tcToday.reduce((sum, e) => {
         if (e.clock_out) return sum + (e.total_hours || 0);
         return sum + (tcNow - new Date(e.clock_in).getTime()) / 3600000;
