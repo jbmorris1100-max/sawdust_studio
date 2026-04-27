@@ -11,6 +11,9 @@ import {
   ActivityIndicator,
   SafeAreaView,
   StatusBar,
+  Alert,
+  Animated,
+  PanResponder,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
@@ -92,6 +95,66 @@ const MessageBubble = React.memo(({ item, isOwn }) => {
   );
 });
 
+// ── Swipe-to-delete for own messages ─────────────────────────
+function SwipeableMessageRow({ onDelete, children }) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const DELETE_WIDTH = 72;
+
+  const panResponder = useRef(PanResponder.create({
+    onMoveShouldSetPanResponder: (_, g) =>
+      Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 6,
+    onPanResponderMove: (_, g) => {
+      if (g.dx < 0) translateX.setValue(Math.max(g.dx, -DELETE_WIDTH - 20));
+    },
+    onPanResponderRelease: (_, g) => {
+      if (g.dx < -DELETE_WIDTH / 2) {
+        Animated.spring(translateX, { toValue: -DELETE_WIDTH, useNativeDriver: true }).start();
+      } else {
+        Animated.spring(translateX, { toValue: 0, useNativeDriver: true }).start();
+      }
+    },
+  })).current;
+
+  const snapBack = () =>
+    Animated.spring(translateX, { toValue: 0, useNativeDriver: true }).start();
+
+  const handleDeleteTap = () => {
+    Alert.alert(
+      'Delete message?',
+      'This message will be permanently removed.',
+      [
+        { text: 'Cancel', style: 'cancel', onPress: snapBack },
+        {
+          text: 'Delete', style: 'destructive',
+          onPress: () =>
+            Animated.timing(translateX, { toValue: -400, duration: 180, useNativeDriver: true })
+              .start(() => onDelete()),
+        },
+      ]
+    );
+  };
+
+  return (
+    <View style={{ overflow: 'hidden' }}>
+      <View style={{
+        position: 'absolute', right: 0, top: 0, bottom: 0,
+        width: DELETE_WIDTH, backgroundColor: '#ef4444',
+        justifyContent: 'center', alignItems: 'center',
+      }}>
+        <TouchableOpacity
+          onPress={handleDeleteTap}
+          style={{ flex: 1, justifyContent: 'center', alignItems: 'center', width: '100%' }}
+        >
+          <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Delete</Text>
+        </TouchableOpacity>
+      </View>
+      <Animated.View style={{ transform: [{ translateX }] }} {...panResponder.panHandlers}>
+        {children}
+      </Animated.View>
+    </View>
+  );
+}
+
 // ── Date Separator ────────────────────────────────────────────
 const DateSeparator = ({ date }) => (
   <View style={styles.separatorRow}>
@@ -137,6 +200,11 @@ export default function MessagesScreen({ route }) {
     setLoading(false);
   }, [userName, userDept]);
 
+  const deleteMessage = useCallback(async (id) => {
+    setMessages((prev) => prev.filter((m) => m.id !== id));
+    await supabase.from('messages').delete().eq('id', id);
+  }, []);
+
   useEffect(() => {
     fetchMessages();
 
@@ -154,6 +222,13 @@ export default function MessagesScreen({ route }) {
             if (prev.some((m) => m.id === msg.id)) return prev;
             return [...prev, msg];
           });
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'messages' },
+        (payload) => {
+          setMessages((prev) => prev.filter((m) => m.id !== payload.old.id));
         }
       )
       .subscribe();
@@ -201,8 +276,16 @@ export default function MessagesScreen({ route }) {
 
   const renderItem = useCallback(({ item }) => {
     if (item.type === 'separator') return <DateSeparator date={item.date} />;
-    return <MessageBubble item={item} isOwn={item.sender_name === userName} />;
-  }, [userName]);
+    const isOwn = item.sender_name === userName;
+    if (isOwn) {
+      return (
+        <SwipeableMessageRow onDelete={() => deleteMessage(item.id)}>
+          <MessageBubble item={item} isOwn />
+        </SwipeableMessageRow>
+      );
+    }
+    return <MessageBubble item={item} isOwn={false} />;
+  }, [userName, deleteMessage]);
 
   const displayItems = injectDateSeparators(messages);
 

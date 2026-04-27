@@ -83,7 +83,7 @@ const NeedItem = ({ item, onStatusChange }) => (
 );
 
 // ── Damage List Item ──────────────────────────────────────────
-const DamageItem = ({ item, onStatusChange }) => (
+const DamageItem = ({ item, onStatusChange, onArchive }) => (
   <View style={styles.card}>
     <View style={styles.cardTop}>
       <View style={styles.cardMain}>
@@ -102,7 +102,24 @@ const DamageItem = ({ item, onStatusChange }) => (
           </View>
         ) : null}
       </View>
-      <StatusPill status={item.status} />
+      <View style={{ alignItems: 'flex-end', gap: 8 }}>
+        <StatusPill status={item.status} />
+        {item.status === 'resolved' && onArchive ? (
+          <TouchableOpacity
+            onPress={() => Alert.alert(
+              'Remove from view?',
+              'Delete this resolved report? It will be removed from your view but saved in the supervisor report.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Delete', style: 'destructive', onPress: () => onArchive(item.id) },
+              ]
+            )}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+          >
+            <Ionicons name="trash-outline" size={16} color="#ef4444" />
+          </TouchableOpacity>
+        ) : null}
+      </View>
     </View>
     {item.photo_url ? (
       <Image
@@ -159,7 +176,7 @@ export default function InventoryScreen({ route }) {
     setLoading(true);
     const [needsRes, damageRes] = await Promise.all([
       supabase.from('inventory_needs').select('*').eq('dept', userDept).order('created_at', { ascending: false }),
-      supabase.from('damage_reports').select('*').eq('dept', userDept).order('created_at', { ascending: false }),
+      supabase.from('damage_reports').select('*').eq('dept', userDept).eq('archived', false).order('created_at', { ascending: false }),
     ]);
     if (needsRes.data)  setNeeds(needsRes.data);
     if (damageRes.data) setDamage(damageRes.data);
@@ -176,6 +193,11 @@ export default function InventoryScreen({ route }) {
   const updateDamageStatus = async (id, status) => {
     setDamage((prev) => prev.map((d) => d.id === id ? { ...d, status } : d));
     await supabase.from('damage_reports').update({ status }).eq('id', id);
+  };
+
+  const archiveDamage = async (id) => {
+    setDamage((prev) => prev.filter((d) => d.id !== id));
+    await supabase.from('damage_reports').update({ archived: true }).eq('id', id);
   };
 
   const resetForms = () => {
@@ -366,7 +388,7 @@ export default function InventoryScreen({ route }) {
           renderItem={({ item }) =>
             activeTab === 'needs'
               ? <NeedItem item={item} onStatusChange={updateNeedStatus} />
-              : <DamageItem item={item} onStatusChange={updateDamageStatus} />
+              : <DamageItem item={item} onStatusChange={updateDamageStatus} onArchive={archiveDamage} />
           }
         />
       )}

@@ -236,6 +236,9 @@ function App() {
         // only badge for incoming crew messages, not supervisor's own sends
         if (payload.new.sender_name !== "Supervisor") setUnread(n => n + 1);
       })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "messages" }, payload => {
+        setMessages(p => p.filter(m => m.id !== payload.old.id));
+      })
       .subscribe();
 
     const sopCh = sb.channel("sup-sops")
@@ -476,6 +479,16 @@ function App() {
   const updateDamageStatus = async (id, status) => {
     setDamageRpts(p => p.map(d => d.id === id ? { ...d, status } : d));
     await sb.from("damage_reports").update({ status }).eq("id", id);
+  };
+
+  const archiveDamage = async id => {
+    setDamageRpts(p => p.map(d => d.id === id ? { ...d, archived: true } : d));
+    await sb.from("damage_reports").update({ archived: true }).eq("id", id);
+  };
+
+  const deleteMessage = async id => {
+    setMessages(p => p.filter(m => m.id !== id));
+    await sb.from("messages").delete().eq("id", id);
   };
 
   const submitResolution = async () => {
@@ -1185,14 +1198,15 @@ function App() {
       (damageF==="all" ? damageRpts : damageRpts.filter(d=>d.status===damageF)).map(d => {
         const col = d.status==="open" ? "#ef4444" : d.status==="reviewed" ? "#f59e0b" : "#22c55e";
         const resCol = d.resolution_type ? (RES_COLORS[d.resolution_type] || "#6b7280") : null;
-        return h("div",{key:d.id,style:{...CS,borderLeft:`3px solid ${col}`}},
+        return h("div",{key:d.id,style:{...CS,borderLeft:`3px solid ${d.archived?"#333":col}`,opacity:d.archived?0.45:1}},
           h("div",{style:{display:"flex",alignItems:"flex-start",justifyContent:"space-between"}},
             h("div",{style:{flex:1}},
               h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:4}},
                 h("span",{style:{color:AM,fontWeight:500}}, "#"+(d.job_id||"—")),
                 h("span",{style:{fontSize:13,color:"#ccc"}}, d.part_name),
                 h(Pill,{label:d.dept,color:"#3b82f6"}),
-                h(Pill,{label:d.status,color:col})
+                h(Pill,{label:d.status,color:col}),
+                d.archived && h(Pill,{label:"archived",color:"#555"})
               ),
               d.notes && h("div",{style:{fontSize:12,color:"#666",marginBottom:4,fontStyle:"italic"}}, d.notes),
               d.resolution_type && h("div",{style:{display:"flex",flexWrap:"wrap",gap:6,marginTop:6,marginBottom:4,alignItems:"center"}},
@@ -1203,8 +1217,12 @@ function App() {
               h("div",{style:{fontSize:11,color:"#444"}}, fmtD(d.created_at))
             ),
             h("div",{style:{display:"flex",flexDirection:"column",gap:6,flexShrink:0,marginLeft:12,alignItems:"flex-end"}},
-              d.status==="open" && h("button",{style:{color:"#60a5fa",borderColor:"#1e3a5f"},onClick:()=>updateDamageStatus(d.id,"reviewed")}, "reviewed"),
-              d.status!=="resolved" && h("button",{className:"bg",onClick:()=>{setResolveModal(d);setResType("Rework Order");setResNotes("");setResBy(supervisorName||"");}}, "resolve")
+              !d.archived && d.status==="open" && h("button",{style:{color:"#60a5fa",borderColor:"#1e3a5f"},onClick:()=>updateDamageStatus(d.id,"reviewed")}, "reviewed"),
+              !d.archived && d.status!=="resolved" && h("button",{className:"bg",onClick:()=>{setResolveModal(d);setResType("Rework Order");setResNotes("");setResBy(supervisorName||"");}}, "resolve"),
+              !d.archived && d.status==="resolved" && h("button",{
+                style:{color:"#ef4444",borderColor:"#450a0a",fontSize:11,padding:"4px 10px"},
+                onClick:()=>{ if(window.confirm("Archive this report? It will be hidden from crew but kept in the supervisor report.")) archiveDamage(d.id); }
+              }, "archive")
             )
           )
         );
@@ -1310,23 +1328,35 @@ function App() {
             .sort((a,b) => a.created_at.localeCompare(b.created_at))
         : [];
 
-      // Bubble row renderer
-      const MsgRow = (m) => {
+      // Bubble row renderer (component so useState works for hover)
+      const MsgRow = ({ m, onDelete }) => {
+        const [hov, setHov] = React.useState(false);
         const isOwn = m.sender_name === "Supervisor";
         return h("div",{
-          key: m.id,
           style:{
             display:"flex", flexDirection:"column",
             alignItems: isOwn ? "flex-end" : "flex-start",
             alignSelf:  isOwn ? "flex-end" : "flex-start",
-            maxWidth:"72%", marginBottom:12,
-          }
+            maxWidth:"72%", marginBottom:12, position:"relative",
+          },
+          onMouseEnter: () => setHov(true),
+          onMouseLeave: () => setHov(false),
         },
           !isOwn && h("div",{style:{fontSize:10,color:"#555",marginBottom:3,marginLeft:2}},
             m.sender_name + (m.dept ? " · "+m.dept : "")
           ),
-          h("div",{ className: isOwn ? "bubble-out" : "bubble-in" },
-            h("span",{style:{fontSize:13,color:isOwn?"#1a0900":"#e5e5e5",whiteSpace:"pre-wrap",lineHeight:1.5}}, m.body)
+          h("div",{style:{position:"relative",display:"flex",alignItems:"center",gap:6,flexDirection:isOwn?"row-reverse":"row"}},
+            h("div",{ className: isOwn ? "bubble-out" : "bubble-in" },
+              h("span",{style:{fontSize:13,color:isOwn?"#1a0900":"#e5e5e5",whiteSpace:"pre-wrap",lineHeight:1.5}}, m.body)
+            ),
+            hov && h("button",{
+              onClick: () => { if(window.confirm("Delete this message for everyone?")) onDelete(m.id); },
+              style:{
+                background:"none",border:"none",cursor:"pointer",padding:"2px 4px",
+                color:"#ef4444",fontSize:13,lineHeight:1,opacity:0.7,flexShrink:0,
+              },
+              title:"Delete message",
+            }, "×")
           ),
           h("div",{style:{fontSize:10,color:"#444",marginTop:3}},
             new Date(m.created_at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})
@@ -1395,7 +1425,7 @@ function App() {
         },
           threadMsgs.length===0
             ? h(Empty,{msg:"No messages in this thread yet."})
-            : threadMsgs.map(MsgRow)
+            : threadMsgs.map(m => h(MsgRow,{key:m.id,m,onDelete:deleteMessage}))
         ),
         // Compose
         h("div",{style:{display:"flex",gap:10,alignItems:"flex-end"}},
@@ -1552,9 +1582,12 @@ function App() {
                   h("tbody",null,
                     resolved.map(d => {
                       const rc = RES_COLORS[d.resolution_type] || "#6b7280";
-                      return h("tr",{key:d.id,style:{borderBottom:"1px solid #111"}},
+                      return h("tr",{key:d.id,style:{borderBottom:"1px solid #111",opacity:d.archived?0.45:1}},
                         h("td",{style:{padding:"8px 12px",color:AM}}, "#"+(d.job_id||"—")),
-                        h("td",{style:{padding:"8px 12px",color:"#ccc"}}, d.part_name),
+                        h("td",{style:{padding:"8px 12px",color:"#ccc"}},
+                          d.part_name,
+                          d.archived && h("span",{style:{fontSize:9,color:"#555",marginLeft:6,fontStyle:"italic"}}, "(archived)")
+                        ),
                         h("td",{style:{padding:"8px 12px",color:"#555"}}, d.dept),
                         h("td",{style:{padding:"8px 12px"}}, h("span",{style:{fontSize:10,background:rc+"20",color:rc,padding:"2px 8px",borderRadius:99,border:`1px solid ${rc}40`,whiteSpace:"nowrap"}}, d.resolution_type||"—")),
                         h("td",{style:{padding:"8px 12px",color:"#666",fontStyle:"italic",maxWidth:200}}, d.resolution_notes||"—"),

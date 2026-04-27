@@ -100,6 +100,59 @@ const FEATURE_LABELS = {
 const formatDate = (iso) =>
   new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
 
+// ── Swipeable row with Alert confirmation (for messages) ──────
+function SwipeableMessageRow({ onDelete, children }) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const DELETE_WIDTH = 72;
+
+  const panResponder = useRef(PanResponder.create({
+    onMoveShouldSetPanResponder: (_, g) =>
+      Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 6,
+    onPanResponderMove: (_, g) => {
+      if (g.dx < 0) translateX.setValue(Math.max(g.dx, -DELETE_WIDTH - 20));
+    },
+    onPanResponderRelease: (_, g) => {
+      if (g.dx < -DELETE_WIDTH / 2) {
+        Animated.spring(translateX, { toValue: -DELETE_WIDTH, useNativeDriver: true }).start();
+      } else {
+        Animated.spring(translateX, { toValue: 0, useNativeDriver: true }).start();
+      }
+    },
+  })).current;
+
+  const snapBack = () =>
+    Animated.spring(translateX, { toValue: 0, useNativeDriver: true }).start();
+
+  const handleDeleteTap = () => {
+    Alert.alert(
+      'Delete message?',
+      'This message will be permanently removed for everyone.',
+      [
+        { text: 'Cancel', style: 'cancel', onPress: snapBack },
+        {
+          text: 'Delete', style: 'destructive',
+          onPress: () =>
+            Animated.timing(translateX, { toValue: -400, duration: 180, useNativeDriver: true })
+              .start(() => onDelete()),
+        },
+      ]
+    );
+  };
+
+  return (
+    <View style={{ overflow: 'hidden' }}>
+      <View style={[styles.swipeDeleteBg, { width: DELETE_WIDTH }]}>
+        <TouchableOpacity onPress={handleDeleteTap} style={styles.swipeDeleteBtn}>
+          <Text style={styles.swipeDeleteText}>Delete</Text>
+        </TouchableOpacity>
+      </View>
+      <Animated.View style={{ transform: [{ translateX }], backgroundColor: C.bg }} {...panResponder.panHandlers}>
+        {children}
+      </Animated.View>
+    </View>
+  );
+}
+
 // ── Swipeable row (left-swipe to reveal Delete) ───────────────
 function SwipeableRow({ onDelete, children }) {
   const translateX = useRef(new Animated.Value(0)).current;
@@ -346,7 +399,7 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
 }
 
 // ── Messages Tab ──────────────────────────────────────────────
-function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBody, setMsgBody, sending, sendMessage, listRef }) {
+function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBody, setMsgBody, sending, sendMessage, listRef, onDeleteMsg }) {
   if (!activeThread) {
     return (
       <View style={styles.flex}>
@@ -438,7 +491,7 @@ function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBo
         }
         renderItem={({ item: m }) => {
           const isOwn = m.sender_name === 'Supervisor';
-          return (
+          const bubble = (
             <View style={[styles.bubbleRow, isOwn ? styles.bubbleRowOut : styles.bubbleRowIn]}>
               {!isOwn && (
                 <Text style={styles.bubbleSender}>{m.sender_name}</Text>
@@ -452,6 +505,11 @@ function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBo
                 {formatTime(m.created_at)}
               </Text>
             </View>
+          );
+          return (
+            <SwipeableMessageRow onDelete={() => onDeleteMsg(m.id)}>
+              {bubble}
+            </SwipeableMessageRow>
           );
         }}
       />
@@ -590,8 +648,8 @@ function NeedsTab({ allNeeds, filter, setFilter, onStatusChange }) {
 }
 
 // ── Damage Tab ────────────────────────────────────────────────
-function DamageTab({ allDamage, filter, setFilter, onStatusChange, onResolve, userName }) {
-  const filtered = filter === 'all' ? allDamage : allDamage.filter((d) => d.status === filter);
+function DamageTab({ allDamage, filter, setFilter, onStatusChange, onResolve, onArchive, userName }) {
+  const filtered = (filter === 'all' ? allDamage : allDamage.filter((d) => d.status === filter));
   const [resolveItem, setResolveItem] = useState(null);
   const [resType,     setResType]     = useState('');
   const [resNotes,    setResNotes]    = useState('');
@@ -649,7 +707,7 @@ function DamageTab({ allDamage, filter, setFilter, onStatusChange, onResolve, us
             d.status === 'reviewed' ? C.accent :
             C.success;
           return (
-            <View style={[styles.dataCard, { borderLeftColor: col }]}>
+            <View style={[styles.dataCard, { borderLeftColor: col, opacity: d.archived ? 0.45 : 1 }]}>
               <View style={styles.cardTopRow}>
                 <View style={styles.cardMainBlock}>
                   <Text style={styles.cardTitle}>{d.part_name}</Text>
@@ -660,6 +718,9 @@ function DamageTab({ allDamage, filter, setFilter, onStatusChange, onResolve, us
                     <Text style={styles.cardNotes}>{d.notes}</Text>
                   ) : null}
                   <Text style={styles.cardDate}>{formatDate(d.created_at)}</Text>
+                  {d.archived ? (
+                    <Text style={{ fontSize: 10, color: C.muted, marginTop: 4, fontStyle: 'italic' }}>archived by crew</Text>
+                  ) : null}
                   {d.resolution_type ? (
                     <View style={{ marginTop: 8, backgroundColor: C.successBg, borderRadius: 8, borderWidth: 1, borderColor: C.successBorder, padding: 8 }}>
                       <Text style={{ fontSize: 11, fontWeight: '700', color: C.success, marginBottom: 2 }}>{d.resolution_type}</Text>
@@ -672,26 +733,45 @@ function DamageTab({ allDamage, filter, setFilter, onStatusChange, onResolve, us
                     </View>
                   ) : null}
                 </View>
-                <StatusPill status={d.status} />
+                <View style={{ alignItems: 'flex-end', gap: 8 }}>
+                  <StatusPill status={d.status} />
+                  {d.status === 'resolved' && !d.archived && onArchive ? (
+                    <TouchableOpacity
+                      onPress={() => Alert.alert(
+                        'Archive report?',
+                        'This will be hidden from the crew view but remain in the supervisor report.',
+                        [
+                          { text: 'Cancel', style: 'cancel' },
+                          { text: 'Archive', style: 'destructive', onPress: () => onArchive(d.id) },
+                        ]
+                      )}
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                    >
+                      <Ionicons name="trash-outline" size={16} color={C.error} />
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
               </View>
-              <View style={styles.cardActionRow}>
-                {d.status === 'open' && (
-                  <TouchableOpacity
-                    style={[styles.actionBtn, { borderColor: C.blueBorder }]}
-                    onPress={() => onStatusChange(d.id, 'reviewed')}
-                  >
-                    <Text style={[styles.actionBtnText, { color: C.blue }]}>reviewed</Text>
-                  </TouchableOpacity>
-                )}
-                {d.status !== 'resolved' && (
-                  <TouchableOpacity
-                    style={[styles.actionBtn, { borderColor: C.successBorder }]}
-                    onPress={() => openResolve(d)}
-                  >
-                    <Text style={[styles.actionBtnText, { color: C.success }]}>Resolve</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
+              {!d.archived && (
+                <View style={styles.cardActionRow}>
+                  {d.status === 'open' && (
+                    <TouchableOpacity
+                      style={[styles.actionBtn, { borderColor: C.blueBorder }]}
+                      onPress={() => onStatusChange(d.id, 'reviewed')}
+                    >
+                      <Text style={[styles.actionBtnText, { color: C.blue }]}>reviewed</Text>
+                    </TouchableOpacity>
+                  )}
+                  {d.status !== 'resolved' && (
+                    <TouchableOpacity
+                      style={[styles.actionBtn, { borderColor: C.successBorder }]}
+                      onPress={() => openResolve(d)}
+                    >
+                      <Text style={[styles.actionBtnText, { color: C.success }]}>Resolve</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              )}
             </View>
           );
         }}
@@ -1112,6 +1192,9 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
         });
         if (p.new.sender_name !== 'Supervisor') setUnreadMsgs((n) => n + 1);
       })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (p) => {
+        setMessages((prev) => prev.filter((m) => m.id !== p.old.id));
+      })
       .subscribe();
 
     const needsCh = supabase.channel('sup-app-needs')
@@ -1213,6 +1296,16 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
     await supabase.from('damage_reports').update(fields).eq('id', id);
   };
 
+  const archiveDamage = async (id) => {
+    setDamage((prev) => prev.map((d) => d.id === id ? { ...d, archived: true } : d));
+    await supabase.from('damage_reports').update({ archived: true }).eq('id', id);
+  };
+
+  const deleteMessage = useCallback(async (id) => {
+    setMessages((prev) => prev.filter((m) => m.id !== id));
+    await supabase.from('messages').delete().eq('id', id);
+  }, []);
+
   const dismissMessage = useCallback((id) => {
     setDismissedMsgIds((prev) => {
       const next = [...prev, id];
@@ -1291,6 +1384,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
                 sending={sending}
                 sendMessage={sendMessage}
                 listRef={msgListRef}
+                onDeleteMsg={deleteMessage}
               />
             )}
             {activeTab === 'needs' && (
@@ -1308,6 +1402,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
                 setFilter={setDamageFilter}
                 onStatusChange={updateDamageStatus}
                 onResolve={updateDamageResolution}
+                onArchive={archiveDamage}
                 userName={userName}
               />
             )}
