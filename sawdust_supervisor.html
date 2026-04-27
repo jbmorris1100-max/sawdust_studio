@@ -174,8 +174,7 @@ function App() {
       sb.from("sops").select("*").order("updated_at",            { ascending: false }),
       sb.from("sop_views").select("*").order("viewed_at",        { ascending: false }),
       sb.from("time_clock").select("*")
-        .gte("clock_in", today())
-        .lt("clock_in", new Date(Date.now() + 86400000).toISOString().slice(0,10))
+        .eq("date", today())
         .order("clock_in", { ascending: true }),
     ]).then(([ni, dr, ms, so, sv, tc]) => {
       if (ni.data) setMiss(ni.data);
@@ -491,7 +490,7 @@ function App() {
 
     const payload = {
       sender_name: "Supervisor",
-      dept:        "Management",
+      dept:        activeThread.dept || "Management",
       body:        trimmed,
     };
     const optimistic = { id:"opt-"+Date.now(), ...payload, created_at:new Date().toISOString() };

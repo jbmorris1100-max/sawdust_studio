@@ -1080,16 +1080,13 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
-    const todayStr    = new Date().toISOString().slice(0, 10);
-    const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    const todayStr = new Date().toISOString().slice(0, 10);
     const [msgsRes, needsRes, dmgRes, clockRes] = await Promise.all([
       supabase.from('messages').select('*').order('created_at', { ascending: true }).limit(300),
       supabase.from('inventory_needs').select('*').order('created_at', { ascending: false }),
       supabase.from('damage_reports').select('*').order('created_at', { ascending: false }),
-      // Use clock_in range so query works whether 'date' column is text or timestamptz
       supabase.from('time_clock').select('*')
-        .gte('clock_in', todayStr)
-        .lt('clock_in', tomorrowStr)
+        .eq('date', todayStr)
         .is('clock_out', null)
         .order('clock_in', { ascending: true }),
     ]);
@@ -1169,10 +1166,11 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
     const trimmed = msgBody.trim();
     if (!trimmed || sending) return;
 
+    const replyDept = activeThread?.dept || 'Management';
     const optimistic = {
       id:          `opt-${Date.now()}`,
       sender_name: 'Supervisor',
-      dept:        'Management',
+      dept:        replyDept,
       body:        trimmed,
       created_at:  new Date().toISOString(),
     };
@@ -1183,7 +1181,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
 
     const { data, error } = await supabase
       .from('messages')
-      .insert({ sender_name: 'Supervisor', dept: 'Management', body: trimmed })
+      .insert({ sender_name: 'Supervisor', dept: replyDept, body: trimmed })
       .select()
       .single();
 

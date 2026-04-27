@@ -208,15 +208,39 @@ export default function InventoryScreen({ route }) {
   const handleSubmit = async () => {
     if (activeTab === 'needs') {
       if (!nItem.trim()) return;
-      setSaving(true);
       const qty = parseInt(nQty, 10);
-      const { data, error } = await supabase
-        .from('inventory_needs')
-        .insert({ item: nItem.trim(), dept: userDept, job_id: nJob.trim() || null, qty: isNaN(qty) || qty < 1 ? 1 : qty, status: 'pending' })
-        .select().single();
-      if (!error && data) setNeeds((prev) => [data, ...prev]);
-      setSaving(false);
+      const safeQty = isNaN(qty) || qty < 1 ? 1 : qty;
+      const tempId = `opt-${Date.now()}`;
+      const optimistic = {
+        id:         tempId,
+        item:       nItem.trim(),
+        dept:       userDept,
+        job_id:     nJob.trim() || null,
+        qty:        safeQty,
+        status:     'pending',
+        created_at: new Date().toISOString(),
+      };
+      setNeeds((prev) => [optimistic, ...prev]);
       setModalVisible(false);
+      resetForms();
+
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), 10000)
+      );
+      try {
+        const { data, error } = await Promise.race([
+          supabase.from('inventory_needs')
+            .insert({ item: optimistic.item, dept: optimistic.dept, job_id: optimistic.job_id, qty: optimistic.qty, status: 'pending' })
+            .select().single(),
+          timeout,
+        ]);
+        if (error) throw error;
+        setNeeds((prev) => prev.map((n) => n.id === tempId ? data : n));
+        showToast('Need logged');
+      } catch (err) {
+        setNeeds((prev) => prev.filter((n) => n.id !== tempId));
+        showToast(err.message === 'timeout' ? 'Timed out — please retry' : 'Submission failed', true);
+      }
     } else {
       if (!dPart.trim()) return;
       const photoUri = dPhoto; // capture before resetForms clears it
