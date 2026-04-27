@@ -867,6 +867,7 @@ function App() {
       // ── Who's Clocked In ────────────────────────────────────────────────────
       (() => {
         const activeTc  = tcToday.filter(e => !e.clock_out || e.clock_out === "NULL");
+        console.log("[supervisor] WHO'S CLOCKED IN activeTc:", activeTc.length, "tcToday:", tcToday.length, tcToday);
         const totalHrs  = activeTc.reduce((s, e) => s + (tcNow - new Date(e.clock_in).getTime()) / 3600000, 0);
         const fmtT      = iso => new Date(iso).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
         const fmtEl     = isoStart => {
@@ -878,6 +879,7 @@ function App() {
           h(Divider, {label: activeTc.length > 0
             ? `WHO'S CLOCKED IN — ${totalHrs.toFixed(1)}h total active`
             : "WHO'S CLOCKED IN"}),
+          h("div", {style:{fontSize:10,color:"#333",marginBottom:6}}, `[debug] tcToday.length=${tcToday.length}`),
           activeTc.length === 0
             ? h("div", {style:{color:"#444",fontSize:12,paddingBottom:8}}, "No crew clocked in yet.")
             : activeTc.map(e =>
