@@ -1080,13 +1080,20 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr    = new Date().toISOString().slice(0, 10);
+    const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
     const [msgsRes, needsRes, dmgRes, clockRes] = await Promise.all([
       supabase.from('messages').select('*').order('created_at', { ascending: true }).limit(300),
       supabase.from('inventory_needs').select('*').order('created_at', { ascending: false }),
       supabase.from('damage_reports').select('*').order('created_at', { ascending: false }),
-      supabase.from('time_clock').select('*').eq('date', todayStr).order('clock_in', { ascending: true }),
+      // Use clock_in range so query works whether 'date' column is text or timestamptz
+      supabase.from('time_clock').select('*')
+        .gte('clock_in', todayStr)
+        .lt('clock_in', tomorrowStr)
+        .is('clock_out', null)
+        .order('clock_in', { ascending: true }),
     ]);
+    console.log('[time_clock] raw:', clockRes.data, 'error:', clockRes.error);
     if (msgsRes.data)   setMessages(msgsRes.data);
     if (needsRes.data)  setNeeds(needsRes.data);
     if (dmgRes.data)    setDamage(dmgRes.data);
@@ -1129,10 +1136,19 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
     const clockCh = supabase.channel('sup-app-timeclock')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'time_clock' }, (p) => {
         const todayStr = new Date().toISOString().slice(0, 10);
-        if (p.eventType === 'INSERT' && p.new.date === todayStr) {
-          setTodayClockEntries((prev) => [...prev, p.new]);
+        if (p.eventType === 'INSERT') {
+          // Match on clock_in date — works whether 'date' column is text or timestamptz
+          const entryDate = (p.new.date || p.new.clock_in || '').slice(0, 10);
+          if (entryDate === todayStr && !p.new.clock_out) {
+            setTodayClockEntries((prev) => [...prev, p.new]);
+          }
         } else if (p.eventType === 'UPDATE') {
-          setTodayClockEntries((prev) => prev.map((e) => e.id === p.new.id ? p.new : e));
+          if (p.new.clock_out) {
+            // Worker clocked out — remove from active list
+            setTodayClockEntries((prev) => prev.filter((e) => e.id !== p.new.id));
+          } else {
+            setTodayClockEntries((prev) => prev.map((e) => e.id === p.new.id ? p.new : e));
+          }
         } else if (p.eventType === 'DELETE') {
           setTodayClockEntries((prev) => prev.filter((e) => e.id !== p.old.id));
         }

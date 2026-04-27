@@ -23,10 +23,22 @@ import { RoleContext } from '../lib/RoleContext';
 // ── Constants ─────────────────────────────────────────────────
 const STORAGE_KEY_NAME = '@sawdust_user_name';
 const STORAGE_KEY_DEPT = '@sawdust_user_dept';
-const clockInKey    = (n) => `@sawdust_clock_in_${n}`;
-const clockIdKey    = (n) => `@sawdust_clock_id_${n}`;
-const breakStartKey = (n) => `@sawdust_break_start_${n}`;
-const breakMinsKey  = (n) => `@sawdust_break_minutes_${n}`;
+const shiftKey = (n) => `@sawdust_shift_${n}`;
+
+const loadShift = async (name) => {
+  try {
+    const raw = await AsyncStorage.getItem(shiftKey(name));
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj.recordId || !obj.clockInTime) return null;
+    return obj;
+  } catch { return null; }
+};
+const saveShift = async (name, shift) =>
+  AsyncStorage.setItem(shiftKey(name), JSON.stringify(shift));
+const clearShift = async (name) =>
+  AsyncStorage.removeItem(shiftKey(name));
+
 const LAST_READ_KEY    = '@sawdust_last_read';
 const DEVICE_ID_KEY    = '@sawdust_device_id';
 
@@ -109,21 +121,17 @@ export default function HomeScreen({ navigation, route }) {
       if (name && dept) {
         setUserName(name);
         setUserDept(dept);
-        // Load clock state using user-specific keys so two crew members on the
-        // same device don't share clock-in state
-        const [ciTime, ciId, bStart, bMins] = await Promise.all([
-          AsyncStorage.getItem(clockInKey(name)),
-          AsyncStorage.getItem(clockIdKey(name)),
-          AsyncStorage.getItem(breakStartKey(name)),
-          AsyncStorage.getItem(breakMinsKey(name)),
-        ]);
-        if (ciTime && ciId) {
+        const shift = await loadShift(name);
+        if (shift) {
           setClockedIn(true);
-          setClockInTime(ciTime);
-          setClockRecordId(ciId);
+          setClockInTime(shift.clockInTime);
+          setClockRecordId(shift.recordId);
+          if (shift.isOnBreak && shift.breakStartTime) {
+            setIsOnBreak(true);
+            setBreakStartTime(shift.breakStartTime);
+          }
+          setTotalBreakMinutes(shift.totalBreakMinutes || 0);
         }
-        if (bStart) { setIsOnBreak(true); setBreakStartTime(bStart); }
-        if (bMins)  setTotalBreakMinutes(parseInt(bMins, 10) || 0);
       } else if (name && !dept) {
         // Name set via onboarding — just need department
         setUserName(name);
@@ -259,9 +267,18 @@ export default function HomeScreen({ navigation, route }) {
           device_id: deviceId, app_version: '2',
         });
       } catch (e) {}
-      // IMPORTANT: clock state (clockedIn, clockInTime, clockRecordId, break state,
-      // and all clock AsyncStorage keys) is intentionally NOT touched here.
-      // A department switch must never interrupt an active shift.
+      // Dept switch never interrupts an active shift — only update the dept field
+      // in the shift object so the next app restart restores the correct context.
+      if (clockedIn) {
+        const raw = await AsyncStorage.getItem(shiftKey(userName));
+        if (raw) {
+          try {
+            const shift = JSON.parse(raw);
+            shift.dept = draftDept;
+            await saveShift(userName, shift);
+          } catch {}
+        }
+      }
       setUserDept(draftDept);
       setSetupVisible(false);
       setDeptOnlyMode(false);
@@ -309,35 +326,37 @@ export default function HomeScreen({ navigation, route }) {
   // ── Clock actions ─────────────────────────────────────────
   const handleClockIn = async () => {
     if (!userName || !userDept || clockLoading) return;
-    setClockLoading(true); // spinner shows immediately while insert runs
+    setClockLoading(true);
     try {
       const now = new Date().toISOString();
       const { data, error } = await Promise.race([
         supabase
           .from('time_clock')
-          .insert({ worker_name: userName, dept: userDept, clock_in: now, date: now.slice(0, 10) })
+          .insert({ worker_name: userName, dept: userDept, clock_in: now, date: now.slice(0, 10), status: 'active' })
           .select()
           .single(),
         new Promise((_, reject) =>
-          setTimeout(
-            () => reject(new Error('Clock in timed out — check your network and try again.')),
-            3000
-          )
+          setTimeout(() => reject(new Error('Server slow — try again')), 8000)
         ),
       ]);
-      if (error || !data) throw new Error(error?.message || 'Insert failed');
-      await Promise.all([
-        AsyncStorage.setItem(clockInKey(userName), now),
-        AsyncStorage.setItem(clockIdKey(userName), data.id),
-      ]);
+      if (error || !data) throw new Error(error?.message || 'Insert failed — no record returned');
+      const shift = {
+        recordId:          String(data.id),
+        clockInTime:       now,
+        isOnBreak:         false,
+        breakStartTime:    null,
+        totalBreakMinutes: 0,
+        dept:              userDept,
+      };
+      await saveShift(userName, shift);
       setClockInTime(now);
-      setClockRecordId(data.id);
+      setClockRecordId(String(data.id));
       setClockedIn(true);
     } catch (e) {
       if (Platform.OS === 'web') {
-        window.alert('Clock In Failed: ' + (e.message || 'Could not record clock-in. Check network.'));
+        window.alert('Clock In Failed: ' + e.message);
       } else {
-        Alert.alert('Clock In Failed', e.message || 'Could not record clock-in. Check network.');
+        Alert.alert('Clock In Failed', e.message);
       }
     } finally {
       setClockLoading(false);
@@ -347,7 +366,15 @@ export default function HomeScreen({ navigation, route }) {
   const handleBreakStart = async () => {
     if (!clockedIn || isOnBreak || clockLoading) return;
     const now = new Date().toISOString();
-    await AsyncStorage.setItem(breakStartKey(userName), now);
+    const raw = await AsyncStorage.getItem(shiftKey(userName));
+    if (raw) {
+      try {
+        const shift = JSON.parse(raw);
+        shift.isOnBreak = true;
+        shift.breakStartTime = now;
+        await saveShift(userName, shift);
+      } catch {}
+    }
     setBreakStartTime(now);
     setIsOnBreak(true);
   };
@@ -358,10 +385,16 @@ export default function HomeScreen({ navigation, route }) {
     try {
       const breakDuration = Math.round((Date.now() - new Date(breakStartTime).getTime()) / 60000);
       const newTotal = totalBreakMinutes + breakDuration;
-      await Promise.all([
-        AsyncStorage.setItem(breakMinsKey(userName), String(newTotal)),
-        AsyncStorage.removeItem(breakStartKey(userName)),
-      ]);
+      const raw = await AsyncStorage.getItem(shiftKey(userName));
+      if (raw) {
+        try {
+          const shift = JSON.parse(raw);
+          shift.isOnBreak = false;
+          shift.breakStartTime = null;
+          shift.totalBreakMinutes = newTotal;
+          await saveShift(userName, shift);
+        } catch {}
+      }
       setTotalBreakMinutes(newTotal);
       setBreakStartTime(null);
       setIsOnBreak(false);
@@ -371,20 +404,44 @@ export default function HomeScreen({ navigation, route }) {
   };
 
   const doClockOut = async () => {
-    console.log('[doClockOut] clockRecordId =', clockRecordId);
-    // Recover record ID from storage if state was lost (e.g. app restart between clock-in and out)
+    // Step 1: recordId from state
     let recordId = clockRecordId;
+    let ciTime   = clockInTime;
+
+    // Step 2: AsyncStorage fallback
     if (!recordId) {
-      recordId = await AsyncStorage.getItem(clockIdKey(userName));
-      console.log('[doClockOut] fetched recordId from storage:', recordId);
-      if (recordId) setClockRecordId(recordId);
-    }
-    if (!recordId) {
-      if (Platform.OS === 'web') {
-        window.alert('No active clock-in record found. You may already be clocked out.');
-      } else {
-        Alert.alert('Clock Out Error', 'No active clock-in record found. You may already be clocked out.');
+      const shift = await loadShift(userName);
+      if (shift) {
+        recordId = shift.recordId;
+        if (!ciTime) ciTime = shift.clockInTime;
+        if (recordId) setClockRecordId(recordId);
+        if (ciTime && !clockInTime) setClockInTime(ciTime);
       }
+    }
+
+    // Step 3: Nuclear fallback — query Supabase for today's active record
+    if (!recordId) {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const { data } = await supabase
+        .from('time_clock')
+        .select('*')
+        .eq('worker_name', userName)
+        .eq('date', todayStr)
+        .is('clock_out', null)
+        .limit(1)
+        .single();
+      if (data) {
+        recordId = String(data.id);
+        ciTime   = data.clock_in;
+        setClockRecordId(recordId);
+        setClockInTime(ciTime);
+      }
+    }
+
+    if (!recordId) {
+      const msg = 'No active clock-in record found. You may already be clocked out.';
+      if (Platform.OS === 'web') window.alert(msg);
+      else Alert.alert('Clock Out Error', msg);
       return;
     }
 
@@ -396,7 +453,7 @@ export default function HomeScreen({ navigation, route }) {
         : 0;
       const finalBreakMinutes = totalBreakMinutes + Math.round(currentBreakMs / 60000);
       const netMs = Math.max(0,
-        Date.now() - new Date(clockInTime).getTime()
+        Date.now() - new Date(ciTime).getTime()
         - totalBreakMinutes * 60000
         - currentBreakMs
       );
@@ -406,12 +463,7 @@ export default function HomeScreen({ navigation, route }) {
         .update({ clock_out: now, total_hours: totalHours, break_minutes: finalBreakMinutes })
         .eq('id', recordId);
       if (error) throw new Error(error.message);
-      await Promise.all([
-        AsyncStorage.removeItem(clockInKey(userName)),
-        AsyncStorage.removeItem(clockIdKey(userName)),
-        AsyncStorage.removeItem(breakStartKey(userName)),
-        AsyncStorage.removeItem(breakMinsKey(userName)),
-      ]);
+      await clearShift(userName);
       setClockedIn(false);
       setClockInTime(null);
       setClockRecordId(null);
@@ -420,11 +472,10 @@ export default function HomeScreen({ navigation, route }) {
       setBreakStartTime(null);
       setTotalBreakMinutes(0);
     } catch (e) {
-      if (Platform.OS === 'web') {
-        window.alert('Could not record clock-out. Check network.');
-      } else {
-        Alert.alert('Clock Out Failed', 'Could not record clock-out. Check network.');
-      }
+      const msg = 'Clock out failed: ' + e.message;
+      if (Platform.OS === 'web') window.alert(msg);
+      else Alert.alert('Clock Out Failed', msg);
+      // Do NOT clear state — allow retry
     } finally {
       setClockLoading(false);
     }
