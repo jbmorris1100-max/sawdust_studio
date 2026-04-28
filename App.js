@@ -19,6 +19,7 @@ import PartsScreen       from './src/screens/PartsScreen';
 import InventoryScreen   from './src/screens/InventoryScreen';
 import MessagesScreen    from './src/screens/MessagesScreen';
 import SOPsScreen        from './src/screens/SOPsScreen';
+import PlansScreen       from './src/screens/PlansScreen';
 import SupervisorApp     from './src/screens/SupervisorApp';
 import OnboardingScreen  from './src/screens/OnboardingScreen';
 
@@ -231,6 +232,19 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount }) {
           tabBarButton: (props) => <TabButton {...props} />,
           tabBarIcon: ({ focused, color, size }) => (
             <Ionicons name={focused ? 'book' : 'book-outline'} size={size} color={color} />
+          ),
+        }}
+      />
+
+      <Tab.Screen
+        name="Plans"
+        component={PlansScreen}
+        initialParams={screenParams}
+        options={{
+          title: 'Plans',
+          tabBarButton: (props) => <TabButton {...props} />,
+          tabBarIcon: ({ focused, color, size }) => (
+            <Ionicons name={focused ? 'document-text' : 'document-text-outline'} size={size} color={color} />
           ),
         }}
       />

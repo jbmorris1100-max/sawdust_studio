@@ -176,13 +176,15 @@ function App() {
       sb.from("time_clock").select("*")
         .eq("date", today())
         .order("clock_in", { ascending: true }),
-    ]).then(([ni, dr, ms, so, sv, tc]) => {
-      if (ni.data) setMiss(ni.data);
-      if (dr.data) setDamageRpts(dr.data);
-      if (ms.data) setMessages(ms.data);
-      if (so.data) setSops(so.data);
-      if (sv.data) setSopViews(sv.data);
-      if (tc.data) { setTcToday(tc.data); console.log("[supervisor] time_clock fetch →", tc.data.length, "records for", today(), tc.data); }
+      sb.from("job_drawings").select("*").order("created_at",    { ascending: false }),
+    ]).then(([ni, dr, ms, so, sv, tc, dr2]) => {
+      if (ni.data)  setMiss(ni.data);
+      if (dr.data)  setDamageRpts(dr.data);
+      if (ms.data)  setMessages(ms.data);
+      if (so.data)  setSops(so.data);
+      if (sv.data)  setSopViews(sv.data);
+      if (tc.data)  { setTcToday(tc.data); console.log("[supervisor] time_clock fetch →", tc.data.length, "records for", today(), tc.data); }
+      if (dr2.data) setDrawings(dr2.data);
       setSbReady(true);
     });
 
@@ -256,6 +258,13 @@ function App() {
       })
       .subscribe();
 
+    const drawCh = sb.channel("sup-drawings")
+      .on("postgres_changes", { event: "*", schema: "public", table: "job_drawings" }, payload => {
+        if (payload.eventType === "INSERT")      setDrawings(p => [payload.new, ...p]);
+        else if (payload.eventType === "DELETE") setDrawings(p => p.filter(d => d.id !== payload.old.id));
+      })
+      .subscribe();
+
     return () => {
       sb.removeChannel(invCh);
       sb.removeChannel(dmgCh);
@@ -263,6 +272,7 @@ function App() {
       sb.removeChannel(sopCh);
       sb.removeChannel(sopViewCh);
       sb.removeChannel(tcCh);
+      sb.removeChannel(drawCh);
     };
   }, []);
 
@@ -349,6 +359,16 @@ function App() {
   const [editSopId,    setEditSopId]    = useState(null);
   const defaultSopForm = { title:"", dept:"Assembly", description:"", steps:[{instruction:"",warning:""}], pdf_url:"" };
   const [sopForm,      setSopForm]      = useState(defaultSopForm);
+
+  // ── Plans / Drawings (Supabase) ───────────────────────────────────────────
+  const [drawings,       setDrawings]       = useState([]);
+  const [drawingsLoading,setDrawingsLoading]= useState(false);
+  const [planJobId,      setPlanJobId]      = useState("");
+  const [planJobName,    setPlanJobName]    = useState("");
+  const [planLabel,      setPlanLabel]      = useState("");
+  const [planFile,       setPlanFile]       = useState(null);
+  const [planUploading,  setPlanUploading]  = useState(false);
+  const [planProgress,   setPlanProgress]   = useState(0);
 
   // ── Job actions ───────────────────────────────────────────────────────────
   const addJob = () => {
@@ -720,6 +740,53 @@ function App() {
     }
   };
 
+  // ── Plans / Drawings ──────────────────────────────────────────────────────
+  const uploadPlan = async () => {
+    if (!planJobId.trim() || !planLabel.trim() || !planFile) return;
+    setPlanUploading(true);
+    setPlanProgress(0);
+    try {
+      const ext      = planFile.name.split(".").pop() || "pdf";
+      const safeName = planFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const path     = `${planJobId.trim()}/${Date.now()}_${safeName}`;
+      const { data: upData, error: upErr } = await sb.storage
+        .from("job-plans")
+        .upload(path, planFile, { contentType: planFile.type || "application/pdf", upsert: false });
+      if (upErr) throw upErr;
+      const { data: urlData } = sb.storage.from("job-plans").getPublicUrl(path);
+      const fileUrl = urlData.publicUrl;
+      const { data: row, error: rowErr } = await sb.from("job_drawings").insert({
+        job_id:      planJobId.trim(),
+        job_name:    planJobName.trim() || null,
+        label:       planLabel.trim(),
+        file_url:    fileUrl,
+        file_name:   planFile.name,
+        uploaded_by: supervisorName || "Supervisor",
+      }).select().single();
+      if (rowErr) throw rowErr;
+      setDrawings(p => [row, ...p]);
+      setPlanJobId(""); setPlanJobName(""); setPlanLabel(""); setPlanFile(null);
+      showToastMsg("Plan uploaded — crew can view it immediately");
+    } catch(e) {
+      alert("Upload failed: " + e.message);
+    } finally {
+      setPlanUploading(false);
+      setPlanProgress(0);
+    }
+  };
+
+  const deletePlan = async (drawing) => {
+    if (!confirm(`Delete "${drawing.label}"? This cannot be undone.`)) return;
+    const url  = drawing.file_url || "";
+    const path = url.split("/job-plans/")[1];
+    if (path) {
+      await sb.storage.from("job-plans").remove([decodeURIComponent(path)]);
+    }
+    await sb.from("job_drawings").delete().eq("id", drawing.id);
+    setDrawings(p => p.filter(d => d.id !== drawing.id));
+    showToastMsg("Plan deleted");
+  };
+
   const removeCrewMember = async (id, name) => {
     if (!window.confirm(`Remove device for ${name || "this crew member"}? They will need to re-register next time they open the app.`)) return;
     const { error } = await sb.from("device_tokens").delete().eq("id", id);
@@ -791,6 +858,7 @@ function App() {
     {id:"messages",  label:`Messages${unread>0?" ("+unread+")":""}`, onClick:openMessages},
     {id:"crew",       label:"Crew",          onClick:()=>{ setView("crew"); setCrewSubView("devices"); loadCrewMembers(); }},
     {id:"sops",       label:"SOPs",          onClick:()=>setView("sops")},
+    {id:"plans",      label:"Plans",         onClick:()=>setView("plans")},
     {id:"report",    label:"Report",       onClick:()=>setView("report")},
   ];
 
@@ -1652,6 +1720,111 @@ function App() {
           });
         })()
       )
+    ),
+
+    // ── PLANS / DRAWINGS ──────────────────────────────────────────────────────
+    view==="plans" && h("div", null,
+
+      // Upload panel
+      h("div",{style:{...CS2,borderLeft:"3px solid #3b82f6",marginBottom:20}},
+        h("div",{style:{fontSize:13,fontWeight:500,color:"#e5e5e5",marginBottom:14}}, "Upload Job Plan"),
+        h("div",{style:{display:"grid",gridTemplateColumns:"1fr 2fr",gap:8,marginBottom:8}},
+          h("input",{
+            placeholder:"Job ID (e.g. J-1042)",
+            value:planJobId,
+            onChange:e=>setPlanJobId(e.target.value),
+            style:IS,
+          }),
+          h("input",{
+            placeholder:"Job Name (optional, e.g. Smith Kitchen)",
+            value:planJobName,
+            onChange:e=>setPlanJobName(e.target.value),
+            style:IS,
+          })
+        ),
+        h("input",{
+          placeholder:"Label (e.g. Floor Plan, Elevation A, Shop Drawing)",
+          value:planLabel,
+          onChange:e=>setPlanLabel(e.target.value),
+          style:{...IS,marginBottom:8},
+        }),
+        h("div",{style:{display:"flex",alignItems:"center",gap:10,marginBottom:planFile?8:0}},
+          h("label",{style:{
+            display:"inline-flex",alignItems:"center",gap:6,
+            fontSize:11,cursor:"pointer",padding:"7px 14px",
+            border:"1px solid #2a2a2a",borderRadius:6,color:"#aaa",
+            background:"transparent",transition:"background .1s",
+          }},
+            "📎 Choose PDF",
+            h("input",{
+              type:"file",
+              accept:"application/pdf,.pdf",
+              style:{display:"none"},
+              onChange:e=>{ const f=e.target.files[0]; if(f) setPlanFile(f); e.target.value=""; },
+            })
+          ),
+          planFile && h("span",{style:{fontSize:12,color:"#60a5fa",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}, planFile.name),
+          planFile && h("button",{onClick:()=>setPlanFile(null),style:{fontSize:11,color:"#f87171",borderColor:"#7f1d1d",padding:"4px 8px"}}, "✕")
+        ),
+        planUploading && h("div",{style:{fontSize:11,color:"#f59e0b",marginBottom:8}}, "Uploading…"),
+        h("button",{
+          className:"bp",
+          onClick:uploadPlan,
+          disabled:!planJobId.trim()||!planLabel.trim()||!planFile||planUploading,
+          style:{opacity:(!planJobId.trim()||!planLabel.trim()||!planFile||planUploading)?0.4:1,marginTop:10},
+        }, planUploading?"uploading…":"↑ upload plan")
+      ),
+
+      // Plans list grouped by job
+      h(Divider,{label:"UPLOADED PLANS"}),
+      drawings.length===0 && h(Empty,{msg:"No plans uploaded yet. Use the panel above to upload a PDF plan."}),
+      (() => {
+        const grouped = {};
+        drawings.forEach(d => {
+          const key = d.job_id + (d.job_name ? " — "+d.job_name : "");
+          if (!grouped[key]) grouped[key] = { jobId:d.job_id, jobName:d.job_name, items:[] };
+          grouped[key].items.push(d);
+        });
+        return Object.values(grouped).map(group =>
+          h("div",{key:group.jobId,style:{marginBottom:20}},
+            h("div",{style:{
+              fontSize:10,color:"#60a5fa",letterSpacing:".1em",fontWeight:500,
+              marginBottom:8,display:"flex",alignItems:"center",gap:8,
+            }},
+              h("span",null, "JOB #"+group.jobId+(group.jobName?" — "+group.jobName.toUpperCase():"")),
+              h("span",{style:{fontSize:10,color:"#333"}}, group.items.length+" plan"+(group.items.length!==1?"s":"")),
+            ),
+            group.items.map(d =>
+              h("div",{key:d.id,style:{...CS,display:"flex",alignItems:"center",gap:12,justifyContent:"space-between"}},
+                h("div",{style:{flex:1,minWidth:0}},
+                  h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:3}},
+                    h("span",{style:{fontWeight:500,fontSize:14,color:"#e5e5e5"}}, d.label),
+                    h(Pill,{label:"PDF",color:"#3b82f6"})
+                  ),
+                  h("div",{style:{fontSize:11,color:"#444",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+                    (d.file_name||"")+(d.uploaded_by?" · "+d.uploaded_by:"")+" · "+fmtD(d.created_at)
+                  )
+                ),
+                h("div",{style:{display:"flex",gap:6,flexShrink:0}},
+                  h("a",{
+                    href:d.file_url,
+                    target:"_blank",
+                    rel:"noopener noreferrer",
+                    style:{
+                      fontSize:11,padding:"7px 14px",borderRadius:6,
+                      border:"1px solid #14532d",color:"#4ade80",
+                      background:"transparent",textDecoration:"none",
+                      fontFamily:"'DM Mono','Courier New',monospace",
+                      whiteSpace:"nowrap",
+                    },
+                  }, "↗ open"),
+                  h("button",{className:"bd",onClick:()=>deletePlan(d),style:{padding:"7px 10px"}}, "✕")
+                )
+              )
+            )
+          )
+        );
+      })()
     ),
 
     // ── SOPs ──────────────────────────────────────────────────────────────────
