@@ -13,6 +13,7 @@ import {
   Alert,
   Platform,
   ScrollView,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -43,28 +44,25 @@ const LAST_READ_KEY    = '@sawdust_last_read';
 const DEVICE_ID_KEY    = '@sawdust_device_id';
 
 const DEPARTMENTS = [
-  'Cutting',
-  'Edgebanding',
+  'Production',
   'Assembly',
   'Finishing',
   'Craftsman',
-  'Install',
 ];
 
 const DEPT_COLORS = {
-  Cutting:     { bg: '#172554', text: '#93c5fd' },
-  Edgebanding: { bg: '#2e1065', text: '#c4b5fd' },
+  Production:  { bg: '#172554', text: '#93c5fd' },
   Assembly:    { bg: '#052e16', text: '#86efac' },
   Finishing:   { bg: '#431407', text: '#fdba74' },
   Craftsman:   { bg: '#500724', text: '#f9a8d4' },
-  Install:     { bg: '#4c0519', text: '#fca5a5' },
 };
 
 const ACTIONS = [
-  { key: 'inventory', label: 'Log Inventory',     screen: 'LogInventory', icon: 'cube-outline',        accentColor: '#f59e0b' },
-  { key: 'damage',    label: 'Report Damage',      screen: 'ReportDamage', icon: 'warning-outline',     accentColor: '#ef4444' },
-  { key: 'scan',      label: 'Scan Part',          screen: 'ScanPart',     icon: 'scan-outline',        accentColor: '#3b82f6' },
-  { key: 'message',   label: 'Message Supervisor', screen: 'Messages',     icon: 'chatbubble-outline',  accentColor: '#22c55e' },
+  { key: 'inventory', label: 'Log Inventory',          screen: 'LogInventory', icon: 'cube-outline',             accentColor: '#f59e0b' },
+  { key: 'damage',    label: 'Report Damage',           screen: 'ReportDamage', icon: 'warning-outline',          accentColor: '#ef4444' },
+  { key: 'scan',      label: 'Scan Part',               screen: 'ScanPart',     icon: 'scan-outline',             accentColor: '#3b82f6' },
+  { key: 'approve',   label: 'Approve Incoming Parts',  screen: null,           icon: 'checkmark-done-outline',   accentColor: '#22c55e' },
+  { key: 'message',   label: 'Message Supervisor',      screen: 'Messages',     icon: 'chatbubble-outline',       accentColor: '#8b5cf6' },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -104,6 +102,13 @@ export default function HomeScreen({ navigation, route }) {
   const [totalBreakMinutes, setTotalBreakMinutes] = useState(0);
   const [settingsModalVisible, setSettingsModalVisible] = useState(false);
   const [isOnline, setIsOnline] = useState(null);
+
+  // Approve Incoming Parts modal
+  const [approveVisible,  setApproveVisible]  = useState(false);
+  const [approvePartNum,  setApprovePartNum]  = useState('');
+  const [approveJobNum,   setApproveJobNum]   = useState('');
+  const [approveNotes,    setApproveNotes]    = useState('');
+  const [approveSaving,   setApproveSaving]   = useState(false);
 
   // Ref so the realtime subscription always reads the latest lastSeenAt
   const lastSeenAtRef = useRef('');
@@ -349,6 +354,7 @@ export default function HomeScreen({ navigation, route }) {
         dept:              userDept,
       };
       await saveShift(userName, shift);
+      console.log('[handleClockIn] saved shift under key:', shiftKey(userName), 'recordId:', shift.recordId);
       setClockInTime(now);
       setClockRecordId(String(data.id));
       setClockedIn(true);
@@ -404,13 +410,19 @@ export default function HomeScreen({ navigation, route }) {
   };
 
   const doClockOut = async () => {
-    // Step 1: recordId from state
+    // Step 1: recordId from state. Also resolve userName from AsyncStorage
+    // in case this fires from a stale Alert callback with an empty closure.
     let recordId = clockRecordId;
     let ciTime   = clockInTime;
+    let name     = userName;
+    if (!name) name = (await AsyncStorage.getItem(STORAGE_KEY_NAME)) || '';
+
+    console.log('[doClockOut] start — recordId:', recordId, 'userName:', name, 'shiftKey:', shiftKey(name));
 
     // Step 2: AsyncStorage fallback
     if (!recordId) {
-      const shift = await loadShift(userName);
+      const shift = await loadShift(name);
+      console.log('[doClockOut] AsyncStorage shift:', shift);
       if (shift) {
         recordId = shift.recordId;
         if (!ciTime) ciTime = shift.clockInTime;
@@ -419,22 +431,37 @@ export default function HomeScreen({ navigation, route }) {
       }
     }
 
-    // Step 3: Nuclear fallback — query Supabase for today's active record
+    // Step 3: Nuclear fallback — query Supabase (5-second timeout)
     if (!recordId) {
-      const todayStr = new Date().toISOString().slice(0, 10);
-      const { data } = await supabase
-        .from('time_clock')
-        .select('*')
-        .eq('worker_name', userName)
-        .eq('date', todayStr)
-        .is('clock_out', null)
-        .limit(1)
-        .single();
-      if (data) {
-        recordId = String(data.id);
-        ciTime   = data.clock_in;
-        setClockRecordId(recordId);
-        setClockInTime(ciTime);
+      console.log('[doClockOut] nuclear fallback for:', name);
+      try {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const { data } = await Promise.race([
+          supabase
+            .from('time_clock')
+            .select('*')
+            .eq('worker_name', name)
+            .eq('date', todayStr)
+            .is('clock_out', null)
+            .limit(1)
+            .single(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Lookup timed out after 5s')), 5000)
+          ),
+        ]);
+        if (data) {
+          recordId = String(data.id);
+          ciTime   = data.clock_in;
+          setClockRecordId(recordId);
+          setClockInTime(ciTime);
+          console.log('[doClockOut] nuclear fallback found recordId:', recordId);
+        }
+      } catch (e) {
+        console.warn('[doClockOut] nuclear fallback failed:', e.message);
+        const msg = 'Could not find your clock-in record: ' + e.message;
+        if (Platform.OS === 'web') window.alert(msg);
+        else Alert.alert('Clock Out Error', msg);
+        return;
       }
     }
 
@@ -458,12 +485,18 @@ export default function HomeScreen({ navigation, route }) {
         - currentBreakMs
       );
       const totalHours = +(netMs / 3600000).toFixed(4);
-      const { error } = await supabase
-        .from('time_clock')
-        .update({ clock_out: now, total_hours: totalHours, break_minutes: finalBreakMinutes })
-        .eq('id', recordId);
+      console.log('[doClockOut] updating record', recordId, 'totalHours:', totalHours);
+      const { error } = await Promise.race([
+        supabase
+          .from('time_clock')
+          .update({ clock_out: now, total_hours: totalHours, break_minutes: finalBreakMinutes })
+          .eq('id', recordId),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Clock out update timed out after 8s')), 8000)
+        ),
+      ]);
       if (error) throw new Error(error.message);
-      await clearShift(userName);
+      await clearShift(name);
       setClockedIn(false);
       setClockInTime(null);
       setClockRecordId(null);
@@ -489,6 +522,30 @@ export default function HomeScreen({ navigation, route }) {
         { text: 'Cancel', style: 'cancel' },
         { text: 'Clock Out', style: 'destructive', onPress: doClockOut },
       ]);
+    }
+  };
+
+  // ── Approve Incoming Parts ────────────────────────────────
+  const handleApproveSubmit = async () => {
+    if (!approvePartNum.trim() || !userDept || approveSaving) return;
+    setApproveSaving(true);
+    try {
+      await supabase.from('part_scans').insert({
+        part_num:   approvePartNum.trim(),
+        dept:       userDept,
+        job_id:     approveJobNum.trim() || null,
+        scanned_by: userName || 'Unknown',
+        status:     'approved_incoming',
+        notes:      approveNotes.trim() || null,
+      });
+      setApproveVisible(false);
+      setApprovePartNum('');
+      setApproveJobNum('');
+      setApproveNotes('');
+    } catch (e) {
+      Alert.alert('Error', 'Failed to submit approval. Try again.');
+    } finally {
+      setApproveSaving(false);
     }
   };
 
@@ -696,7 +753,9 @@ export default function HomeScreen({ navigation, route }) {
                 onPress={() =>
                   action.key === 'message'
                     ? handleNotifPress()
-                    : navigation.navigate(action.screen, { userName, userDept })
+                    : action.key === 'approve'
+                      ? setApproveVisible(true)
+                      : navigation.navigate(action.screen, { userName, userDept })
                 }
               >
                 <View style={[styles.cardIconWrap, { backgroundColor: action.accentColor + '22' }]}>
@@ -790,6 +849,77 @@ export default function HomeScreen({ navigation, route }) {
             )}
           </View>
         </View>
+      </Modal>
+
+      {/* Approve Incoming Parts Modal */}
+      <Modal
+        visible={approveVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setApproveVisible(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Approve Incoming Parts</Text>
+            <Text style={[styles.fieldLabel, { marginTop: 6 }]}>
+              {userDept ? `Department: ${userDept}` : 'Set your department first'}
+            </Text>
+
+            <Text style={styles.fieldLabel}>Part Number</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. CAB-1042-A"
+              placeholderTextColor={C.muted}
+              value={approvePartNum}
+              onChangeText={setApprovePartNum}
+              autoCapitalize="characters"
+              autoFocus
+            />
+
+            <Text style={styles.fieldLabel}>Job # (optional)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. J-1042"
+              placeholderTextColor={C.muted}
+              value={approveJobNum}
+              onChangeText={setApproveJobNum}
+            />
+
+            <Text style={styles.fieldLabel}>Notes (optional)</Text>
+            <TextInput
+              style={[styles.input, { minHeight: 70, textAlignVertical: 'top', paddingTop: 10 }]}
+              placeholder="Any issues or notes…"
+              placeholderTextColor={C.muted}
+              value={approveNotes}
+              onChangeText={setApproveNotes}
+              multiline
+            />
+
+            <TouchableOpacity
+              style={[
+                styles.saveBtn,
+                (!approvePartNum.trim() || approveSaving) && styles.saveBtnDisabled,
+              ]}
+              onPress={handleApproveSubmit}
+              disabled={!approvePartNum.trim() || approveSaving}
+            >
+              {approveSaving
+                ? <ActivityIndicator size="small" color="#000" />
+                : <Text style={styles.saveBtnText}>Approve Part</Text>
+              }
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={{ alignItems: 'center', paddingTop: 14 }}
+              onPress={() => setApproveVisible(false)}
+            >
+              <Text style={{ color: C.muted, fontSize: 14 }}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Settings Modal — used on web where Alert.alert silently fails */}

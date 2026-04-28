@@ -42,15 +42,13 @@ const C = {
   blueBorder:    '#1e3a5f',
 };
 
-const DEPARTMENTS = ['Cutting', 'Edgebanding', 'Assembly', 'Finishing', 'Craftsman', 'Install'];
+const DEPARTMENTS = ['Production', 'Assembly', 'Finishing', 'Craftsman'];
 
 const DEPT_COLORS = {
-  Cutting:     '#93c5fd',
-  Edgebanding: '#c4b5fd',
+  Production:  '#93c5fd',
   Assembly:    '#86efac',
   Finishing:   '#fdba74',
   Craftsman:   '#f9a8d4',
-  Install:     '#fca5a5',
 };
 
 const STATUS_STYLES = {
@@ -228,7 +226,20 @@ const FilterChips = ({ options, value, onChange }) => (
 );
 
 // ── Overview Tab ──────────────────────────────────────────────
-function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole, todayClockEntries, dismissedMsgIds, onDismissMsg, onOpenThread }) {
+const SCAN_STATUS_COLORS = {
+  'In Progress':              { color: '#f59e0b', bg: '#1a1000' },
+  'QC Check':                 { color: '#3b82f6', bg: '#0d1f3c' },
+  'Passed QC':                { color: '#22c55e', bg: '#0a1f10' },
+  'Failed QC — Rework':       { color: '#ef4444', bg: '#1f0a0a' },
+  'Moving to Next Stage':     { color: '#a78bfa', bg: '#1a1040' },
+  'approved_incoming':        { color: '#22c55e', bg: '#0a1f10' },
+};
+
+function scanColor(status) {
+  return SCAN_STATUS_COLORS[status] ?? { color: '#555', bg: '#141414' };
+}
+
+function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole, todayClockEntries, dismissedMsgIds, onDismissMsg, onOpenThread, partScans }) {
   // Tick every second to keep elapsed times live
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -327,6 +338,53 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
             <Text style={styles.clockCrewElapsed}>{clockElapsed(entry.clock_in)}</Text>
           </View>
         ))
+      )}
+
+      {/* Parts In Progress */}
+      {(partScans || []).length > 0 && (
+        <>
+          <Text style={[styles.sectionLabel, { marginTop: 20 }]}>PARTS IN PROGRESS</Text>
+          {(() => {
+            const grouped = {};
+            (partScans || []).slice(0, 20).forEach((s) => {
+              const key = s.job_id || '—';
+              if (!grouped[key]) grouped[key] = [];
+              grouped[key].push(s);
+            });
+            return Object.entries(grouped).map(([jobKey, scans]) => (
+              <View key={jobKey} style={styles.partJobGroup}>
+                {jobKey !== '—' && (
+                  <Text style={styles.partJobLabel}>Job #{jobKey}</Text>
+                )}
+                {scans.map((s) => {
+                  const sc = scanColor(s.status);
+                  const label = s.status === 'approved_incoming' ? 'Approved In' : (s.status || 'logged');
+                  return (
+                    <View key={s.id} style={[styles.partScanRow, { borderLeftColor: sc.color, backgroundColor: sc.bg }]}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.partScanNum}>{s.part_num}</Text>
+                        <Text style={styles.partScanMeta}>
+                          {s.dept}
+                          {s.scanned_by ? ` · ${s.scanned_by}` : ''}
+                          {s.next_dept ? ` → ${s.next_dept}` : ''}
+                        </Text>
+                        {s.notes ? <Text style={styles.partScanNotes}>{s.notes}</Text> : null}
+                      </View>
+                      <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                        <View style={[styles.partStatusPill, { borderColor: sc.color + '60' }]}>
+                          <Text style={[styles.partStatusText, { color: sc.color }]}>{label.toUpperCase()}</Text>
+                        </View>
+                        <Text style={styles.partScanTime}>
+                          {new Date(s.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            ));
+          })()}
+        </>
       )}
 
       {/* Dept status grid */}
@@ -1154,6 +1212,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
   const [todayClockEntries, setTodayClockEntries] = useState([]);
 
   const [dismissedMsgIds, setDismissedMsgIds] = useState([]);
+  const [partScans,        setPartScans]        = useState([]);
 
   const msgListRef = useRef(null);
   const channels   = useRef([]);
@@ -1161,7 +1220,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     const todayStr = new Date().toISOString().slice(0, 10);
-    const [msgsRes, needsRes, dmgRes, clockRes] = await Promise.all([
+    const [msgsRes, needsRes, dmgRes, clockRes, scansRes] = await Promise.all([
       supabase.from('messages').select('*').order('created_at', { ascending: true }).limit(300),
       supabase.from('inventory_needs').select('*').order('created_at', { ascending: false }),
       supabase.from('damage_reports').select('*').order('created_at', { ascending: false }),
@@ -1169,12 +1228,14 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
         .eq('date', todayStr)
         .is('clock_out', null)
         .order('clock_in', { ascending: true }),
+      supabase.from('part_scans').select('*').order('created_at', { ascending: false }).limit(60),
     ]);
     console.log('[time_clock] raw:', clockRes.data, 'error:', clockRes.error);
     if (msgsRes.data)   setMessages(msgsRes.data);
     if (needsRes.data)  setNeeds(needsRes.data);
     if (dmgRes.data)    setDamage(dmgRes.data);
     if (clockRes.data)  setTodayClockEntries(clockRes.data);
+    if (scansRes.data)  setPartScans(scansRes.data);
     setLoading(false);
   }, []);
 
@@ -1235,7 +1296,13 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
       })
       .subscribe();
 
-    channels.current = [msgCh, needsCh, dmgCh, clockCh];
+    const scanCh = supabase.channel('sup-app-partscans')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'part_scans' }, (p) => {
+        setPartScans((prev) => [p.new, ...prev].slice(0, 60));
+      })
+      .subscribe();
+
+    channels.current = [msgCh, needsCh, dmgCh, clockCh, scanCh];
     return () => channels.current.forEach((ch) => supabase.removeChannel(ch));
   }, []);
 
@@ -1371,6 +1438,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
                 dismissedMsgIds={dismissedMsgIds}
                 onDismissMsg={dismissMessage}
                 onOpenThread={openThread}
+                partScans={partScans}
               />
             )}
             {activeTab === 'messages' && (
@@ -1744,6 +1812,22 @@ const styles = StyleSheet.create({
   },
   swipeDeleteBtn: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 14 },
   swipeDeleteText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+
+  // Parts In Progress
+  partJobGroup: { marginBottom: 10 },
+  partJobLabel: { fontSize: 10, fontWeight: '700', color: C.muted, letterSpacing: 0.9, textTransform: 'uppercase', marginBottom: 5 },
+  partScanRow: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
+    paddingVertical: 8, paddingHorizontal: 12,
+    borderRadius: 10, borderWidth: 1, borderColor: '#222',
+    borderLeftWidth: 3, marginBottom: 5,
+  },
+  partScanNum:    { fontSize: 13, fontWeight: '700', color: C.text, marginBottom: 2 },
+  partScanMeta:   { fontSize: 11, color: C.muted },
+  partScanNotes:  { fontSize: 11, color: C.muted, fontStyle: 'italic', marginTop: 2 },
+  partStatusPill: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 99, borderWidth: 1, backgroundColor: 'transparent' },
+  partStatusText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.4 },
+  partScanTime:   { fontSize: 10, color: C.muted },
 
   // Clock crew rows (Overview tab)
   clockNoneText: { fontSize: 12, color: C.muted, marginBottom: 12 },

@@ -74,9 +74,9 @@ const CL = [
   { id:"jt", label:"Joints tight / fasteners set" },
 ];
 const CTYPES = ["Base cabinet","Upper cabinet","Tall cabinet","Island","Drawer box","Door","Custom"];
-const STAGES = ["Cutting","Edgebanding","Assembly","Finishing","Shipping","Install"];
+const STAGES = ["Production","Assembly","Finishing","Craftsman"];
 const UNITS      = ["sheets","pcs","lbs","ft","rolls","boxes","gallons"];
-const CREW_DEPTS = ["Cutting","Edgebanding","Assembly","Finishing","Shipping","Install","Craftsman","Management"];
+const CREW_DEPTS = ["Production","Assembly","Finishing","Craftsman","Management"];
 const AM = "#f59e0b";
 const SM = {
   active:  { bar:"#3b82f6", bg:"#1e2a3a", txt:"#60a5fa" },
@@ -717,6 +717,28 @@ function App() {
       setCrewMembers(p => p.map(m => m.id === id ? { ...m, dept } : m));
       setCrewDeptEdits(p => { const n = {...p}; delete n[id]; return n; });
       showToastMsg("Department updated — crew member sees this on next reload");
+    }
+  };
+
+  const removeCrewMember = async (id, name) => {
+    if (!window.confirm(`Remove device for ${name || "this crew member"}? They will need to re-register next time they open the app.`)) return;
+    const { error } = await sb.from("device_tokens").delete().eq("id", id);
+    if (!error) {
+      setCrewMembers(p => p.filter(m => m.id !== id));
+      showToastMsg("Device removed — crew member will re-register on next login");
+    } else {
+      alert("Failed to remove device: " + error.message);
+    }
+  };
+
+  const clearAllDevices = async () => {
+    if (!window.confirm("Remove ALL registered devices? Every crew member will need to re-register. This cannot be undone.")) return;
+    const { error } = await sb.from("device_tokens").delete().neq("id", "");
+    if (!error) {
+      setCrewMembers([]);
+      showToastMsg("All devices cleared");
+    } else {
+      alert("Failed to clear devices: " + error.message);
     }
   };
 
@@ -1529,11 +1551,18 @@ function App() {
 
       // ── Devices sub-view ────────────────────────────────────────────────────
       crewSubView==="devices" && h("div", null,
-        h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}},
+        h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,gap:8,flexWrap:"wrap"}},
           h("div",{style:{fontSize:11,color:"#444"}},
             crewMembers.length+" device"+(crewMembers.length!==1?"s":"")+" registered — change a department and click update"
           ),
-          h("button",{onClick:loadCrewMembers,style:{fontSize:11}}, crewLoading?"loading…":"↺ refresh")
+          h("div",{style:{display:"flex",gap:8}},
+            h("button",{onClick:loadCrewMembers,style:{fontSize:11}}, crewLoading?"loading…":"↺ refresh"),
+            crewMembers.length>0 && h("button",{
+              className:"bd",
+              onClick:clearAllDevices,
+              style:{fontSize:11,whiteSpace:"nowrap"},
+            }, "Clear All Devices")
+          )
         ),
         crewLoading && h("div",{style:{textAlign:"center",padding:"48px 0",color:"#444",fontSize:13}}, "Loading…"),
         !crewLoading && crewMembers.length===0 && h(Empty,{msg:"No crew devices registered yet. Crew members appear here after they first log into the app."}),
@@ -1559,7 +1588,12 @@ function App() {
                 disabled:  !changed,
                 onClick:   () => updateCrewDept(m.id, selectedDept),
                 style:     {opacity: changed ? 1 : 0.3, whiteSpace:"nowrap"},
-              }, "update")
+              }, "update"),
+              h("button",{
+                className:"bd",
+                onClick:   () => removeCrewMember(m.id, m.name),
+                style:     {whiteSpace:"nowrap",fontSize:11},
+              }, "Remove")
             )
           );
         })
