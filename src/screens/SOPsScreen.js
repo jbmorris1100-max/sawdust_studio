@@ -21,16 +21,14 @@ const C = {
 };
 
 const DEPT_COLORS = {
-  Cutting:     { bg: '#172554', text: '#93c5fd' },
-  Edgebanding: { bg: '#2e1065', text: '#c4b5fd' },
+  Production:  { bg: '#172554', text: '#93c5fd' },
   Assembly:    { bg: '#052e16', text: '#86efac' },
   Finishing:   { bg: '#431407', text: '#fdba74' },
   Craftsman:   { bg: '#500724', text: '#f9a8d4' },
-  Install:     { bg: '#4c0519', text: '#fca5a5' },
   All:         { bg: '#1c1c1c', text: '#9ca3af' },
 };
 
-const DEPARTMENTS = ['All', 'Cutting', 'Edgebanding', 'Assembly', 'Finishing', 'Craftsman', 'Install'];
+const DEPARTMENTS = ['All', 'Production', 'Assembly', 'Finishing', 'Craftsman'];
 
 const fmtDate = iso =>
   new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -41,6 +39,8 @@ const getDeptColor = dept => DEPT_COLORS[dept] ?? DEPT_COLORS.All;
 function SOPDetail({ sop, onBack }) {
   const dc = getDeptColor(sop.dept);
   const steps = Array.isArray(sop.steps) ? sop.steps : [];
+  const hasFile = !!(sop.file_url);
+  const isDrive = sop.file_type === 'drive';
 
   return (
     <SafeAreaView style={s.safe}>
@@ -61,35 +61,42 @@ function SOPDetail({ sop, onBack }) {
           <Text style={s.detailDesc}>{sop.description}</Text>
         )}
 
-        <Text style={s.sectionLabel}>STEPS</Text>
-
-        {steps.map((step, idx) => (
-          <View key={idx} style={s.stepCard}>
-            <View style={s.stepNumCol}>
-              <Text style={s.stepNum}>{step.step_number ?? idx + 1}</Text>
-            </View>
-            <View style={s.stepBody}>
-              <Text style={s.stepInstruction}>{step.instruction}</Text>
-              {!!step.warning && (
-                <View style={s.warningBox}>
-                  <Ionicons name="warning" size={13} color="#fbbf24" style={{ marginRight: 6, marginTop: 1 }} />
-                  <Text style={s.warningText}>{step.warning}</Text>
-                </View>
-              )}
-            </View>
-          </View>
-        ))}
-
-        {!!sop.pdf_url && (
+        {hasFile ? (
           <TouchableOpacity
             style={s.pdfBtn}
-            onPress={() => Linking.openURL(sop.pdf_url)}
+            onPress={() => Linking.openURL(sop.file_url)}
             activeOpacity={0.8}
           >
-            <Ionicons name="document-text-outline" size={16} color={C.active} />
-            <Text style={s.pdfBtnText}>View PDF Reference</Text>
+            <Ionicons
+              name={isDrive ? 'logo-google' : 'document-text-outline'}
+              size={16}
+              color={C.active}
+            />
+            <Text style={s.pdfBtnText}>
+              {isDrive ? 'Open in Google Drive' : 'View PDF'}
+            </Text>
             <Ionicons name="open-outline" size={14} color={C.muted} style={{ marginLeft: 4 }} />
           </TouchableOpacity>
+        ) : (
+          <>
+            <Text style={s.sectionLabel}>STEPS</Text>
+            {steps.map((step, idx) => (
+              <View key={idx} style={s.stepCard}>
+                <View style={s.stepNumCol}>
+                  <Text style={s.stepNum}>{step.step_number ?? idx + 1}</Text>
+                </View>
+                <View style={s.stepBody}>
+                  <Text style={s.stepInstruction}>{step.instruction}</Text>
+                  {!!step.warning && (
+                    <View style={s.warningBox}>
+                      <Ionicons name="warning" size={13} color="#fbbf24" style={{ marginRight: 6, marginTop: 1 }} />
+                      <Text style={s.warningText}>{step.warning}</Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+            ))}
+          </>
         )}
 
         <View style={{ height: 40 }} />
@@ -195,12 +202,17 @@ export default function SOPsScreen({ route }) {
           <Text style={s.cardDesc} numberOfLines={2}>{item.description}</Text>
         )}
         <View style={s.cardFooter}>
-          <Text style={s.cardSteps}>{stepCount} step{stepCount !== 1 ? 's' : ''}</Text>
-          {!!item.pdf_url && (
+          {item.file_url ? (
             <View style={s.pdfChip}>
-              <Ionicons name="document-text-outline" size={11} color="#60a5fa" />
-              <Text style={s.pdfChipText}>PDF</Text>
+              <Ionicons
+                name={item.file_type === 'drive' ? 'logo-google' : 'document-text-outline'}
+                size={11}
+                color="#60a5fa"
+              />
+              <Text style={s.pdfChipText}>{item.file_type === 'drive' ? 'Drive' : 'PDF'}</Text>
             </View>
+          ) : (
+            <Text style={s.cardSteps}>{stepCount} step{stepCount !== 1 ? 's' : ''}</Text>
           )}
           <Ionicons name="chevron-forward" size={14} color="#333" style={{ marginLeft: 'auto' }} />
         </View>

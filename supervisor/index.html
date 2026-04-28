@@ -369,8 +369,12 @@ function App() {
   const [sopViews,     setSopViews]     = useState([]);
   const [showSopModal, setShowSopModal] = useState(false);
   const [editSopId,    setEditSopId]    = useState(null);
-  const defaultSopForm = { title:"", dept:"Assembly", description:"", steps:[{instruction:"",warning:""}], pdf_url:"" };
+  const defaultSopForm = { title:"", dept:"Assembly", description:"", steps:[{instruction:"",warning:""}], file_url:"", file_type:"steps" };
   const [sopForm,      setSopForm]      = useState(defaultSopForm);
+  const [sopMode,      setSopMode]      = useState("steps"); // "steps" | "pdf" | "drive"
+  const [sopFile,      setSopFile]      = useState(null);
+  const [sopDriveLink, setSopDriveLink] = useState("");
+  const [sopUploading, setSopUploading] = useState(false);
 
   // ── Plans / Drawings (Supabase) ───────────────────────────────────────────
   const [drawings,       setDrawings]       = useState([]);
@@ -831,17 +835,37 @@ function App() {
   // ── SOPs ──────────────────────────────────────────────────────────────────
   const saveSop = async () => {
     if (!sopForm.title.trim()) return;
-    const steps = sopForm.steps.map((s, i) => ({
+    setSopUploading(true);
+    let fileUrl = null;
+    let fileType = sopMode;
+
+    if (sopMode === "pdf" && sopFile) {
+      const ext = sopFile.name.split(".").pop();
+      const path = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+      const { error: upErr } = await sb.storage.from("sop-files").upload(path, sopFile, { upsert: false });
+      if (upErr) { showToastMsg("Upload failed: " + upErr.message); setSopUploading(false); return; }
+      const { data: urlData } = sb.storage.from("sop-files").getPublicUrl(path);
+      fileUrl = urlData.publicUrl;
+    } else if (sopMode === "drive" && sopDriveLink.trim()) {
+      fileUrl = sopDriveLink.trim()
+        .replace(/\/view(\?.*)?$/, "/preview")
+        .replace(/\/preview(\?.*)?$/, "/preview");
+      fileType = "drive";
+    }
+
+    const steps = sopMode === "steps" ? sopForm.steps.map((s, i) => ({
       step_number: i + 1,
       instruction: s.instruction,
       warning:     s.warning || null,
-    }));
+    })) : [];
+
     const payload = {
       title:       sopForm.title.trim(),
       dept:        sopForm.dept,
       description: sopForm.description.trim() || null,
       steps,
-      pdf_url:     sopForm.pdf_url.trim() || null,
+      file_url:    fileUrl,
+      file_type:   fileType,
       updated_at:  new Date().toISOString(),
     };
     if (editSopId) {
@@ -851,12 +875,20 @@ function App() {
       const { data, error } = await sb.from("sops").insert({ ...payload, created_by: "Supervisor" }).select().single();
       if (!error && data) setSops(p => [data, ...p]);
     }
-    setShowSopModal(false);
+    setSopMode("steps"); setSopFile(null); setSopDriveLink("");
+    setSopUploading(false); setShowSopModal(false);
     showToastMsg("SOP saved — crew can see it immediately");
   };
 
   const deleteSop = async id => {
     if (!confirm("Delete this SOP? This cannot be undone.")) return;
+    const sop = sops.find(s => s.id === id);
+    if (sop?.file_url && sop.file_url.includes("/sop-files/")) {
+      try {
+        const path = decodeURIComponent(sop.file_url.split("/sop-files/")[1]);
+        await sb.storage.from("sop-files").remove([path]);
+      } catch {}
+    }
     await sb.from("sops").delete().eq("id", id);
     setSops(p => p.filter(s => s.id !== id));
   };
@@ -1911,23 +1943,30 @@ function App() {
                 h("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}},
                   h("span",{style:{fontWeight:500,fontSize:14,color:"#e5e5e5"}}, sop.title),
                   h(Pill,{label:sop.dept,color:"#f59e0b"}),
-                  sop.pdf_url && h(Pill,{label:"PDF",color:"#3b82f6"})
+                  sop.file_url && h(Pill,{label:sop.file_type==="drive"?"Drive":"PDF",color:"#3b82f6"})
                 ),
                 sop.description && h("div",{style:{fontSize:12,color:"#666",marginBottom:6,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:500}}, sop.description),
                 h("div",{style:{display:"flex",alignItems:"center",gap:16,fontSize:11,color:"#444",flexWrap:"wrap"}},
-                  h("span",null, (sop.steps||[]).length+" step"+(sop.steps?.length!==1?"s":"")),
+                  sop.file_url
+                    ? h("span",{style:{color:"#60a5fa"}}, sop.file_type==="drive"?"Google Drive linked":"PDF attached")
+                    : h("span",null, (sop.steps||[]).length+" step"+(sop.steps?.length!==1?"s":"")),
                   h("span",null, "updated "+fmtD(sop.updated_at)),
                   uniqueViewers>0 && h("span",{style:{color:"#4ade80"}}, uniqueViewers+" crew member"+(uniqueViewers!==1?"s":"")+" viewed")
                 )
               ),
               h("div",{style:{display:"flex",gap:6,flexShrink:0}},
                 h("button",{style:{color:"#60a5fa",borderColor:"#1e3a5f"},onClick:()=>{
+                  const mode = sop.file_type && sop.file_type !== "steps" ? sop.file_type : "steps";
+                  setSopMode(mode);
+                  setSopFile(null);
+                  setSopDriveLink(sop.file_type==="drive" ? (sop.file_url||"") : "");
                   setSopForm({
                     title:       sop.title,
                     dept:        sop.dept,
                     description: sop.description||"",
                     steps:       (sop.steps&&sop.steps.length ? sop.steps : [{instruction:"",warning:""}]).map(st=>({instruction:st.instruction,warning:st.warning||""})),
-                    pdf_url:     sop.pdf_url||"",
+                    file_url:    sop.file_url||"",
+                    file_type:   sop.file_type||"steps",
                   });
                   setEditSopId(sop.id);
                   setShowSopModal(true);
@@ -1942,47 +1981,97 @@ function App() {
       // SOP modal
       showSopModal && h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",zIndex:100,display:"flex",alignItems:"flex-start",justifyContent:"center",overflowY:"auto",padding:"40px 16px"}},
         h("div",{style:{background:"#141414",borderRadius:10,border:"1px solid #2a2a2a",width:"100%",maxWidth:640,padding:24,marginBottom:40}},
-          h("div",{style:{fontSize:14,fontWeight:500,color:"#e5e5e5",marginBottom:18}}, editSopId?"edit sop":"new sop"),
+          h("div",{style:{fontSize:14,fontWeight:500,color:"#e5e5e5",marginBottom:14}}, editSopId?"edit sop":"new sop"),
           h("div",{style:{display:"grid",gridTemplateColumns:"2fr 1fr",gap:10,marginBottom:10}},
             h("input",{placeholder:"Title",value:sopForm.title,onChange:e=>setSopForm(p=>({...p,title:e.target.value})),style:IS,autoFocus:!editSopId}),
             h("select",{value:sopForm.dept,onChange:e=>setSopForm(p=>({...p,dept:e.target.value})),style:IS},
-              ["All","Cutting","Edgebanding","Assembly","Finishing","Craftsman","Install"].map(d=>h("option",{key:d,value:d},d))
+              ["All","Production","Assembly","Finishing","Craftsman"].map(d=>h("option",{key:d,value:d},d))
             )
           ),
-          h("textarea",{placeholder:"Short description (optional)",value:sopForm.description,onChange:e=>setSopForm(p=>({...p,description:e.target.value})),rows:2,style:{...IS,marginBottom:10,resize:"vertical"}}),
-          h("input",{placeholder:"PDF URL (optional)",value:sopForm.pdf_url,onChange:e=>setSopForm(p=>({...p,pdf_url:e.target.value})),style:{...IS,marginBottom:18}}),
-          h("div",{style:{fontSize:10,color:"#555",letterSpacing:".08em",marginBottom:10}}, "STEPS"),
-          ...sopForm.steps.map((step,idx)=>
-            h("div",{key:idx,style:{background:"#111",borderRadius:6,border:"1px solid #1e1e1e",padding:"10px 12px",marginBottom:8}},
-              h("div",{style:{display:"flex",alignItems:"center",gap:6,marginBottom:8}},
-                h("span",{style:{fontSize:11,color:"#555",minWidth:22,fontWeight:500,fontFamily:"'DM Mono',monospace"}}, String(idx+1).padStart(2,"0")),
-                h("button",{
-                  onClick:()=>setSopForm(p=>{const st=p.steps.filter((_,i)=>i!==idx);return {...p,steps:st.length?st:[{instruction:"",warning:""}]};}),
-                  style:{marginLeft:"auto",fontSize:10,padding:"2px 8px",color:"#f87171",borderColor:"#7f1d1d"}
-                }, "remove")
-              ),
-              h("textarea",{
-                placeholder:"What should the crew do?",
-                value:step.instruction,
-                onChange:e=>{const st=[...sopForm.steps];st[idx]={...st[idx],instruction:e.target.value};setSopForm(p=>({...p,steps:st}));},
-                rows:2,
-                style:{...IS,marginBottom:7,resize:"vertical",fontSize:12}
-              }),
-              h("input",{
-                placeholder:"⚠  Warning or caution (optional)",
-                value:step.warning||"",
-                onChange:e=>{const st=[...sopForm.steps];st[idx]={...st[idx],warning:e.target.value};setSopForm(p=>({...p,steps:st}));},
-                style:{...IS,fontSize:12}
-              })
+          h("textarea",{placeholder:"Short description (optional)",value:sopForm.description,onChange:e=>setSopForm(p=>({...p,description:e.target.value})),rows:2,style:{...IS,marginBottom:14,resize:"vertical"}}),
+
+          // Mode switcher
+          h("div",{style:{display:"flex",gap:6,marginBottom:16}},
+            ["steps","pdf","drive"].map(mode=>
+              h("button",{
+                key:mode,
+                onClick:()=>setSopMode(mode),
+                style:{
+                  flex:1,padding:"7px 0",fontSize:11,fontWeight:600,letterSpacing:".04em",
+                  background: sopMode===mode ? "#1c0e00" : "#111",
+                  color:      sopMode===mode ? "#f59e0b" : "#555",
+                  border:     sopMode===mode ? "1px solid #78350f" : "1px solid #1e1e1e",
+                  borderRadius:6, cursor:"pointer",
+                }
+              }, mode==="steps"?"Build Steps":mode==="pdf"?"Upload PDF":"Google Drive")
             )
           ),
-          h("button",{
-            onClick:()=>setSopForm(p=>({...p,steps:[...p.steps,{instruction:"",warning:""}]})),
-            style:{fontSize:11,color:"#f59e0b",borderColor:"#78350f",marginBottom:18,display:"block"}
-          }, "+ add step"),
-          h("div",{style:{display:"flex",gap:8}},
-            h("button",{className:"bp",onClick:saveSop}, editSopId?"save changes":"create sop"),
-            h("button",{onClick:()=>setShowSopModal(false)}, "cancel")
+
+          // Steps builder
+          sopMode==="steps" && h("div",null,
+            h("div",{style:{fontSize:10,color:"#555",letterSpacing:".08em",marginBottom:10}}, "STEPS"),
+            ...sopForm.steps.map((step,idx)=>
+              h("div",{key:idx,style:{background:"#111",borderRadius:6,border:"1px solid #1e1e1e",padding:"10px 12px",marginBottom:8}},
+                h("div",{style:{display:"flex",alignItems:"center",gap:6,marginBottom:8}},
+                  h("span",{style:{fontSize:11,color:"#555",minWidth:22,fontWeight:500,fontFamily:"'DM Mono',monospace"}}, String(idx+1).padStart(2,"0")),
+                  h("button",{
+                    onClick:()=>setSopForm(p=>{const st=p.steps.filter((_,i)=>i!==idx);return {...p,steps:st.length?st:[{instruction:"",warning:""}]};}),
+                    style:{marginLeft:"auto",fontSize:10,padding:"2px 8px",color:"#f87171",borderColor:"#7f1d1d"}
+                  }, "remove")
+                ),
+                h("textarea",{
+                  placeholder:"What should the crew do?",
+                  value:step.instruction,
+                  onChange:e=>{const st=[...sopForm.steps];st[idx]={...st[idx],instruction:e.target.value};setSopForm(p=>({...p,steps:st}));},
+                  rows:2,
+                  style:{...IS,marginBottom:7,resize:"vertical",fontSize:12}
+                }),
+                h("input",{
+                  placeholder:"⚠  Warning or caution (optional)",
+                  value:step.warning||"",
+                  onChange:e=>{const st=[...sopForm.steps];st[idx]={...st[idx],warning:e.target.value};setSopForm(p=>({...p,steps:st}));},
+                  style:{...IS,fontSize:12}
+                })
+              )
+            ),
+            h("button",{
+              onClick:()=>setSopForm(p=>({...p,steps:[...p.steps,{instruction:"",warning:""}]})),
+              style:{fontSize:11,color:"#f59e0b",borderColor:"#78350f",marginBottom:18,display:"block"}
+            }, "+ add step")
+          ),
+
+          // PDF upload
+          sopMode==="pdf" && h("div",null,
+            h("div",{style:{fontSize:10,color:"#555",letterSpacing:".08em",marginBottom:10}}, "PDF FILE"),
+            h("input",{
+              type:"file", accept:".pdf",
+              onChange:e=>setSopFile(e.target.files[0]||null),
+              style:{...IS,marginBottom:6,padding:"8px 10px",cursor:"pointer"}
+            }),
+            sopForm.file_url && sopForm.file_type==="pdf" && h("div",{style:{fontSize:11,color:"#555",marginBottom:14}},
+              "Currently: ",
+              h("a",{href:sopForm.file_url,target:"_blank",style:{color:"#60a5fa",textDecoration:"none"}}, "view current PDF")
+            ),
+            h("div",{style:{fontSize:11,color:"#444",marginBottom:18}}, "PDF will open in crew app — supports pinch-to-zoom.")
+          ),
+
+          // Google Drive link
+          sopMode==="drive" && h("div",null,
+            h("div",{style:{fontSize:10,color:"#555",letterSpacing:".08em",marginBottom:10}}, "GOOGLE DRIVE LINK"),
+            h("input",{
+              placeholder:"Paste Google Drive share link…",
+              value:sopDriveLink,
+              onChange:e=>setSopDriveLink(e.target.value),
+              style:{...IS,marginBottom:6}
+            }),
+            h("div",{style:{fontSize:11,color:"#444",marginBottom:18}}, "/view links are auto-converted to /preview for embedding.")
+          ),
+
+          h("div",{style:{display:"flex",gap:8,marginTop:4}},
+            h("button",{className:"bp",onClick:saveSop,disabled:sopUploading},
+              sopUploading ? "saving…" : editSopId?"save changes":"create sop"
+            ),
+            h("button",{onClick:()=>{setSopMode("steps");setSopFile(null);setSopDriveLink("");setShowSopModal(false);}}, "cancel")
           )
         )
       )
