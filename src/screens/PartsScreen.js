@@ -14,10 +14,15 @@ import {
   Animated,
   Vibration,
   Modal,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../lib/supabase';
+import { lookupPartByNumber } from '../lib/innergy';
+
+const CURRENT_TASK_KEY = '@sawdust_current_task';
 
 // SQL migration for new columns (run once in Supabase SQL editor):
 // ALTER TABLE part_scans ADD COLUMN IF NOT EXISTS status text;
@@ -122,7 +127,7 @@ const ScannerOverlay = () => (
 );
 
 // ── QC Modal ──────────────────────────────────────────────────
-function QCModal({ visible, partNum, dept, jobId, onJobIdChange, onClose, onSubmit, saving }) {
+function QCModal({ visible, partNum, dept, jobId, onJobIdChange, onClose, onSubmit, saving, incomingJobName, incomingWorkOrder }) {
   const [status,   setStatus]   = useState('In Progress');
   const [nextDept, setNextDept] = useState('');
   const [notes,    setNotes]    = useState('');
@@ -148,9 +153,15 @@ function QCModal({ visible, partNum, dept, jobId, onJobIdChange, onClose, onSubm
       >
         <View style={styles.qcBox}>
           <View style={styles.qcHeader}>
-            <View>
+            <View style={{ flex: 1, marginRight: 8 }}>
               <Text style={styles.qcTitle}>QC Update</Text>
               <Text style={styles.qcSubtitle}>{partNum}</Text>
+              {incomingJobName ? (
+                <Text style={styles.qcJobName}>{incomingJobName}</Text>
+              ) : null}
+              {incomingWorkOrder ? (
+                <Text style={styles.qcWorkOrder}>{incomingWorkOrder}</Text>
+              ) : null}
             </View>
             <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Ionicons name="close" size={22} color={C.muted} />
@@ -275,6 +286,17 @@ export default function PartsScreen({ route }) {
   const [recentScans, setRecentScans] = useState([]);
   const [qcVisible,   setQcVisible]   = useState(false);
 
+  // Approve Incoming Part modal
+  const [approveVisible,  setApproveVisible]  = useState(false);
+  const [approvePartNum,  setApprovePartNum]  = useState('');
+  const [approveJobNum,   setApproveJobNum]   = useState('');
+  const [approveNotes,    setApproveNotes]    = useState('');
+  const [approveSaving,   setApproveSaving]   = useState(false);
+
+  // Innergy context from part lookup
+  const [incomingJobName,    setIncomingJobName]    = useState('');
+  const [incomingWorkOrder,  setIncomingWorkOrder]  = useState('');
+
   const cooldownRef = useRef(false);
 
   useEffect(() => {
@@ -302,8 +324,43 @@ export default function PartsScreen({ route }) {
     Vibration.vibrate(80);
     setScannedPart(data);
     setScanning(false);
-    setQcVisible(true);
+    lookupAndOpenQC(data);
     setTimeout(() => { cooldownRef.current = false; }, 3000);
+  };
+
+  const lookupAndOpenQC = async (partNum) => {
+    setIncomingJobName('');
+    setIncomingWorkOrder('');
+    setQcVisible(true);
+    const item = await lookupPartByNumber(partNum);
+    if (item) {
+      const jobName = item.jobName ?? item.projectName ?? item.job ?? '';
+      const woName  = item.workOrderName ?? item.workOrder ?? item.name ?? '';
+      setIncomingJobName(jobName);
+      setIncomingWorkOrder(woName);
+      if (jobName || woName) {
+        Alert.alert(
+          'Switch Active Task?',
+          `Switch to ${jobName || woName}?`,
+          [
+            { text: 'No', style: 'cancel' },
+            {
+              text: 'Yes',
+              onPress: async () => {
+                const task = {
+                  workOrderId:   item.workOrderId ?? item.id ?? '',
+                  workOrderName: woName,
+                  jobName,
+                  taskType:      '',
+                  startedAt:     new Date().toISOString(),
+                };
+                await AsyncStorage.setItem(CURRENT_TASK_KEY, JSON.stringify(task));
+              },
+            },
+          ]
+        );
+      }
+    }
   };
 
   const handleRescan = () => {
@@ -312,6 +369,8 @@ export default function PartsScreen({ route }) {
     setJobId('');
     setScanning(true);
     setQcVisible(false);
+    setIncomingJobName('');
+    setIncomingWorkOrder('');
   };
 
   const showToast = (success, message) => {
@@ -322,7 +381,32 @@ export default function PartsScreen({ route }) {
   const handleOpenQC = () => {
     const partNum = manualEntry ? manualPart : scannedPart;
     if (!partNum.trim() || !dept) return;
-    setQcVisible(true);
+    lookupAndOpenQC(partNum.trim());
+  };
+
+  const handleApproveSubmit = async () => {
+    if (!approvePartNum.trim() || approveSaving) return;
+    setApproveSaving(true);
+    try {
+      await supabase.from('part_scans').insert({
+        part_num:   approvePartNum.trim(),
+        dept,
+        job_id:     approveJobNum.trim() || null,
+        scanned_by: userName ?? 'Unknown',
+        status:     'approved_incoming',
+        notes:      approveNotes.trim() || null,
+      });
+      setApproveVisible(false);
+      setApprovePartNum('');
+      setApproveJobNum('');
+      setApproveNotes('');
+      showToast(true, `Approved: ${approvePartNum.trim()}`);
+      fetchRecent();
+    } catch (e) {
+      Alert.alert('Error', 'Failed to submit approval. Try again.');
+    } finally {
+      setApproveSaving(false);
+    }
   };
 
   const handleQcSubmit = async ({ status, nextDept, notes }) => {
@@ -389,6 +473,21 @@ export default function PartsScreen({ route }) {
             <Text style={styles.headerTitle}>Scan Part</Text>
             {userName ? <Text style={styles.headerSub}>{userName} · {dept}</Text> : null}
           </View>
+
+          {/* Approve Incoming Part button */}
+          <TouchableOpacity
+            style={styles.approveTopBtn}
+            onPress={() => {
+              setApprovePartNum('');
+              setApproveJobNum('');
+              setApproveNotes('');
+              setApproveVisible(true);
+            }}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="checkmark-done-outline" size={18} color="#000" style={{ marginRight: 7 }} />
+            <Text style={styles.approveTopBtnText}>Approve Incoming Part</Text>
+          </TouchableOpacity>
 
           {/* Camera / Manual toggle */}
           <View style={styles.modeRow}>
@@ -559,7 +658,78 @@ export default function PartsScreen({ route }) {
         onClose={() => { setQcVisible(false); if (!manualEntry && !scannedPart) setScanning(true); }}
         onSubmit={handleQcSubmit}
         saving={saving}
+        incomingJobName={incomingJobName}
+        incomingWorkOrder={incomingWorkOrder}
       />
+
+      {/* Approve Incoming Part Modal */}
+      <Modal
+        visible={approveVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setApproveVisible(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.qcOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+          <View style={styles.qcBox}>
+            <View style={styles.qcHeader}>
+              <View>
+                <Text style={styles.qcTitle}>Approve Incoming Part</Text>
+                {dept ? <Text style={styles.qcSubtitle}>{dept}</Text> : null}
+              </View>
+              <TouchableOpacity onPress={() => setApproveVisible(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close" size={22} color={C.muted} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <Text style={styles.qcFieldLabel}>Part Number *</Text>
+              <TextInput
+                style={styles.qcInput}
+                placeholder="e.g. CAB-1042-A"
+                placeholderTextColor={C.muted}
+                value={approvePartNum}
+                onChangeText={setApprovePartNum}
+                autoCapitalize="characters"
+                autoFocus
+              />
+              <Text style={styles.qcFieldLabel}>Job # (optional)</Text>
+              <TextInput
+                style={styles.qcInput}
+                placeholder="e.g. J-1042"
+                placeholderTextColor={C.muted}
+                value={approveJobNum}
+                onChangeText={setApproveJobNum}
+              />
+              <Text style={styles.qcFieldLabel}>Notes (optional)</Text>
+              <TextInput
+                style={[styles.qcInput, { minHeight: 70, textAlignVertical: 'top', paddingTop: 10 }]}
+                placeholder="Any issues or notes…"
+                placeholderTextColor={C.muted}
+                value={approveNotes}
+                onChangeText={setApproveNotes}
+                multiline
+              />
+              <TouchableOpacity
+                style={[styles.approveBtn, (!approvePartNum.trim() || approveSaving) && { opacity: 0.5 }]}
+                onPress={handleApproveSubmit}
+                disabled={!approvePartNum.trim() || approveSaving}
+                activeOpacity={0.85}
+              >
+                {approveSaving
+                  ? <ActivityIndicator size="small" color="#000" />
+                  : <>
+                      <Ionicons name="checkmark-done-outline" size={18} color="#000" style={{ marginRight: 6 }} />
+                      <Text style={styles.approveBtnText}>Approve Part</Text>
+                    </>
+                }
+              </TouchableOpacity>
+              <View style={{ height: 20 }} />
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       <Toast visible={toast.visible} success={toast.success} message={toast.message} />
     </SafeAreaView>
@@ -845,12 +1015,31 @@ const styles = StyleSheet.create({
   },
   qcChipText: { fontSize: 12, fontWeight: '600', color: C.muted },
 
+  approveTopBtn: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: C.success,
+    borderRadius: 14,
+    paddingVertical: 14,
+    marginBottom: 18,
+    shadowColor: C.success,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  approveTopBtnText: { color: '#000', fontSize: 15, fontWeight: '700' },
+
   approveBtn: {
     flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
     backgroundColor: C.success, borderRadius: 14,
     paddingVertical: 15, marginTop: 18,
   },
   approveBtnText: { color: '#000', fontSize: 15, fontWeight: '700' },
+
+  qcJobName:    { fontSize: 12, color: C.success, fontWeight: '600', marginTop: 3 },
+  qcWorkOrder:  { fontSize: 11, color: C.muted, marginTop: 1 },
 
   submitBtn: {
     flexDirection: 'row', justifyContent: 'center', alignItems: 'center',

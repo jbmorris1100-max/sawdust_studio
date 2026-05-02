@@ -1018,39 +1018,6 @@ function App() {
         h(Stat, {label:"open damage reports",    val:damageRpts.filter(d=>d.status==="open").length,color:"#3b82f6"})
       ),
 
-      // ── Who's Clocked In ────────────────────────────────────────────────────
-      (() => {
-        const activeTc  = tcToday.filter(e => !e.clock_out || e.clock_out === "NULL");
-        console.log("[supervisor] WHO'S CLOCKED IN activeTc:", activeTc.length, "tcToday:", tcToday.length, tcToday);
-        const totalHrs  = activeTc.reduce((s, e) => s + (tcNow - new Date(e.clock_in).getTime()) / 3600000, 0);
-        const fmtT      = iso => new Date(iso).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-        const fmtEl     = isoStart => {
-          const diff = Math.floor((tcNow - new Date(isoStart).getTime()) / 1000);
-          const hh = Math.floor(diff / 3600), mm = Math.floor((diff % 3600) / 60);
-          return hh > 0 ? `${hh}h ${mm}m` : `${mm}m`;
-        };
-        return h("div", {style:{marginBottom:"1.5rem"}},
-          h(Divider, {label: activeTc.length > 0
-            ? `WHO'S CLOCKED IN — ${totalHrs.toFixed(1)}h total active`
-            : "WHO'S CLOCKED IN"}),
-          h("div", {style:{fontSize:10,color:"#333",marginBottom:6}}, `[debug] tcToday.length=${tcToday.length}`),
-          activeTc.length === 0
-            ? h("div", {style:{color:"#444",fontSize:12,paddingBottom:8}}, "No crew clocked in yet.")
-            : activeTc.map(e =>
-                h("div", {key:e.id, style:{...CS, borderLeft:"3px solid #22c55e", display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6}},
-                  h("div", null,
-                    h("span", {style:{fontWeight:500,color:"#e5e5e5",fontSize:14}}, e.worker_name),
-                    h("span", {style:{fontSize:11,color:"#555",marginLeft:10,background:"#1a1a1a",padding:"2px 8px",borderRadius:99,border:"1px solid #222"}}, e.dept)
-                  ),
-                  h("div", {style:{textAlign:"right"}},
-                    h("div", {style:{fontSize:12,color:"#22c55e",fontWeight:500}}, "since " + fmtT(e.clock_in)),
-                    h("div", {style:{fontSize:11,color:"#555",marginTop:2}}, fmtEl(e.clock_in) + " elapsed")
-                  )
-                )
-              )
-        );
-      })(),
-
       h("div", {style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
         h("div", {style:{display:"flex",gap:6}}, ["all","active","passed","flagged"].map(f => h(FBtn,{key:f,val:f,cur:jobF,set:setJobF}))),
         h("div", {style:{display:"flex",gap:8}},

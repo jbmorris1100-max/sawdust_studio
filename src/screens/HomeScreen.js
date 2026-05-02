@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
 import {
   View,
   Text,
@@ -20,35 +20,16 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { RoleContext } from '../lib/RoleContext';
+import { getWorkOrders } from '../lib/innergy';
 
 // ── Constants ─────────────────────────────────────────────────
-const STORAGE_KEY_NAME = '@sawdust_user_name';
-const STORAGE_KEY_DEPT = '@sawdust_user_dept';
-const shiftKey = (n) => `@sawdust_shift_${n}`;
+const STORAGE_KEY_NAME    = '@sawdust_user_name';
+const STORAGE_KEY_DEPT    = '@sawdust_user_dept';
+const LAST_READ_KEY       = '@sawdust_last_read';
+const DEVICE_ID_KEY       = '@sawdust_device_id';
+const CURRENT_TASK_KEY    = '@sawdust_current_task';
 
-const loadShift = async (name) => {
-  try {
-    const raw = await AsyncStorage.getItem(shiftKey(name));
-    if (!raw) return null;
-    const obj = JSON.parse(raw);
-    if (!obj.recordId || !obj.clockInTime) return null;
-    return obj;
-  } catch { return null; }
-};
-const saveShift = async (name, shift) =>
-  AsyncStorage.setItem(shiftKey(name), JSON.stringify(shift));
-const clearShift = async (name) =>
-  AsyncStorage.removeItem(shiftKey(name));
-
-const LAST_READ_KEY    = '@sawdust_last_read';
-const DEVICE_ID_KEY    = '@sawdust_device_id';
-
-const DEPARTMENTS = [
-  'Production',
-  'Assembly',
-  'Finishing',
-  'Craftsman',
-];
+const DEPARTMENTS = ['Production', 'Assembly', 'Finishing', 'Craftsman'];
 
 const DEPT_COLORS = {
   Production:  { bg: '#172554', text: '#93c5fd' },
@@ -58,22 +39,24 @@ const DEPT_COLORS = {
 };
 
 const ACTIONS = [
-  { key: 'inventory', label: 'Log Inventory',          screen: 'LogInventory', icon: 'cube-outline',             accentColor: '#f59e0b' },
-  { key: 'damage',    label: 'Report Damage',           screen: 'ReportDamage', icon: 'warning-outline',          accentColor: '#ef4444' },
-  { key: 'scan',      label: 'Scan Part',               screen: 'ScanPart',     icon: 'scan-outline',             accentColor: '#3b82f6' },
-  { key: 'approve',   label: 'Approve Incoming Parts',  screen: null,           icon: 'checkmark-done-outline',   accentColor: '#22c55e' },
-  { key: 'message',   label: 'Message Supervisor',      screen: 'Messages',     icon: 'chatbubble-outline',       accentColor: '#8b5cf6' },
+  { key: 'inventory', label: 'Log Inventory Need', screen: 'Needs',    icon: 'cube-outline',    accentColor: '#f59e0b' },
+  { key: 'damage',    label: 'Report Damage',      screen: 'Damage',   icon: 'warning-outline', accentColor: '#ef4444' },
+  { key: 'scan',      label: 'Scan Part',          screen: 'ScanPart', icon: 'scan-outline',    accentColor: '#3b82f6' },
+  { key: 'message',   label: 'Message Supervisor', screen: 'Messages', icon: 'chatbubble-outline', accentColor: '#8b5cf6' },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────
 const formatMsgTime = (iso) =>
   new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-const fmtSecs = (secs) => {
-  const h = String(Math.floor(secs / 3600)).padStart(2, '0');
-  const m = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
-  const s = String(secs % 60).padStart(2, '0');
-  return `${h}:${m}:${s}`;
+const timeAgo = (iso) => {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1)  return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)  return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
 };
 
 // ── Main Component ────────────────────────────────────────────
@@ -92,23 +75,16 @@ export default function HomeScreen({ navigation, route }) {
   const [alertLoading, setAlertLoading]     = useState(false);
   const [recentMessages, setRecentMessages] = useState([]);
   const [lastSeenAt, setLastSeenAt]         = useState('');
-  const [clockedIn,     setClockedIn]       = useState(false);
-  const [clockInTime,   setClockInTime]     = useState(null);
-  const [clockRecordId, setClockRecordId]   = useState(null);
-  const [elapsed,       setElapsed]         = useState('00:00:00');
-  const [clockLoading,  setClockLoading]    = useState(false);
-  const [isOnBreak,         setIsOnBreak]         = useState(false);
-  const [breakStartTime,    setBreakStartTime]    = useState(null);
-  const [totalBreakMinutes, setTotalBreakMinutes] = useState(0);
   const [settingsModalVisible, setSettingsModalVisible] = useState(false);
-  const [isOnline, setIsOnline] = useState(null);
+  const [isOnline, setIsOnline]             = useState(null);
 
-  // Approve Incoming Parts modal
-  const [approveVisible,  setApproveVisible]  = useState(false);
-  const [approvePartNum,  setApprovePartNum]  = useState('');
-  const [approveJobNum,   setApproveJobNum]   = useState('');
-  const [approveNotes,    setApproveNotes]    = useState('');
-  const [approveSaving,   setApproveSaving]   = useState(false);
+  // Current Task
+  const [currentTask,       setCurrentTask]       = useState(null);
+  const [taskModalVisible,  setTaskModalVisible]  = useState(false);
+  const [workOrders,        setWorkOrders]        = useState([]);
+  const [loadingWorkOrders, setLoadingWorkOrders] = useState(false);
+  const [selectedWO,        setSelectedWO]        = useState(null);
+  const [selectedTaskType,  setSelectedTaskType]  = useState('');
 
   // Ref so the realtime subscription always reads the latest lastSeenAt
   const lastSeenAtRef = useRef('');
@@ -126,19 +102,7 @@ export default function HomeScreen({ navigation, route }) {
       if (name && dept) {
         setUserName(name);
         setUserDept(dept);
-        const shift = await loadShift(name);
-        if (shift) {
-          setClockedIn(true);
-          setClockInTime(shift.clockInTime);
-          setClockRecordId(shift.recordId);
-          if (shift.isOnBreak && shift.breakStartTime) {
-            setIsOnBreak(true);
-            setBreakStartTime(shift.breakStartTime);
-          }
-          setTotalBreakMinutes(shift.totalBreakMinutes || 0);
-        }
       } else if (name && !dept) {
-        // Name set via onboarding — just need department
         setUserName(name);
         setDraftName(name);
         setDeptOnlyMode(true);
@@ -148,6 +112,27 @@ export default function HomeScreen({ navigation, route }) {
       }
     })();
   }, []);
+
+  // ── Load current task on focus ────────────────────────────
+  useFocusEffect(
+    useCallback(() => {
+      AsyncStorage.getItem(CURRENT_TASK_KEY).then((raw) => {
+        if (raw) {
+          try { setCurrentTask(JSON.parse(raw)); } catch { setCurrentTask(null); }
+        } else {
+          setCurrentTask(null);
+        }
+      });
+      if (userDept) fetchAlerts(userDept);
+      if (userName) {
+        AsyncStorage.getItem(LAST_READ_KEY).then((seen) => {
+          const s = seen ?? '';
+          if (s) setLastSeenAt(s);
+          fetchRecentMessages(userName, s);
+        });
+      }
+    }, [userDept, userName, fetchRecentMessages])
+  );
 
   // ── Real-time message subscription ───────────────────────
   useEffect(() => {
@@ -205,40 +190,6 @@ export default function HomeScreen({ navigation, route }) {
     navigation.navigate('Messages', { userName, userDept });
   }, [userName, userDept, onClearUnread, navigation]);
 
-  useFocusEffect(
-    useCallback(() => {
-      if (userDept) fetchAlerts(userDept);
-      if (userName) {
-        AsyncStorage.getItem(LAST_READ_KEY).then((seen) => {
-          const s = seen ?? '';
-          if (s) setLastSeenAt(s);
-          fetchRecentMessages(userName, s);
-        });
-      }
-    }, [userDept, userName, fetchRecentMessages])
-  );
-
-  // ── Elapsed timer (pauses during break) ──────────────────
-  useEffect(() => {
-    if (!clockedIn || !clockInTime) return;
-    const breakSecs = totalBreakMinutes * 60;
-    const compute = () => {
-      if (isOnBreak && breakStartTime) {
-        // Freeze display at the moment break started
-        return Math.max(0, Math.floor(
-          (new Date(breakStartTime).getTime() - new Date(clockInTime).getTime()) / 1000
-        ) - breakSecs);
-      }
-      return Math.max(0, Math.floor(
-        (Date.now() - new Date(clockInTime).getTime()) / 1000
-      ) - breakSecs);
-    };
-    setElapsed(fmtSecs(compute()));
-    if (isOnBreak) return;
-    const id = setInterval(() => setElapsed(fmtSecs(compute())), 1000);
-    return () => clearInterval(id);
-  }, [clockedIn, clockInTime, isOnBreak, breakStartTime, totalBreakMinutes]);
-
   // ── Alerts ────────────────────────────────────────────────
   const fetchAlerts = async (dept) => {
     setAlertLoading(true);
@@ -261,34 +212,19 @@ export default function HomeScreen({ navigation, route }) {
       if (!draftDept) return;
       await AsyncStorage.setItem(STORAGE_KEY_DEPT, draftDept);
       const deviceId = (await AsyncStorage.getItem(DEVICE_ID_KEY)) || 'unknown';
-      // Update dept on device_tokens so supervisor sees the change
       try {
         await supabase.from('device_tokens').update({ dept: draftDept }).eq('id', deviceId);
       } catch (e) {}
-      // Audit log
       try {
         await supabase.from('login_log').insert({
           worker_name: userName, dept: draftDept, role: 'dept_change',
           device_id: deviceId, app_version: '2',
         });
       } catch (e) {}
-      // Dept switch never interrupts an active shift — only update the dept field
-      // in the shift object so the next app restart restores the correct context.
-      if (clockedIn) {
-        const raw = await AsyncStorage.getItem(shiftKey(userName));
-        if (raw) {
-          try {
-            const shift = JSON.parse(raw);
-            shift.dept = draftDept;
-            await saveShift(userName, shift);
-          } catch {}
-        }
-      }
       setUserDept(draftDept);
       setSetupVisible(false);
       setDeptOnlyMode(false);
       fetchAlerts(draftDept);
-      // Refresh HomeScreen message notifications for the new dept context
       AsyncStorage.getItem(LAST_READ_KEY).then((seen) => {
         fetchRecentMessages(userName, seen ?? '');
       });
@@ -328,225 +264,34 @@ export default function HomeScreen({ navigation, route }) {
     }
   };
 
-  // ── Clock actions ─────────────────────────────────────────
-  const handleClockIn = async () => {
-    if (!userName || !userDept || clockLoading) return;
-    setClockLoading(true);
-    try {
-      const now = new Date().toISOString();
-      const { data, error } = await Promise.race([
-        supabase
-          .from('time_clock')
-          .insert({ worker_name: userName, dept: userDept, clock_in: now, date: now.slice(0, 10), status: 'active' })
-          .select()
-          .single(),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Server slow — try again')), 8000)
-        ),
-      ]);
-      if (error || !data) throw new Error(error?.message || 'Insert failed — no record returned');
-      const shift = {
-        recordId:          String(data.id),
-        clockInTime:       now,
-        isOnBreak:         false,
-        breakStartTime:    null,
-        totalBreakMinutes: 0,
-        dept:              userDept,
-      };
-      await saveShift(userName, shift);
-      console.log('[handleClockIn] saved shift under key:', shiftKey(userName), 'recordId:', shift.recordId);
-      setClockInTime(now);
-      setClockRecordId(String(data.id));
-      setClockedIn(true);
-    } catch (e) {
-      if (Platform.OS === 'web') {
-        window.alert('Clock In Failed: ' + e.message);
-      } else {
-        Alert.alert('Clock In Failed', e.message);
-      }
-    } finally {
-      setClockLoading(false);
-    }
+  // ── Current Task ──────────────────────────────────────────
+  const handleOpenTaskModal = async () => {
+    setTaskModalVisible(true);
+    setSelectedWO(null);
+    setSelectedTaskType('');
+    setLoadingWorkOrders(true);
+    const data = await getWorkOrders();
+    setWorkOrders(Array.isArray(data) ? data : []);
+    setLoadingWorkOrders(false);
   };
 
-  const handleBreakStart = async () => {
-    if (!clockedIn || isOnBreak || clockLoading) return;
-    const now = new Date().toISOString();
-    const raw = await AsyncStorage.getItem(shiftKey(userName));
-    if (raw) {
-      try {
-        const shift = JSON.parse(raw);
-        shift.isOnBreak = true;
-        shift.breakStartTime = now;
-        await saveShift(userName, shift);
-      } catch {}
-    }
-    setBreakStartTime(now);
-    setIsOnBreak(true);
+  const handleSaveTask = async () => {
+    if (!selectedWO) return;
+    const task = {
+      workOrderId:   selectedWO.id ?? selectedWO.workOrderId ?? '',
+      workOrderName: selectedWO.name ?? selectedWO.workOrderName ?? selectedWO.title ?? String(selectedWO.id ?? ''),
+      jobName:       selectedWO.jobName ?? selectedWO.projectName ?? selectedWO.job ?? '',
+      taskType:      selectedTaskType,
+      startedAt:     new Date().toISOString(),
+    };
+    await AsyncStorage.setItem(CURRENT_TASK_KEY, JSON.stringify(task));
+    setCurrentTask(task);
+    setTaskModalVisible(false);
   };
 
-  const handleBreakEnd = async () => {
-    if (!isOnBreak || clockLoading) return;
-    setClockLoading(true);
-    try {
-      const breakDuration = Math.round((Date.now() - new Date(breakStartTime).getTime()) / 60000);
-      const newTotal = totalBreakMinutes + breakDuration;
-      const raw = await AsyncStorage.getItem(shiftKey(userName));
-      if (raw) {
-        try {
-          const shift = JSON.parse(raw);
-          shift.isOnBreak = false;
-          shift.breakStartTime = null;
-          shift.totalBreakMinutes = newTotal;
-          await saveShift(userName, shift);
-        } catch {}
-      }
-      setTotalBreakMinutes(newTotal);
-      setBreakStartTime(null);
-      setIsOnBreak(false);
-    } finally {
-      setClockLoading(false);
-    }
-  };
-
-  const doClockOut = async () => {
-    // Step 1: recordId from state. Also resolve userName from AsyncStorage
-    // in case this fires from a stale Alert callback with an empty closure.
-    let recordId = clockRecordId;
-    let ciTime   = clockInTime;
-    let name     = userName;
-    if (!name) name = (await AsyncStorage.getItem(STORAGE_KEY_NAME)) || '';
-
-    console.log('[doClockOut] start — recordId:', recordId, 'userName:', name, 'shiftKey:', shiftKey(name));
-
-    // Step 2: AsyncStorage fallback
-    if (!recordId) {
-      const shift = await loadShift(name);
-      console.log('[doClockOut] AsyncStorage shift:', shift);
-      if (shift) {
-        recordId = shift.recordId;
-        if (!ciTime) ciTime = shift.clockInTime;
-        if (recordId) setClockRecordId(recordId);
-        if (ciTime && !clockInTime) setClockInTime(ciTime);
-      }
-    }
-
-    // Step 3: Nuclear fallback — query Supabase (5-second timeout)
-    if (!recordId) {
-      console.log('[doClockOut] nuclear fallback for:', name);
-      try {
-        const todayStr = new Date().toISOString().slice(0, 10);
-        const { data } = await Promise.race([
-          supabase
-            .from('time_clock')
-            .select('*')
-            .eq('worker_name', name)
-            .eq('date', todayStr)
-            .is('clock_out', null)
-            .limit(1)
-            .single(),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Lookup timed out after 5s')), 5000)
-          ),
-        ]);
-        if (data) {
-          recordId = String(data.id);
-          ciTime   = data.clock_in;
-          setClockRecordId(recordId);
-          setClockInTime(ciTime);
-          console.log('[doClockOut] nuclear fallback found recordId:', recordId);
-        }
-      } catch (e) {
-        console.warn('[doClockOut] nuclear fallback failed:', e.message);
-        const msg = 'Could not find your clock-in record: ' + e.message;
-        if (Platform.OS === 'web') window.alert(msg);
-        else Alert.alert('Clock Out Error', msg);
-        return;
-      }
-    }
-
-    if (!recordId) {
-      const msg = 'No active clock-in record found. You may already be clocked out.';
-      if (Platform.OS === 'web') window.alert(msg);
-      else Alert.alert('Clock Out Error', msg);
-      return;
-    }
-
-    setClockLoading(true);
-    try {
-      const now = new Date().toISOString();
-      const currentBreakMs = isOnBreak && breakStartTime
-        ? Math.round(Date.now() - new Date(breakStartTime).getTime())
-        : 0;
-      const finalBreakMinutes = totalBreakMinutes + Math.round(currentBreakMs / 60000);
-      const netMs = Math.max(0,
-        Date.now() - new Date(ciTime).getTime()
-        - totalBreakMinutes * 60000
-        - currentBreakMs
-      );
-      const totalHours = +(netMs / 3600000).toFixed(4);
-      console.log('[doClockOut] updating record', recordId, 'totalHours:', totalHours);
-      const { error } = await Promise.race([
-        supabase
-          .from('time_clock')
-          .update({ clock_out: now, total_hours: totalHours, break_minutes: finalBreakMinutes })
-          .eq('id', recordId),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Clock out update timed out after 8s')), 8000)
-        ),
-      ]);
-      if (error) throw new Error(error.message);
-      await clearShift(name);
-      setClockedIn(false);
-      setClockInTime(null);
-      setClockRecordId(null);
-      setElapsed('00:00:00');
-      setIsOnBreak(false);
-      setBreakStartTime(null);
-      setTotalBreakMinutes(0);
-    } catch (e) {
-      const msg = 'Clock out failed: ' + e.message;
-      if (Platform.OS === 'web') window.alert(msg);
-      else Alert.alert('Clock Out Failed', msg);
-      // Do NOT clear state — allow retry
-    } finally {
-      setClockLoading(false);
-    }
-  };
-
-  const handleClockOut = () => {
-    if (Platform.OS === 'web') {
-      if (window.confirm('End your shift?')) doClockOut();
-    } else {
-      Alert.alert('Clock Out', 'End your shift?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Clock Out', style: 'destructive', onPress: doClockOut },
-      ]);
-    }
-  };
-
-  // ── Approve Incoming Parts ────────────────────────────────
-  const handleApproveSubmit = async () => {
-    if (!approvePartNum.trim() || !userDept || approveSaving) return;
-    setApproveSaving(true);
-    try {
-      await supabase.from('part_scans').insert({
-        part_num:   approvePartNum.trim(),
-        dept:       userDept,
-        job_id:     approveJobNum.trim() || null,
-        scanned_by: userName || 'Unknown',
-        status:     'approved_incoming',
-        notes:      approveNotes.trim() || null,
-      });
-      setApproveVisible(false);
-      setApprovePartNum('');
-      setApproveJobNum('');
-      setApproveNotes('');
-    } catch (e) {
-      Alert.alert('Error', 'Failed to submit approval. Try again.');
-    } finally {
-      setApproveSaving(false);
-    }
+  const handleClearTask = async () => {
+    await AsyncStorage.removeItem(CURRENT_TASK_KEY);
+    setCurrentTask(null);
   };
 
   // ── Helpers ───────────────────────────────────────────────
@@ -578,9 +323,6 @@ export default function HomeScreen({ navigation, route }) {
           ) : null}
         </View>
         <View style={styles.headerIcons}>
-          {isOnline !== null && (
-            <View style={[styles.connDot, { backgroundColor: isOnline ? '#22c55e' : '#ef4444' }]} />
-          )}
           <TouchableOpacity
             onPress={handleSwitchRole}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -589,8 +331,6 @@ export default function HomeScreen({ navigation, route }) {
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => {
-              // If already set up, open in dept-only mode to prevent name changes
-              // that would silently diverge from clock-state AsyncStorage keys.
               if (userName) {
                 setDeptOnlyMode(true);
                 setDraftDept(userDept);
@@ -619,77 +359,58 @@ export default function HomeScreen({ navigation, route }) {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Clock In / Out / Break */}
+        {/* Current Task Card */}
         {userName ? (
-          clockedIn ? (
-            isOnBreak ? (
-              // ON BREAK card
-              <View style={styles.breakCard}>
-                <View style={styles.clockCardHeader}>
-                  <View style={[styles.clockCardDot, styles.breakDot]} />
-                  <Text style={styles.breakStatus}>ON BREAK</Text>
-                </View>
-                <Text style={styles.breakCardSub}>{userName} · {userDept}</Text>
+          <View style={styles.taskCard}>
+            <View style={styles.taskCardHeader}>
+              <View style={styles.taskCardTitleRow}>
+                <Ionicons
+                  name={currentTask ? 'briefcase' : 'briefcase-outline'}
+                  size={16}
+                  color={currentTask ? C.accent : C.muted}
+                />
+                <Text style={[styles.taskCardTitle, currentTask && { color: C.accent }]}>
+                  Current Task
+                </Text>
+              </View>
+              {currentTask ? (
                 <TouchableOpacity
-                  style={styles.returnBreakBtn}
-                  onPress={handleBreakEnd}
-                  disabled={clockLoading}
-                  activeOpacity={0.8}
+                  onPress={handleClearTask}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
-                  {clockLoading
-                    ? <ActivityIndicator size="small" color={C.accent} />
-                    : <Text style={styles.returnBreakBtnText}>Return from Break</Text>
-                  }
+                  <Text style={styles.clearTaskText}>Clear</Text>
                 </TouchableOpacity>
-              </View>
+              ) : null}
+            </View>
+
+            {currentTask ? (
+              <>
+                <Text style={styles.taskJobName}>{currentTask.jobName || currentTask.workOrderName}</Text>
+                <Text style={styles.taskWorkOrder}>{currentTask.workOrderName}</Text>
+                <View style={styles.taskMetaRow}>
+                  {currentTask.taskType ? (
+                    <View style={styles.taskTypePill}>
+                      <Text style={styles.taskTypePillText}>{currentTask.taskType}</Text>
+                    </View>
+                  ) : null}
+                  <Text style={styles.taskTimeAgo}>{timeAgo(currentTask.startedAt)}</Text>
+                </View>
+              </>
             ) : (
-              // CLOCKED IN card
-              <View style={styles.clockCard}>
-                <View style={styles.clockCardHeader}>
-                  <View style={styles.clockCardDot} />
-                  <Text style={styles.clockCardStatus}>CLOCKED IN</Text>
-                </View>
-                <Text style={styles.clockCardElapsed}>{elapsed}</Text>
-                <Text style={styles.clockCardSub}>{userName} · {userDept}</Text>
-                <View style={styles.clockBtnRow}>
-                  <TouchableOpacity
-                    style={styles.breakBtn}
-                    onPress={handleBreakStart}
-                    disabled={clockLoading}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.breakBtnText}>Take Break</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.clockOutBtn}
-                    onPress={handleClockOut}
-                    disabled={clockLoading}
-                    activeOpacity={0.8}
-                  >
-                    {clockLoading
-                      ? <ActivityIndicator size="small" color="#ef4444" />
-                      : <Text style={styles.clockOutBtnText}>Clock Out</Text>
-                    }
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )
-          ) : (
+              <Text style={styles.taskEmptyText}>No active task — scan a part to get started</Text>
+            )}
+
             <TouchableOpacity
-              style={[styles.clockInBtn, clockLoading && { opacity: 0.6 }]}
-              onPress={handleClockIn}
-              disabled={clockLoading}
-              activeOpacity={0.85}
+              style={styles.changeTaskBtn}
+              onPress={handleOpenTaskModal}
+              activeOpacity={0.8}
             >
-              {clockLoading
-                ? <ActivityIndicator size="small" color="#000" />
-                : <>
-                    <Ionicons name="time-outline" size={20} color="#000" />
-                    <Text style={styles.clockInBtnText}>CLOCK IN</Text>
-                  </>
-              }
+              <Ionicons name="swap-horizontal-outline" size={15} color="#000" style={{ marginRight: 5 }} />
+              <Text style={styles.changeTaskBtnText}>
+                {currentTask ? 'Change Task' : 'Set Task'}
+              </Text>
             </TouchableOpacity>
-          )
+          </View>
         ) : null}
 
         {/* Alert Banner */}
@@ -753,9 +474,7 @@ export default function HomeScreen({ navigation, route }) {
                 onPress={() =>
                   action.key === 'message'
                     ? handleNotifPress()
-                    : action.key === 'approve'
-                      ? setApproveVisible(true)
-                      : navigation.navigate(action.screen, { userName, userDept })
+                    : navigation.navigate(action.screen, { userName, userDept })
                 }
               >
                 <View style={[styles.cardIconWrap, { backgroundColor: action.accentColor + '22' }]}>
@@ -851,78 +570,101 @@ export default function HomeScreen({ navigation, route }) {
         </View>
       </Modal>
 
-      {/* Approve Incoming Parts Modal */}
+      {/* Change Task Modal */}
       <Modal
-        visible={approveVisible}
+        visible={taskModalVisible}
         animationType="slide"
         transparent
-        onRequestClose={() => setApproveVisible(false)}
+        onRequestClose={() => setTaskModalVisible(false)}
       >
-        <KeyboardAvoidingView
-          style={styles.modalOverlay}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        >
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Approve Incoming Parts</Text>
-            <Text style={[styles.fieldLabel, { marginTop: 6 }]}>
-              {userDept ? `Department: ${userDept}` : 'Set your department first'}
-            </Text>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalBox, { maxHeight: '85%' }]}>
+            <Text style={styles.modalTitle}>Set Current Task</Text>
 
-            <Text style={styles.fieldLabel}>Part Number</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. CAB-1042-A"
-              placeholderTextColor={C.muted}
-              value={approvePartNum}
-              onChangeText={setApprovePartNum}
-              autoCapitalize="characters"
-              autoFocus
-            />
+            {loadingWorkOrders ? (
+              <View style={{ alignItems: 'center', paddingVertical: 32 }}>
+                <ActivityIndicator size="large" color={C.accent} />
+                <Text style={{ color: C.muted, marginTop: 10, fontSize: 13 }}>Loading work orders…</Text>
+              </View>
+            ) : workOrders.length === 0 ? (
+              <View style={{ alignItems: 'center', paddingVertical: 32, gap: 10 }}>
+                <Ionicons name="cloud-offline-outline" size={36} color={C.muted} />
+                <Text style={{ color: C.muted, fontSize: 14, textAlign: 'center' }}>
+                  No work orders found.{'\n'}Check your Innergy API connection.
+                </Text>
+              </View>
+            ) : (
+              <>
+                <Text style={styles.fieldLabel}>Work Order</Text>
+                <ScrollView style={{ maxHeight: 200 }} showsVerticalScrollIndicator={false}>
+                  {workOrders.map((wo, idx) => {
+                    const woName = wo.name ?? wo.workOrderName ?? wo.title ?? `Work Order ${idx + 1}`;
+                    const jobName = wo.jobName ?? wo.projectName ?? wo.job ?? '';
+                    const isSelected = selectedWO === wo;
+                    return (
+                      <TouchableOpacity
+                        key={wo.id ?? idx}
+                        style={[styles.deptOption, isSelected && { borderColor: C.accent, backgroundColor: C.accent + '18' }]}
+                        onPress={() => setSelectedWO(wo)}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.deptOptionText, isSelected && { color: C.accent, fontWeight: '700' }]}>
+                            {woName}
+                          </Text>
+                          {jobName ? (
+                            <Text style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{jobName}</Text>
+                          ) : null}
+                        </View>
+                        {isSelected && <Ionicons name="checkmark-circle" size={18} color={C.accent} />}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </>
+            )}
 
-            <Text style={styles.fieldLabel}>Job # (optional)</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. J-1042"
-              placeholderTextColor={C.muted}
-              value={approveJobNum}
-              onChangeText={setApproveJobNum}
-            />
-
-            <Text style={styles.fieldLabel}>Notes (optional)</Text>
-            <TextInput
-              style={[styles.input, { minHeight: 70, textAlignVertical: 'top', paddingTop: 10 }]}
-              placeholder="Any issues or notes…"
-              placeholderTextColor={C.muted}
-              value={approveNotes}
-              onChangeText={setApproveNotes}
-              multiline
-            />
+            {selectedWO ? (
+              <>
+                <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Task Type</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+                  {DEPARTMENTS.map((dept) => (
+                    <TouchableOpacity
+                      key={dept}
+                      style={[
+                        styles.deptOption,
+                        { paddingVertical: 9, paddingHorizontal: 14, flex: 0 },
+                        selectedTaskType === dept && { borderColor: C.accent, backgroundColor: C.accent + '18' },
+                      ]}
+                      onPress={() => setSelectedTaskType(dept)}
+                    >
+                      <Text style={[styles.deptOptionText, selectedTaskType === dept && { color: C.accent, fontWeight: '700' }]}>
+                        {dept}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            ) : null}
 
             <TouchableOpacity
-              style={[
-                styles.saveBtn,
-                (!approvePartNum.trim() || approveSaving) && styles.saveBtnDisabled,
-              ]}
-              onPress={handleApproveSubmit}
-              disabled={!approvePartNum.trim() || approveSaving}
+              style={[styles.saveBtn, (!selectedWO) && styles.saveBtnDisabled]}
+              onPress={handleSaveTask}
+              disabled={!selectedWO}
             >
-              {approveSaving
-                ? <ActivityIndicator size="small" color="#000" />
-                : <Text style={styles.saveBtnText}>Approve Part</Text>
-              }
+              <Text style={styles.saveBtnText}>Set as Current Task</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               style={{ alignItems: 'center', paddingTop: 14 }}
-              onPress={() => setApproveVisible(false)}
+              onPress={() => setTaskModalVisible(false)}
             >
               <Text style={{ color: C.muted, fontSize: 14 }}>Cancel</Text>
             </TouchableOpacity>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
 
-      {/* Settings Modal — used on web where Alert.alert silently fails */}
+      {/* Settings Modal — web fallback */}
       <Modal
         visible={settingsModalVisible}
         animationType="slide"
@@ -968,7 +710,6 @@ export default function HomeScreen({ navigation, route }) {
           </View>
         </View>
       </Modal>
-
     </SafeAreaView>
   );
 }
@@ -989,7 +730,6 @@ const C = {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: C.bg },
 
-  // Header
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1028,7 +768,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
 
-  // Alert banner
   alertBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1057,7 +796,6 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   scrollContent: { paddingBottom: 24 },
 
-  // Notification cards
   notifSection: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
   notifSectionLabel: {
     fontSize: 10, fontWeight: '700', color: C.muted,
@@ -1087,7 +825,6 @@ const styles = StyleSheet.create({
   notifTime: { fontSize: 11, color: C.muted, flexShrink: 0 },
   notifPreview: { fontSize: 12, color: C.muted },
 
-  // Grid
   grid: {
     paddingHorizontal: 16,
     paddingTop: 16,
@@ -1136,7 +873,6 @@ const styles = StyleSheet.create({
   },
   badgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
-  // Modal
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.75)',
@@ -1203,19 +939,12 @@ const styles = StyleSheet.create({
   saveBtnDisabled: { opacity: 0.35 },
   saveBtnText: { color: '#000', fontSize: 16, fontWeight: '700' },
 
-  // Header icons
   headerIcons: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
   },
-  connDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
 
-  // Offline banner
   offlineBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1232,57 +961,55 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  // Clock in / out
-  clockInBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    marginHorizontal: 16, marginTop: 16,
-    backgroundColor: C.accent, borderRadius: 16, paddingVertical: 18,
+  // Current Task card
+  taskCard: {
+    marginHorizontal: 16,
+    marginTop: 16,
+    backgroundColor: C.surface,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#222',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
   },
-  clockInBtnText: { color: '#000', fontSize: 17, fontWeight: '800', letterSpacing: 0.5 },
-
-  clockCard: {
-    marginHorizontal: 16, marginTop: 16,
-    backgroundColor: '#0a1f10', borderRadius: 16,
-    borderWidth: 1.5, borderColor: '#14532d',
-    paddingVertical: 16, paddingHorizontal: 20,
+  taskCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: 10,
   },
-  clockCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
-  clockCardDot:    { width: 8, height: 8, borderRadius: 4, backgroundColor: '#22c55e' },
-  clockCardStatus: { color: '#22c55e', fontSize: 11, fontWeight: '700', letterSpacing: 0.8 },
-  clockCardElapsed:{ color: '#22c55e', fontSize: 38, fontWeight: '700', letterSpacing: 2, marginBottom: 4 },
-  clockCardSub:    { color: '#555555', fontSize: 13, marginBottom: 16 },
-
-  clockBtnRow: {
-    flexDirection: 'row', gap: 10, alignItems: 'center',
+  taskCardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  taskCardTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: C.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.9,
   },
-  breakBtn: {
-    borderRadius: 12, borderWidth: 1.5, borderColor: '#78350f',
-    backgroundColor: '#1c1200', paddingVertical: 10, paddingHorizontal: 20,
+  clearTaskText: { fontSize: 12, color: C.danger, fontWeight: '600' },
+  taskJobName: { fontSize: 17, fontWeight: '800', color: C.text, marginBottom: 2 },
+  taskWorkOrder: { fontSize: 13, color: C.muted, marginBottom: 8 },
+  taskMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  taskTypePill: {
+    backgroundColor: C.accent + '22',
+    borderRadius: 20,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: C.accent + '44',
   },
-  breakBtnText: { color: C.accent, fontSize: 15, fontWeight: '700' },
-  clockOutBtn: {
-    borderRadius: 12, borderWidth: 1.5, borderColor: '#7f1d1d',
-    backgroundColor: '#2e1a1a', paddingVertical: 10, paddingHorizontal: 20,
-  },
-  clockOutBtnText: { color: '#ef4444', fontSize: 15, fontWeight: '700' },
-
-  // Break card
-  breakCard: {
-    marginHorizontal: 16, marginTop: 16,
-    backgroundColor: '#1c1200', borderRadius: 16,
-    borderWidth: 1.5, borderColor: '#78350f',
-    paddingVertical: 16, paddingHorizontal: 20,
+  taskTypePillText: { fontSize: 11, fontWeight: '700', color: C.accent },
+  taskTimeAgo: { fontSize: 12, color: C.muted },
+  taskEmptyText: { fontSize: 13, color: C.muted, fontStyle: 'italic', marginBottom: 12 },
+  changeTaskBtn: {
+    flexDirection: 'row',
+    justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: C.accent,
+    borderRadius: 10,
+    paddingVertical: 10,
   },
-  breakDot:    { backgroundColor: C.accent },
-  breakStatus: { color: C.accent, fontSize: 11, fontWeight: '700', letterSpacing: 0.8 },
-  breakCardSub:{ color: '#555555', fontSize: 13, marginBottom: 16 },
-  returnBreakBtn: {
-    borderRadius: 12, borderWidth: 1.5, borderColor: '#78350f',
-    backgroundColor: '#2a1a00', paddingVertical: 10, paddingHorizontal: 24,
-  },
-  returnBreakBtnText: { color: C.accent, fontSize: 15, fontWeight: '700' },
+  changeTaskBtnText: { color: '#000', fontSize: 14, fontWeight: '700' },
 
   // Settings modal buttons
   settingsBtn: {

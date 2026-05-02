@@ -17,6 +17,7 @@ import { RoleContext } from './src/lib/RoleContext';
 import HomeScreen        from './src/screens/HomeScreen';
 import PartsScreen       from './src/screens/PartsScreen';
 import InventoryScreen   from './src/screens/InventoryScreen';
+import DamageScreen      from './src/screens/DamageScreen';
 import MessagesScreen    from './src/screens/MessagesScreen';
 import SOPsScreen        from './src/screens/SOPsScreen';
 import PlansScreen       from './src/screens/PlansScreen';
@@ -191,14 +192,27 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount }) {
       />
 
       <Tab.Screen
-        name="LogInventory"
+        name="Needs"
         component={InventoryScreen}
         initialParams={screenParams}
         options={{
-          title: 'Inventory',
+          title: 'Needs',
           tabBarButton: (props) => <TabButton {...props} />,
           tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'layers' : 'layers-outline'} size={size} color={color} />
+            <Ionicons name={focused ? 'cube' : 'cube-outline'} size={size} color={color} />
+          ),
+        }}
+      />
+
+      <Tab.Screen
+        name="Damage"
+        component={DamageScreen}
+        initialParams={screenParams}
+        options={{
+          title: 'Damage',
+          tabBarButton: (props) => <TabButton {...props} />,
+          tabBarIcon: ({ focused, color, size }) => (
+            <Ionicons name={focused ? 'warning' : 'warning-outline'} size={size} color={color} />
           ),
         }}
       />
@@ -249,11 +263,11 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount }) {
         }}
       />
 
-      {/* Hidden tab — navigated to from HomeScreen */}
+      {/* Hidden screen for backward-compat nav (LogInventory alias) */}
       <Tab.Screen
-        name="ReportDamage"
+        name="LogInventory"
         component={InventoryScreen}
-        initialParams={{ ...screenParams, activeTab: 'damage' }}
+        initialParams={screenParams}
         options={{ tabBarButton: () => null }}
       />
     </Tab.Navigator>
