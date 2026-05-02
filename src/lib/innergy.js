@@ -1,8 +1,8 @@
-const BASE_URL = 'https://app.innergy.com/api/v1';
+const BASE_URL = 'https://app.innergy.com/api';
 
 function getHeaders() {
   return {
-    'Authorization': `Bearer ${process.env.EXPO_PUBLIC_INNERGY_API_KEY}`,
+    'Api-Key': process.env.EXPO_PUBLIC_INNERGY_API_KEY,
     'Content-Type': 'application/json',
   };
 }
@@ -15,7 +15,7 @@ async function apiFetch(path, options = {}) {
 
 export async function getProjects() {
   try {
-    return await apiFetch('/api/projects');
+    return await apiFetch('/projects');
   } catch (e) {
     console.error('[innergy] getProjects:', e.message);
     return null;
@@ -24,7 +24,7 @@ export async function getProjects() {
 
 export async function getWorkOrders() {
   try {
-    return await apiFetch('/api/projectWorkOrders');
+    return await apiFetch('/projectWorkOrders');
   } catch (e) {
     console.error('[innergy] getWorkOrders:', e.message);
     return null;
@@ -33,7 +33,7 @@ export async function getWorkOrders() {
 
 export async function getShipmentItems(projectId) {
   try {
-    return await apiFetch(`/api/project/${projectId}/shipmentItems`);
+    return await apiFetch(`/project/${projectId}/shipmentItems`);
   } catch (e) {
     console.error('[innergy] getShipmentItems:', e.message);
     return null;
@@ -42,7 +42,7 @@ export async function getShipmentItems(projectId) {
 
 export async function logTimeEntry(data) {
   try {
-    return await apiFetch('/api/timeTracking', {
+    return await apiFetch('/timeTracking', {
       method: 'POST',
       body: JSON.stringify(data),
     });
@@ -54,7 +54,7 @@ export async function logTimeEntry(data) {
 
 export async function getMaterialsToBuy() {
   try {
-    return await apiFetch('/api/materialsToBuy');
+    return await apiFetch('/materialsToBuy');
   } catch (e) {
     console.error('[innergy] getMaterialsToBuy:', e.message);
     return null;
@@ -63,7 +63,7 @@ export async function getMaterialsToBuy() {
 
 export async function lookupPartByNumber(partNumber) {
   try {
-    const items = await apiFetch('/api/shipmentItems');
+    const items = await apiFetch('/shipmentItems');
     if (!items || !Array.isArray(items)) return null;
     return items.find((item) => item.partNumber === partNumber || item.part_number === partNumber) ?? null;
   } catch (e) {
@@ -74,7 +74,7 @@ export async function lookupPartByNumber(partNumber) {
 
 export async function testConnection() {
   try {
-    await apiFetch('/api/version');
+    await apiFetch('/version');
     return true;
   } catch (e) {
     console.error('[innergy] testConnection:', e.message);
