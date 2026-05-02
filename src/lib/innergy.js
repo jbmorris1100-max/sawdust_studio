@@ -13,9 +13,16 @@ async function apiFetch(path, options = {}) {
   return res.json();
 }
 
+// API returns { Items: [...] } for list endpoints
+function unwrapItems(data) {
+  if (!data) return null;
+  return Array.isArray(data) ? data : (data.Items ?? null);
+}
+
 export async function getProjects() {
   try {
-    return await apiFetch('/projects');
+    const data = await apiFetch('/projects');
+    return unwrapItems(data);
   } catch (e) {
     console.error('[innergy] getProjects:', e.message);
     return null;
@@ -24,7 +31,8 @@ export async function getProjects() {
 
 export async function getWorkOrders() {
   try {
-    return await apiFetch('/projectWorkOrders');
+    const data = await apiFetch('/projectWorkOrders');
+    return unwrapItems(data);
   } catch (e) {
     console.error('[innergy] getWorkOrders:', e.message);
     return null;
@@ -33,7 +41,8 @@ export async function getWorkOrders() {
 
 export async function getShipmentItems(projectId) {
   try {
-    return await apiFetch(`/project/${projectId}/shipmentItems`);
+    const data = await apiFetch(`/project/${projectId}/shipmentItems`);
+    return unwrapItems(data);
   } catch (e) {
     console.error('[innergy] getShipmentItems:', e.message);
     return null;
@@ -54,18 +63,29 @@ export async function logTimeEntry(data) {
 
 export async function getMaterialsToBuy() {
   try {
-    return await apiFetch('/materialsToBuy');
+    const data = await apiFetch('/materialsToBuy');
+    return unwrapItems(data);
   } catch (e) {
     console.error('[innergy] getMaterialsToBuy:', e.message);
     return null;
   }
 }
 
+// Matches on WoNumber, ShipmentItemName, or Sku (case-insensitive)
 export async function lookupPartByNumber(partNumber) {
   try {
-    const items = await apiFetch('/shipmentItems');
-    if (!items || !Array.isArray(items)) return null;
-    return items.find((item) => item.partNumber === partNumber || item.part_number === partNumber) ?? null;
+    const data = await apiFetch('/shipmentItems');
+    const items = unwrapItems(data);
+    if (!items) return null;
+    const upper = partNumber.toUpperCase();
+    return (
+      items.find(
+        (item) =>
+          (item.WoNumber ?? '').toUpperCase() === upper ||
+          (item.ShipmentItemName ?? '').toUpperCase() === upper ||
+          (item.Sku ?? '').toUpperCase() === upper
+      ) ?? null
+    );
   } catch (e) {
     console.error('[innergy] lookupPartByNumber:', e.message);
     return null;
