@@ -3,7 +3,7 @@
   "name": "Sawdust Studio - Innergy Agent",
   "version": "1.0",
   "description": "Watches Innergy sessions and logs workflow data for AI analysis",
-  "permissions": ["activeTab", "storage", "scripting", "tabs"],
+  "permissions": ["activeTab", "storage", "scripting", "tabs", "alarms"],
   "host_permissions": ["https://app.innergy.com/*"],
   "background": {
     "service_worker": "background.js"
