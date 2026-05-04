@@ -113,6 +113,18 @@ export default function HomeScreen({ navigation, route }) {
     })();
   }, []);
 
+  const fetchRecentMessages = useCallback(async (name, seenAt) => {
+    let query = supabase
+      .from('messages')
+      .select('*')
+      .neq('sender_name', name)
+      .order('created_at', { ascending: false })
+      .limit(3);
+    if (seenAt) query = query.gt('created_at', seenAt);
+    const { data } = await query;
+    if (data) setRecentMessages(data);
+  }, []);
+
   // ── Load current task on focus ────────────────────────────
   useFocusEffect(
     useCallback(() => {
@@ -168,18 +180,6 @@ export default function HomeScreen({ navigation, route }) {
     const id = setInterval(checkConnection, 30000);
     return () => clearInterval(id);
   }, [checkConnection]);
-
-  const fetchRecentMessages = useCallback(async (name, seenAt) => {
-    let query = supabase
-      .from('messages')
-      .select('*')
-      .neq('sender_name', name)
-      .order('created_at', { ascending: false })
-      .limit(3);
-    if (seenAt) query = query.gt('created_at', seenAt);
-    const { data } = await query;
-    if (data) setRecentMessages(data);
-  }, []);
 
   const handleNotifPress = useCallback(async () => {
     const now = new Date().toISOString();
