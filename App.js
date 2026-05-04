@@ -24,6 +24,18 @@ import PlansScreen       from './src/screens/PlansScreen';
 import SupervisorApp     from './src/screens/SupervisorApp';
 import OnboardingScreen  from './src/screens/OnboardingScreen';
 
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  componentDidCatch(error) { this.setState({ error: error.message }); }
+  render() {
+    if (this.state.error) {
+      return React.createElement('div', { style: { color: 'red', padding: 20, fontSize: 16 } },
+        'App Error: ' + this.state.error);
+    }
+    return this.props.children;
+  }
+}
+
 const Tab = createBottomTabNavigator();
 
 const STORAGE = {
@@ -294,7 +306,7 @@ function SupervisorNavigator({ userName }) {
 }
 
 // ── App ───────────────────────────────────────────────────────
-export default function App() {
+function App() {
   // null = loading, '' = not set, 'crew', 'supervisor'
   const [role,          setRole]          = useState(null);
   const [userName,      setUserName]      = useState('');
@@ -551,6 +563,10 @@ export default function App() {
       </RoleContext.Provider>
     </SafeAreaProvider>
   );
+}
+
+export default function Root() {
+  return <ErrorBoundary><App /></ErrorBoundary>;
 }
 
 // ── Styles ────────────────────────────────────────────────────
