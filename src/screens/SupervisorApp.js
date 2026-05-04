@@ -20,7 +20,6 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
-import { roleEmitter } from '../lib/RoleContext';
 
 // ── Design tokens ─────────────────────────────────────────────
 const C = {
@@ -257,6 +256,7 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
   const recent = [...messages].reverse().slice(0, 5);
 
   return (
+    <View style={styles.flex}>
     <ScrollView
       style={styles.flex}
       showsVerticalScrollIndicator={false}
@@ -274,27 +274,13 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
             <Text style={styles.liveText}>Live</Text>
           </View>
           <TouchableOpacity
-            onPress={() => {
-              console.log('[gear] tapped, onSwitchRole type:', typeof onSwitchRole);
-              onSwitchRole && onSwitchRole();
-            }}
+            onPress={onSwitchRole}
             hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
             style={styles.gearBtn}
           >
             <Ionicons name="settings-outline" size={20} color={C.muted} />
           </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => {
-              Alert.alert(
-                'Sign out of supervisor dashboard?',
-                null,
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'Sign Out', style: 'destructive', onPress: () => onSwitchRole && onSwitchRole() },
-                ]
-              );
-            }}
-          >
+          <TouchableOpacity onPress={onSwitchRole}>
             <Text style={styles.signOutText}>Sign Out</Text>
           </TouchableOpacity>
         </View>
@@ -429,6 +415,14 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
         </>
       )}
     </ScrollView>
+    <TouchableOpacity
+      style={styles.signOutBigBtn}
+      onPress={onSwitchRole}
+      activeOpacity={0.85}
+    >
+      <Text style={styles.signOutBigBtnText}>SIGN OUT</Text>
+    </TouchableOpacity>
+    </View>
   );
 }
 
@@ -1152,27 +1146,17 @@ function AIControlCenterTab({ userName }) {
 export default function SupervisorApp({ route, userName: userNameProp }) {
   const userName  = route?.params?.userName ?? userNameProp ?? 'Supervisor';
 
-  const handleSwitchRole = useCallback(() => {
-    Alert.alert(
-      'Sign Out',
-      'Sign out of supervisor dashboard?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Sign Out',
-          style: 'destructive',
-          onPress: async () => {
-            await AsyncStorage.multiRemove([
-              '@sawdust_user_name',
-              '@sawdust_user_dept',
-              '@sawdust_user_role',
-              '@sawdust_current_task',
-            ]);
-            roleEmitter.emit('resetRole');
-          },
+  const handleSignOut = useCallback(() => {
+    Alert.alert('Sign Out', 'Sign out of supervisor dashboard?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign Out',
+        style: 'destructive',
+        onPress: () => {
+          if (global.sawdustSignOut) global.sawdustSignOut();
         },
-      ]
-    );
+      },
+    ]);
   }, []);
 
   const [messages,     setMessages]     = useState([]);
@@ -1380,7 +1364,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
                 messages={messages}
                 threads={threads}
                 userName={userName}
-                onSwitchRole={handleSwitchRole}
+                onSwitchRole={handleSignOut}
                 dismissedMsgIds={dismissedMsgIds}
                 onDismissMsg={dismissMessage}
                 onOpenThread={openThread}
@@ -1775,6 +1759,22 @@ const styles = StyleSheet.create({
   partStatusPill: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 99, borderWidth: 1, backgroundColor: 'transparent' },
   partStatusText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.4 },
   partScanTime:   { fontSize: 10, color: C.muted },
+
+  // Big sign-out button (Overview tab, pinned above tab bar)
+  signOutBigBtn: {
+    backgroundColor: '#ef4444',
+    minHeight: 60,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#b91c1c',
+  },
+  signOutBigBtnText: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+  },
 
   // Clock crew rows (Overview tab)
   clockNoneText: { fontSize: 12, color: C.muted, marginBottom: 12 },

@@ -13,7 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { supabase } from './src/lib/supabase';
 import { registerForPushNotifications } from './src/lib/notifications';
-import { RoleContext, roleEmitter } from './src/lib/RoleContext';
+import { RoleContext } from './src/lib/RoleContext';
 import HomeScreen        from './src/screens/HomeScreen';
 import PartsScreen       from './src/screens/PartsScreen';
 import InventoryScreen   from './src/screens/InventoryScreen';
@@ -484,12 +484,31 @@ export default function App() {
   resetRoleRef.current = handleResetRole;
   const stableReset = useCallback(() => resetRoleRef.current?.(), []);
 
-  // Listen for sign-out events emitted by SupervisorApp (bypasses context null issue)
+  // Expose global sign-out so SupervisorApp can call it without context
   useEffect(() => {
-    const handler = () => { handleResetRole(); };
-    roleEmitter.on('resetRole', handler);
-    return () => roleEmitter.off('resetRole', handler);
-  }, [handleResetRole]);
+    if (role !== 'supervisor') {
+      global.sawdustSignOut = null;
+      return;
+    }
+    global.sawdustSignOut = async () => {
+      try {
+        await AsyncStorage.multiRemove([
+          '@sawdust_user_name',
+          '@sawdust_user_dept',
+          '@sawdust_user_role',
+          '@sawdust_current_task',
+        ]);
+        await supabase
+          .from('supervisor_sessions')
+          .update({ is_active: false, logged_out_at: new Date().toISOString() })
+          .eq('is_active', true);
+      } catch (e) {}
+      setRole('');
+      setUserName('');
+      setUserDept('');
+    };
+    return () => { global.sawdustSignOut = null; };
+  }, [role]);
 
   const handleOnboardingComplete = useCallback((name) => {
     setUserName(name);
