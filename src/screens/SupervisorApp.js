@@ -256,7 +256,6 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
   const recent = [...messages].reverse().slice(0, 5);
 
   return (
-    <View style={styles.flex}>
     <ScrollView
       style={styles.flex}
       showsVerticalScrollIndicator={false}
@@ -275,12 +274,8 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
           </View>
           <TouchableOpacity
             onPress={onSwitchRole}
-            hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
-            style={styles.gearBtn}
+            hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
           >
-            <Ionicons name="settings-outline" size={20} color={C.muted} />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={onSwitchRole}>
             <Text style={styles.signOutText}>Sign Out</Text>
           </TouchableOpacity>
         </View>
@@ -415,14 +410,6 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
         </>
       )}
     </ScrollView>
-    <TouchableOpacity
-      style={styles.signOutBigBtn}
-      onPress={onSwitchRole}
-      activeOpacity={0.85}
-    >
-      <Text style={styles.signOutBigBtnText}>SIGN OUT</Text>
-    </TouchableOpacity>
-    </View>
   );
 }
 
@@ -1146,18 +1133,39 @@ function AIControlCenterTab({ userName }) {
 export default function SupervisorApp({ route, userName: userNameProp }) {
   const userName  = route?.params?.userName ?? userNameProp ?? 'Supervisor';
 
-  const handleSignOut = useCallback(() => {
-    Alert.alert('Sign Out', 'Sign out of supervisor dashboard?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign Out',
-        style: 'destructive',
-        onPress: () => {
-          if (global.sawdustSignOut) global.sawdustSignOut();
-        },
-      },
-    ]);
-  }, []);
+  const handleSignOut = async () => {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('Sign out of supervisor dashboard?')
+      : await new Promise(resolve => Alert.alert(
+          'Sign Out',
+          'Sign out of supervisor dashboard?',
+          [
+            { text: 'Cancel',   onPress: () => resolve(false), style: 'cancel'      },
+            { text: 'Sign Out', onPress: () => resolve(true),  style: 'destructive' },
+          ]
+        ));
+
+    if (!confirmed) return;
+
+    try {
+      await AsyncStorage.multiRemove([
+        '@sawdust_user_name',
+        '@sawdust_user_dept',
+        '@sawdust_user_role',
+        '@sawdust_current_task',
+      ]);
+      await supabase
+        .from('supervisor_sessions')
+        .update({ is_active: false, logged_out_at: new Date().toISOString() })
+        .eq('is_active', true);
+    } catch (e) {}
+
+    if (Platform.OS === 'web') {
+      window.location.reload();
+    } else {
+      if (global.sawdustSignOut) global.sawdustSignOut();
+    }
+  };
 
   const [messages,     setMessages]     = useState([]);
   const [needs,        setNeeds]        = useState([]);
