@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -20,7 +20,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
-import { RoleContext } from '../lib/RoleContext';
+import { roleEmitter } from '../lib/RoleContext';
 
 // ── Design tokens ─────────────────────────────────────────────
 const C = {
@@ -1151,28 +1151,29 @@ function AIControlCenterTab({ userName }) {
 // ── Main Screen ───────────────────────────────────────────────
 export default function SupervisorApp({ route, userName: userNameProp }) {
   const userName  = route?.params?.userName ?? userNameProp ?? 'Supervisor';
-  const resetRole = useContext(RoleContext);
 
-  useEffect(() => {
-    console.log('[SupervisorApp] mount — typeof resetRole:', typeof resetRole);
-  }, []);
-
-  const handleSwitchRole = () => {
+  const handleSwitchRole = useCallback(() => {
     Alert.alert(
-      'Exit Supervisor Dashboard',
-      'Switch back to role picker?',
+      'Sign Out',
+      'Sign out of supervisor dashboard?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Exit', style: 'destructive',
+          text: 'Sign Out',
+          style: 'destructive',
           onPress: async () => {
-            console.log('[SupervisorApp] exit confirmed, resetRole type:', typeof resetRole);
-            if (resetRole) await resetRole();
+            await AsyncStorage.multiRemove([
+              '@sawdust_user_name',
+              '@sawdust_user_dept',
+              '@sawdust_user_role',
+              '@sawdust_current_task',
+            ]);
+            roleEmitter.emit('resetRole');
           },
         },
       ]
     );
-  };
+  }, []);
 
   const [messages,     setMessages]     = useState([]);
   const [needs,        setNeeds]        = useState([]);

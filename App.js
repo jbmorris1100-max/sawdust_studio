@@ -13,7 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { supabase } from './src/lib/supabase';
 import { registerForPushNotifications } from './src/lib/notifications';
-import { RoleContext } from './src/lib/RoleContext';
+import { RoleContext, roleEmitter } from './src/lib/RoleContext';
 import HomeScreen        from './src/screens/HomeScreen';
 import PartsScreen       from './src/screens/PartsScreen';
 import InventoryScreen   from './src/screens/InventoryScreen';
@@ -483,6 +483,13 @@ export default function App() {
   const resetRoleRef = useRef(null);
   resetRoleRef.current = handleResetRole;
   const stableReset = useCallback(() => resetRoleRef.current?.(), []);
+
+  // Listen for sign-out events emitted by SupervisorApp (bypasses context null issue)
+  useEffect(() => {
+    const handler = () => { handleResetRole(); };
+    roleEmitter.on('resetRole', handler);
+    return () => roleEmitter.off('resetRole', handler);
+  }, [handleResetRole]);
 
   const handleOnboardingComplete = useCallback((name) => {
     setUserName(name);
