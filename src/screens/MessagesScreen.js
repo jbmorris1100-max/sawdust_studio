@@ -16,7 +16,9 @@ import {
   PanResponder,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
+import { postWorkOrderNote, getWorkOrdersByProjectNumber } from '../lib/innergy';
 
 // ── Design tokens ─────────────────────────────────────────────
 const C = {
@@ -164,6 +166,27 @@ const DateSeparator = ({ date }) => (
   </View>
 );
 
+// Post message to Innergy work order notes when a task is active or a job number is mentioned
+async function syncMessageToInnergy(text, senderName) {
+  try {
+    const raw  = await AsyncStorage.getItem('@sawdust_current_task');
+    const task = raw ? JSON.parse(raw) : null;
+    const note = `[${senderName ?? 'Crew'}] ${text}`;
+
+    if (task?.workOrderId) {
+      await postWorkOrderNote(task.workOrderId, note);
+      return;
+    }
+    const match = text.match(/P-\d{2}-\d{4}/i);
+    if (match) {
+      const wos = await getWorkOrdersByProjectNumber(match[0]);
+      const wo  = wos?.[0];
+      const id  = wo?.Id ?? wo?.WorkOrderId;
+      if (id) await postWorkOrderNote(id, note);
+    }
+  } catch (_) {}
+}
+
 // ── Main Screen ───────────────────────────────────────────────
 export default function MessagesScreen({ route }) {
   const { userName, userDept } = route.params ?? {};
@@ -270,6 +293,8 @@ export default function MessagesScreen({ route }) {
       setBody(trimmed);
     } else {
       setMessages((prev) => prev.map((m) => (m.id === optimistic.id ? data : m)));
+      // Post to Innergy work order notes — best-effort, no await
+      syncMessageToInnergy(trimmed, userName);
     }
     setSending(false);
   };

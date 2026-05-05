@@ -1,55 +1,42 @@
 import React, { useState, useCallback } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  FlatList,
-  TouchableOpacity,
-  Modal,
-  TextInput,
-  ScrollView,
-  ActivityIndicator,
-  SafeAreaView,
-  StatusBar,
-  KeyboardAvoidingView,
-  Platform,
-  Image,
-  Alert,
+  View, Text, StyleSheet, FlatList, TouchableOpacity,
+  Modal, TextInput, KeyboardAvoidingView, Platform,
+  SafeAreaView, StatusBar, ActivityIndicator, Image, Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
+import { createImpediment, applyWorkOrderTag } from '../lib/innergy';
+import { getSyncStatus, setSyncStatus } from '../lib/syncQueue';
 
-// ── Design tokens ─────────────────────────────────────────────
 const C = {
   bg:      '#0d0d0d',
   surface: '#141414',
-  card:    '#141414',
   input:   '#1a1a1a',
   border:  '#2a2a2a',
   text:    '#e5e5e5',
   muted:   '#555555',
   accent:  '#f59e0b',
   danger:  '#ef4444',
-
+  success: '#22c55e',
   status: {
-    open:      { bg: '#1f0a0a', text: '#ef4444', border: '#450a0a' },
-    reviewed:  { bg: '#0d1f3c', text: '#3b82f6', border: '#1e3a5f' },
-    resolved:  { bg: '#0a1f10', text: '#22c55e', border: '#14532d' },
+    open:     { bg: '#1f0a0a', text: '#ef4444', border: '#450a0a' },
+    reviewed: { bg: '#0d1f3c', text: '#3b82f6', border: '#1e3a5f' },
+    resolved: { bg: '#0a1f10', text: '#22c55e', border: '#14532d' },
   },
 };
 
-const DAMAGE_STATUSES = ['open', 'reviewed', 'resolved'];
-
-const formatDate = (iso) =>
-  new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+const STATUSES = ['open', 'reviewed', 'resolved'];
+const formatDate = (iso) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
 
 const StatusPill = ({ status }) => {
-  const s = C.status[status] ?? { bg: '#1a1a1a', text: '#555', border: '#2a2a2a' };
+  const st = C.status[status] ?? { bg: '#1a1a1a', text: '#555', border: '#2a2a2a' };
   return (
-    <View style={[styles.pill, { backgroundColor: s.bg, borderColor: s.border }]}>
-      <Text style={[styles.pillText, { color: s.text }]}>{status.toUpperCase()}</Text>
+    <View style={[styles.pill, { backgroundColor: st.bg, borderColor: st.border }]}>
+      <Text style={[styles.pillText, { color: st.text }]}>{status.toUpperCase()}</Text>
     </View>
   );
 };
@@ -59,108 +46,77 @@ const DamageItem = ({ item, onStatusChange, onArchive }) => (
     <View style={styles.cardTop}>
       <View style={styles.cardMain}>
         <Text style={styles.cardTitle}>{item.part_name}</Text>
-        <Text style={styles.cardMeta}>
-          {item.dept}{item.job_id ? ` · Job #${item.job_id}` : ''}
-        </Text>
+        <Text style={styles.cardMeta}>{item.dept} · {formatDate(item.created_at)}</Text>
         {item.notes ? <Text style={styles.cardNotes}>{item.notes}</Text> : null}
-        <Text style={styles.cardMeta}>{formatDate(item.created_at)}</Text>
-        {item.resolution_type ? (
-          <View style={styles.resolutionBadge}>
-            <Text style={styles.resolutionBadgeText}>{item.resolution_type}</Text>
-            {item.resolution_notes ? (
-              <Text style={styles.resolutionNotes}>{item.resolution_notes}</Text>
-            ) : null}
-          </View>
-        ) : null}
       </View>
       <View style={{ alignItems: 'flex-end', gap: 8 }}>
         <StatusPill status={item.status} />
         {item.status === 'resolved' && onArchive ? (
-          <TouchableOpacity
-            onPress={() => Alert.alert(
-              'Remove from view?',
-              'Delete this resolved report? It will be removed from your view but saved in the supervisor report.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Delete', style: 'destructive', onPress: () => onArchive(item.id) },
-              ]
-            )}
-            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-          >
+          <TouchableOpacity onPress={() => Alert.alert('Remove?', 'Remove from view?', [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Remove', style: 'destructive', onPress: () => onArchive(item.id) },
+          ])} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
             <Ionicons name="trash-outline" size={16} color={C.danger} />
           </TouchableOpacity>
         ) : null}
       </View>
     </View>
     {item.photo_url ? (
-      <Image
-        source={{ uri: item.photo_url }}
-        style={styles.photoThumb}
-        resizeMode="cover"
-      />
+      <Image source={{ uri: item.photo_url }} style={styles.photoThumb} resizeMode="cover" />
     ) : null}
     <View style={styles.cardActions}>
-      {DAMAGE_STATUSES.filter((s) => s !== item.status).map((s) => (
-        <TouchableOpacity key={s} style={styles.actionBtn} onPress={() => onStatusChange(item.id, s)}>
-          <Text style={styles.actionBtnText}>{s}</Text>
+      {STATUSES.filter(st => st !== item.status).map(st => (
+        <TouchableOpacity key={st} style={styles.actionBtn} onPress={() => onStatusChange(item.id, st)}>
+          <Text style={styles.actionBtnText}>{st}</Text>
         </TouchableOpacity>
       ))}
     </View>
   </View>
 );
 
-const Field = ({ label, children }) => (
-  <View style={styles.fieldWrap}>
-    <Text style={styles.fieldLabel}>{label}</Text>
-    {children}
-  </View>
-);
-
-const StyledInput = (props) => (
-  <TextInput style={styles.input} placeholderTextColor={C.muted} {...props} />
-);
-
 export default function DamageScreen({ route }) {
-  const { userName, userDept } = route.params ?? {};
+  const [userName, setUserName] = useState(route.params?.userName ?? '');
+  const [userDept, setUserDept] = useState(route.params?.userDept ?? '');
 
-  const [damage,  setDamage]  = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [saving,  setSaving]  = useState(false);
-  const [toast,   setToast]   = useState(null);
+  const [damage,       setDamage]       = useState([]);
+  const [loading,      setLoading]      = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
+  const [dWhat,        setDWhat]        = useState('');
+  const [dPhoto,       setDPhoto]       = useState(null);
+  const [saving,       setSaving]       = useState(false);
+  const [toast,        setToast]        = useState(null);
+  const [syncOk,       setSyncOk]       = useState(true);
 
-  const [dPart,  setDPart]  = useState('');
-  const [dJob,   setDJob]   = useState('');
-  const [dNotes, setDNotes] = useState('');
-  const [dPhoto, setDPhoto] = useState(null);
+  useFocusEffect(useCallback(() => {
+    AsyncStorage.multiGet(['@sawdust_user_name', '@sawdust_user_dept']).then(pairs => {
+      const n = pairs[0][1]; const d = pairs[1][1];
+      if (n && !userName) setUserName(n);
+      if (d && !userDept) setUserDept(d);
+    });
+    fetchData();
+    getSyncStatus().then(({ ok }) => setSyncOk(ok));
+  }, [userDept]));
 
   const fetchData = useCallback(async () => {
-    if (!userDept) return;
+    const dept = userDept || await AsyncStorage.getItem('@sawdust_user_dept');
+    if (!dept) { setLoading(false); return; }
     setLoading(true);
     const { data } = await supabase
-      .from('damage_reports')
-      .select('*')
-      .eq('dept', userDept)
-      .eq('archived', false)
+      .from('damage_reports').select('*')
+      .eq('dept', dept).eq('archived', false)
       .order('created_at', { ascending: false });
     if (data) setDamage(data);
     setLoading(false);
   }, [userDept]);
 
-  useFocusEffect(useCallback(() => { fetchData(); }, [fetchData]));
-
-  const updateDamageStatus = async (id, status) => {
-    setDamage((prev) => prev.map((d) => d.id === id ? { ...d, status } : d));
+  const updateStatus = async (id, status) => {
+    setDamage(prev => prev.map(d => d.id === id ? { ...d, status } : d));
     await supabase.from('damage_reports').update({ status }).eq('id', id);
   };
 
   const archiveDamage = async (id) => {
-    setDamage((prev) => prev.filter((d) => d.id !== id));
+    setDamage(prev => prev.filter(d => d.id !== id));
     await supabase.from('damage_reports').update({ archived: true }).eq('id', id);
-  };
-
-  const resetForm = () => {
-    setDPart(''); setDJob(''); setDNotes(''); setDPhoto(null);
   };
 
   const handlePickPhoto = async () => {
@@ -171,78 +127,74 @@ export default function DamageScreen({ route }) {
         return;
       }
     }
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ['images'],
-      quality: 0.7,
-    });
-    if (!result.canceled && result.assets?.[0]?.uri) {
-      setDPhoto(result.assets[0].uri);
-    }
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
+    if (!result.canceled && result.assets?.[0]?.uri) setDPhoto(result.assets[0].uri);
   };
 
-  const showToast = (msg, isError = false) => {
-    setToast({ msg, isError });
-    setTimeout(() => setToast(null), 2500);
+  const showToast = (msg, error = false) => {
+    setToast({ msg, error });
+    setTimeout(() => setToast(null), 2000);
   };
 
   const handleSubmit = async () => {
-    if (!dPart.trim()) return;
+    if (!dWhat.trim() || saving) return;
+    setSaving(true);
+    const dept    = userDept || await AsyncStorage.getItem('@sawdust_user_dept') || '';
     const photoUri = dPhoto;
-    const tempId = `opt-${Date.now()}`;
-    const optimistic = {
-      id: tempId,
-      part_name: dPart.trim(),
-      dept: userDept,
-      job_id: dJob.trim() || null,
-      notes: dNotes.trim() || null,
-      photo_url: photoUri,
-      status: 'open',
-      created_at: new Date().toISOString(),
-    };
-    setDamage((prev) => [optimistic, ...prev]);
-    setModalVisible(false);
-    resetForm();
+    const tempId  = `opt-${Date.now()}`;
+    const text    = dWhat.trim();
 
+    const optimistic = {
+      id: tempId, part_name: text, dept,
+      notes: null, photo_url: photoUri,
+      status: 'open', created_at: new Date().toISOString(),
+    };
+    setDamage(prev => [optimistic, ...prev]);
+    setModalVisible(false);
+    setDWhat(''); setDPhoto(null);
+
+    // Upload photo
     let photoUrl = null;
     if (photoUri) {
       try {
         const resp = await fetch(photoUri);
         const blob = await resp.blob();
         const fname = `damage_${Date.now()}.jpg`;
-        const { error: upErr } = await supabase.storage
-          .from('damage-photos')
-          .upload(fname, blob, { contentType: 'image/jpeg', upsert: false });
-        if (!upErr) {
-          photoUrl = supabase.storage.from('damage-photos').getPublicUrl(fname).data.publicUrl;
-        }
+        const { error: upErr } = await supabase.storage.from('damage-photos').upload(fname, blob, { contentType: 'image/jpeg', upsert: false });
+        if (!upErr) photoUrl = supabase.storage.from('damage-photos').getPublicUrl(fname).data.publicUrl;
       } catch (_) {}
     }
 
-    const timeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('timeout')), 10000)
-    );
     try {
-      const { data, error } = await Promise.race([
-        supabase.from('damage_reports').insert({
-          part_name: optimistic.part_name,
-          dept: optimistic.dept,
-          job_id: optimistic.job_id,
-          notes: optimistic.notes,
-          photo_url: photoUrl,
-          status: 'open',
-        }).select().single(),
-        timeout,
-      ]);
+      const { data, error } = await supabase.from('damage_reports').insert({
+        part_name: text, dept, notes: null, photo_url: photoUrl, status: 'open',
+      }).select().single();
       if (error) throw error;
-      setDamage((prev) => prev.map((d) => d.id === tempId ? data : d));
-      showToast('Report submitted');
-    } catch (err) {
-      setDamage((prev) => prev.filter((d) => d.id !== tempId));
-      showToast(err.message === 'timeout' ? 'Timed out — please retry' : 'Submission failed', true);
+      setDamage(prev => prev.map(d => d.id === tempId ? data : d));
+
+      // Sync to Innergy — best-effort
+      let innergyOk = true;
+      const raw  = await AsyncStorage.getItem('@sawdust_current_task');
+      const task = raw ? JSON.parse(raw) : null;
+      if (task?.workOrderId) {
+        const [impRes, tagRes] = await Promise.all([
+          createImpediment({ type: 'Damaged Part', workOrderId: task.workOrderId, description: text }),
+          applyWorkOrderTag(task.workOrderId, 'App: Damaged Part'),
+        ]);
+        if (!impRes || !tagRes) innergyOk = false;
+      }
+      await setSyncStatus(innergyOk);
+      setSyncOk(innergyOk);
+      showToast('Reported ✅');
+    } catch (_) {
+      setDamage(prev => prev.filter(d => d.id !== tempId));
+      showToast('Failed — try again', true);
+    } finally {
+      setSaving(false);
     }
   };
 
-  const openDamage = damage.filter((d) => d.status === 'open').length;
+  const openCount = damage.filter(d => d.status === 'open').length;
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -251,21 +203,20 @@ export default function DamageScreen({ route }) {
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Damage Reports</Text>
         {userDept ? <Text style={styles.headerSub}>{userDept}</Text> : null}
-        {openDamage > 0 ? (
-          <View style={styles.headerBadge}>
-            <Text style={styles.headerBadgeText}>{openDamage} open</Text>
-          </View>
-        ) : null}
+        <View style={styles.headerRight}>
+          {openCount > 0
+            ? <View style={styles.headerBadge}><Text style={styles.headerBadgeText}>{openCount} open</Text></View>
+            : null}
+          <View style={[styles.syncDot, syncOk ? styles.syncGreen : styles.syncRed]} />
+        </View>
       </View>
 
       {loading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color={C.danger} />
-        </View>
+        <View style={styles.centered}><ActivityIndicator size="large" color={C.danger} /></View>
       ) : (
         <FlatList
           data={damage}
-          keyExtractor={(item) => item.id}
+          keyExtractor={item => item.id}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
@@ -274,35 +225,22 @@ export default function DamageScreen({ route }) {
               <Text style={styles.emptyText}>No damage reports yet.</Text>
             </View>
           }
-          renderItem={({ item }) => (
-            <DamageItem
-              item={item}
-              onStatusChange={updateDamageStatus}
-              onArchive={archiveDamage}
-            />
-          )}
+          renderItem={({ item }) => <DamageItem item={item} onStatusChange={updateStatus} onArchive={archiveDamage} />}
         />
       )}
 
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={() => { resetForm(); setModalVisible(true); }}
-        activeOpacity={0.85}
-      >
-        <Ionicons name="add" size={28} color="#000" />
+      <TouchableOpacity style={styles.fab} onPress={() => { setDWhat(''); setDPhoto(null); setModalVisible(true); }} activeOpacity={0.85}>
+        <Ionicons name="add" size={28} color="#fff" />
       </TouchableOpacity>
 
       {toast ? (
-        <View style={[styles.toastView, toast.isError && styles.toastViewError]}>
-          <Text style={[styles.toastText, toast.isError && styles.toastTextError]}>{toast.msg}</Text>
+        <View style={[styles.toast, toast.error && styles.toastError]}>
+          <Text style={[styles.toastText, toast.error && styles.toastTextError]}>{toast.msg}</Text>
         </View>
       ) : null}
 
       <Modal visible={modalVisible} animationType="slide" transparent>
-        <KeyboardAvoidingView
-          style={styles.modalOverlay}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        >
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={styles.modalBox}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Report Damage</Text>
@@ -311,61 +249,44 @@ export default function DamageScreen({ route }) {
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              <Field label="Part / Component *">
-                <StyledInput
-                  placeholder="e.g. Cabinet door, drawer slide…"
-                  value={dPart}
-                  onChangeText={setDPart}
-                  autoFocus
-                />
-              </Field>
-              <Field label="Job # (optional)">
-                <StyledInput placeholder="e.g. J-1042" value={dJob} onChangeText={setDJob} />
-              </Field>
-              <Field label="Notes (optional)">
-                <StyledInput
-                  placeholder="Describe the damage…"
-                  value={dNotes}
-                  onChangeText={setDNotes}
-                  multiline
-                  numberOfLines={3}
-                  style={[styles.input, styles.inputMultiline]}
-                />
-              </Field>
-              <Field label="Photo (optional)">
-                <TouchableOpacity style={styles.photoPickerBtn} onPress={handlePickPhoto} activeOpacity={0.75}>
-                  {dPhoto ? (
-                    <>
-                      <Image source={{ uri: dPhoto }} style={styles.photoPickerPreview} resizeMode="cover" />
-                      <TouchableOpacity
-                        style={styles.photoRemoveBtn}
-                        onPress={() => setDPhoto(null)}
-                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                      >
-                        <Ionicons name="close-circle" size={22} color={C.danger} />
-                      </TouchableOpacity>
-                    </>
-                  ) : (
-                    <View style={styles.photoPickerEmpty}>
-                      <Ionicons name="camera-outline" size={26} color={C.muted} />
-                      <Text style={styles.photoPickerText}>Add Photo</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-              </Field>
+            {/* Photo button */}
+            <TouchableOpacity style={styles.photoBtn} onPress={handlePickPhoto} activeOpacity={0.75}>
+              {dPhoto ? (
+                <>
+                  <Image source={{ uri: dPhoto }} style={styles.photoPreview} resizeMode="cover" />
+                  <TouchableOpacity style={styles.photoRemove} onPress={() => setDPhoto(null)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                    <Ionicons name="close-circle" size={22} color={C.danger} />
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <View style={styles.photoEmpty}>
+                  <Ionicons name="camera-outline" size={26} color={C.muted} />
+                  <Text style={styles.photoEmptyText}>Add Photo (optional)</Text>
+                </View>
+              )}
+            </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[styles.submitBtn, (!dPart.trim() || saving) && styles.submitBtnDisabled]}
-                onPress={handleSubmit}
-                disabled={!dPart.trim() || saving}
-              >
-                {saving
-                  ? <ActivityIndicator size="small" color="#000" />
-                  : <Text style={styles.submitBtnText}>Submit Report</Text>
-                }
-              </TouchableOpacity>
-            </ScrollView>
+            <TextInput
+              style={styles.input}
+              placeholder="What happened?"
+              placeholderTextColor={C.muted}
+              value={dWhat}
+              onChangeText={setDWhat}
+              autoFocus={!dPhoto}
+              multiline
+              numberOfLines={3}
+              textAlignVertical="top"
+            />
+
+            <TouchableOpacity
+              style={[styles.submitBtn, (!dWhat.trim() || saving) && styles.submitBtnOff]}
+              onPress={handleSubmit}
+              disabled={!dWhat.trim() || saving}
+            >
+              {saving
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Text style={styles.submitBtnText}>Submit Report</Text>}
+            </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -378,210 +299,74 @@ const styles = StyleSheet.create({
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
   header: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 10,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: C.border,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 20, paddingTop: 16, paddingBottom: 14,
+    borderBottomWidth: 1, borderBottomColor: C.border,
   },
   headerTitle: { fontSize: 20, fontWeight: '800', color: C.text, letterSpacing: -0.3 },
   headerSub:   { fontSize: 13, color: C.muted },
-  headerBadge: {
-    marginLeft: 'auto',
-    backgroundColor: '#1f0a0a',
-    borderRadius: 20,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderWidth: 1,
-    borderColor: '#450a0a',
-  },
+  headerRight: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 8 },
+  headerBadge: { backgroundColor: '#1f0a0a', borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: '#450a0a' },
   headerBadgeText: { fontSize: 11, fontWeight: '700', color: C.danger },
+  syncDot:   { width: 8, height: 8, borderRadius: 4 },
+  syncGreen: { backgroundColor: C.success },
+  syncRed:   { backgroundColor: C.danger },
 
-  listContent: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 100,
-    flexGrow: 1,
-  },
-  emptyWrap: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingTop: 60,
-    gap: 12,
-  },
-  emptyText: { color: C.muted, fontSize: 15 },
+  listContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 100, flexGrow: 1 },
+  emptyWrap:   { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 60, gap: 12 },
+  emptyText:   { color: C.muted, fontSize: 15 },
 
-  card: {
-    backgroundColor: C.card,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#222222',
-    padding: 16,
-    marginBottom: 10,
-  },
-  cardTop:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  cardMain:  { flex: 1, marginRight: 12 },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: C.text, marginBottom: 4 },
-  cardMeta:  { fontSize: 13, color: C.muted, marginTop: 2 },
-  cardNotes: { fontSize: 13, color: C.text, marginTop: 4, fontStyle: 'italic', opacity: 0.7 },
+  card: { backgroundColor: C.surface, borderRadius: 16, borderWidth: 1, borderColor: '#222', padding: 16, marginBottom: 10 },
+  cardTop:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  cardMain: { flex: 1, marginRight: 12 },
+  cardTitle:{ fontSize: 16, fontWeight: '700', color: C.text, marginBottom: 4 },
+  cardMeta: { fontSize: 13, color: C.muted, marginTop: 2 },
+  cardNotes:{ fontSize: 13, color: C.text, marginTop: 4, fontStyle: 'italic', opacity: 0.7 },
 
-  pill: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 20,
-    borderWidth: 1,
-    alignSelf: 'flex-start',
-  },
+  pill:     { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20, borderWidth: 1, alignSelf: 'flex-start' },
   pillText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.4 },
 
-  cardActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: C.border,
-  },
-  actionBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 20,
-    backgroundColor: C.input,
-    borderWidth: 1,
-    borderColor: C.border,
-  },
+  cardActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: C.border },
+  actionBtn:     { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, backgroundColor: C.input, borderWidth: 1, borderColor: C.border },
   actionBtnText: { fontSize: 12, color: C.muted, fontWeight: '600' },
 
-  photoThumb: {
-    width: '100%',
-    height: 160,
-    borderRadius: 10,
-    marginTop: 10,
-    backgroundColor: '#1a1a1a',
-  },
-
-  resolutionBadge: {
-    marginTop: 8,
-    backgroundColor: '#0a1f10',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#14532d',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  resolutionBadgeText: { fontSize: 11, fontWeight: '700', color: '#22c55e', letterSpacing: 0.3 },
-  resolutionNotes:     { fontSize: 12, color: '#4ade80', marginTop: 4, fontStyle: 'italic' },
+  photoThumb: { width: '100%', height: 160, borderRadius: 10, marginTop: 10, backgroundColor: '#1a1a1a' },
 
   fab: {
-    position: 'absolute',
-    bottom: 28,
-    right: 20,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: C.danger,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: C.danger,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
-    elevation: 8,
+    position: 'absolute', bottom: 28, right: 20,
+    width: 56, height: 56, borderRadius: 28, backgroundColor: C.danger,
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: C.danger, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 8, elevation: 8,
   },
 
-  modalOverlay: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    backgroundColor: 'rgba(0,0,0,0.75)',
-  },
+  toast:          { position: 'absolute', bottom: 100, left: 20, right: 20, backgroundColor: C.success, borderRadius: 10, paddingVertical: 12, paddingHorizontal: 18, alignItems: 'center' },
+  toastError:     { backgroundColor: C.danger },
+  toastText:      { color: '#0a1f10', fontWeight: '700', fontSize: 14 },
+  toastTextError: { color: '#fff' },
+
+  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.75)' },
   modalBox: {
-    backgroundColor: C.surface,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 40,
-    maxHeight: '90%',
+    backgroundColor: C.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40,
   },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  modalTitle: { fontSize: 20, fontWeight: '800', color: C.text, letterSpacing: -0.3 },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  modalTitle:  { fontSize: 20, fontWeight: '800', color: C.text, letterSpacing: -0.3 },
 
-  fieldWrap:  { marginBottom: 16 },
-  fieldLabel: {
-    fontSize: 11,
-    color: C.muted,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.9,
-    marginBottom: 8,
+  photoBtn: {
+    borderRadius: 12, borderWidth: 1.5, borderColor: C.border, borderStyle: 'dashed',
+    overflow: 'hidden', marginBottom: 14, position: 'relative',
   },
+  photoEmpty: { height: 80, backgroundColor: C.input, justifyContent: 'center', alignItems: 'center', gap: 6 },
+  photoEmptyText: { color: C.muted, fontSize: 13, fontWeight: '600' },
+  photoPreview: { width: '100%', height: 130 },
+  photoRemove: { position: 'absolute', top: 8, right: 8 },
+
   input: {
-    backgroundColor: C.input,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: C.border,
-    color: C.text,
-    fontSize: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    backgroundColor: C.input, borderRadius: 12, borderWidth: 1.5, borderColor: C.border,
+    color: C.text, fontSize: 16, paddingHorizontal: 14, paddingVertical: 12,
+    minHeight: 90, textAlignVertical: 'top', paddingTop: 12, marginBottom: 16,
   },
-  inputMultiline: {
-    height: 90,
-    textAlignVertical: 'top',
-    paddingTop: 12,
-  },
-
-  submitBtn: {
-    marginTop: 8,
-    backgroundColor: C.danger,
-    borderRadius: 14,
-    paddingVertical: 16,
-    alignItems: 'center',
-  },
-  submitBtnDisabled: { opacity: 0.35 },
+  submitBtn:     { backgroundColor: C.danger, borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
+  submitBtnOff:  { opacity: 0.35 },
   submitBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-
-  photoPickerBtn: {
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: C.border,
-    borderStyle: 'dashed',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  photoPickerEmpty: {
-    height: 90,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: C.input,
-  },
-  photoPickerText: { color: C.muted, fontSize: 13, fontWeight: '600' },
-  photoPickerPreview: { width: '100%', height: 140 },
-  photoRemoveBtn: { position: 'absolute', top: 8, right: 8 },
-
-  toastView: {
-    position: 'absolute',
-    bottom: 100,
-    left: 20,
-    right: 20,
-    backgroundColor: '#22c55e',
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 18,
-    alignItems: 'center',
-  },
-  toastViewError:  { backgroundColor: C.danger },
-  toastText:       { color: '#0a1f10', fontWeight: '700', fontSize: 14 },
-  toastTextError:  { color: '#fff' },
 });
