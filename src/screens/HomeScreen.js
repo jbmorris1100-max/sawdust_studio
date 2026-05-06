@@ -304,6 +304,7 @@ export default function HomeScreen({ navigation, route }) {
       }, 3000);
     } catch (_) {
       setEndingDay(false);
+      await endDay();
     }
   };
 
@@ -560,7 +561,7 @@ export default function HomeScreen({ navigation, route }) {
             <TouchableOpacity style={styles.settingsBtn} onPress={() => { setSettingsVisible(false); setDeptOnlyMode(true); setDraftDept(userDept); setSetupVisible(true); }}>
               <Text style={styles.settingsBtnText}>Switch Department</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.settingsBtn, styles.settingsBtnDanger]} onPress={() => { setSettingsVisible(false); setTimeout(() => { if (window.confirm?.('Switch role?')) resetRole?.(); }, 50); }}>
+            <TouchableOpacity style={[styles.settingsBtn, styles.settingsBtnDanger]} onPress={() => { setSettingsVisible(false); setTimeout(() => resetRole?.(), 50); }}>
               <Text style={[styles.settingsBtnText, { color: C.danger }]}>Switch Role</Text>
             </TouchableOpacity>
             <TouchableOpacity style={{ alignItems: 'center', paddingTop: 14 }} onPress={() => setSettingsVisible(false)}>

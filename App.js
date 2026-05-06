@@ -586,15 +586,15 @@ const styles = StyleSheet.create({
 
 const rp = StyleSheet.create({
   safe:      { flex: 1, backgroundColor: C.bg },
-  container: { flex: 1, paddingHorizontal: 24, justifyContent: 'center', alignItems: 'stretch' },
+  container: { flex: 1, paddingHorizontal: 24, justifyContent: 'center', alignItems: 'center' },
   heading:   { fontSize: 28, fontWeight: '800', color: C.text, letterSpacing: -0.5, marginBottom: 32, marginTop: 24 },
-  roleCard:  { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: C.surface, borderRadius: 18, borderWidth: 1, borderColor: '#222', padding: 18, marginBottom: 12 },
+  roleCard:  { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: C.surface, borderRadius: 18, borderWidth: 1, borderColor: '#222', padding: 18, marginBottom: 12, width: '100%' },
   roleCardSup: { borderColor: C.blue + '30' },
   roleIcon:  { width: 52, height: 52, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
   roleText:  { flex: 1 },
   roleTitle: { fontSize: 17, fontWeight: '700', color: C.text, marginBottom: 4 },
   roleDesc:  { fontSize: 12, color: C.muted, lineHeight: 17 },
-  nameBox:   { marginTop: 8 },
+  nameBox:   { marginTop: 8, width: '100%' },
   fieldLabel:{ fontSize: 10, fontWeight: '700', color: C.muted, letterSpacing: 0.9, marginBottom: 10 },
   input:     { backgroundColor: C.input, borderRadius: 14, borderWidth: 1.5, borderColor: C.border, color: C.text, fontSize: 17, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 16 },
   goBtn:     { backgroundColor: C.blue, borderRadius: 14, paddingVertical: 17, alignItems: 'center', marginBottom: 14 },

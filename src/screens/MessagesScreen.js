@@ -33,7 +33,7 @@ const C = {
   accentDark:  '#0AAFB8',
   // Bubbles
   bubbleIn:    '#1e1e1e',
-  bubbleOwn:   '#0a2a2a',
+  bubbleOwn:   '#00C5CC',
   bubbleSup:   '#00C5CC',
 };
 
@@ -151,7 +151,7 @@ function SwipeableMessageRow({ onDelete, children }) {
           <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Delete</Text>
         </TouchableOpacity>
       </View>
-      <Animated.View style={{ transform: [{ translateX }] }} {...panResponder.panHandlers}>
+      <Animated.View style={{ transform: [{ translateX }], backgroundColor: C.bg }} {...panResponder.panHandlers}>
         {children}
       </Animated.View>
     </View>
@@ -514,7 +514,7 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   bubbleTextIn:  { color: C.text },
-  bubbleTextOwn: { color: '#86efac' },
+  bubbleTextOwn: { color: '#000' },
   bubbleTextSup: { color: '#000' },
   timestamp: {
     fontSize: 10,

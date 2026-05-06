@@ -68,6 +68,7 @@ export default function InventoryScreen({ route }) {
   const [loading,      setLoading]      = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
   const [nItem,        setNItem]        = useState('');
+  const [nJobNum,      setNJobNum]      = useState('');
   const [saving,       setSaving]       = useState(false);
   const [toast,        setToast]        = useState(null);
   const [syncOk,       setSyncOk]       = useState(true);
@@ -111,16 +112,19 @@ export default function InventoryScreen({ route }) {
     const optimistic = {
       id: tempId, item: nItem.trim(), dept, qty: 1,
       status: 'pending', created_at: new Date().toISOString(),
+      ...(nJobNum.trim() && { job_number: nJobNum.trim() }),
     };
     setNeeds(prev => [optimistic, ...prev]);
     setModalVisible(false);
     const itemText = nItem.trim();
+    const jobNum   = nJobNum.trim();
     setNItem('');
+    setNJobNum('');
 
     try {
       const tenantId = await getTenantId();
       const { data, error } = await supabase.from('inventory_needs')
-        .insert({ item: itemText, dept, qty: 1, status: 'pending', ...(tenantId && { tenant_id: tenantId }) })
+        .insert({ item: itemText, dept, qty: 1, status: 'pending', ...(jobNum && { job_number: jobNum }), ...(tenantId && { tenant_id: tenantId }) })
         .select().single();
       if (error) throw error;
       setNeeds(prev => prev.map(n => n.id === tempId ? data : n));
@@ -130,8 +134,9 @@ export default function InventoryScreen({ route }) {
       const raw = await AsyncStorage.getItem('@inline_current_task');
       const task = raw ? JSON.parse(raw) : null;
       if (task?.workOrderId) {
+        const impDesc = jobNum ? `${itemText} (Job: ${jobNum})` : itemText;
         const [impRes, tagRes] = await Promise.all([
-          createImpediment({ type: 'Materials', workOrderId: task.workOrderId, description: itemText }),
+          createImpediment({ type: 'Materials', workOrderId: task.workOrderId, description: impDesc }),
           applyWorkOrderTag(task.workOrderId, 'App: Material Needed'),
         ]);
         if (!impRes || !tagRes) innergyOk = false;
@@ -182,7 +187,7 @@ export default function InventoryScreen({ route }) {
         />
       )}
 
-      <TouchableOpacity style={styles.fab} onPress={() => { setNItem(''); setModalVisible(true); }} activeOpacity={0.85}>
+      <TouchableOpacity style={styles.fab} onPress={() => { setNItem(''); setNJobNum(''); setModalVisible(true); }} activeOpacity={0.85}>
         <Ionicons name="add" size={28} color="#000" />
       </TouchableOpacity>
 
@@ -208,6 +213,15 @@ export default function InventoryScreen({ route }) {
               value={nItem}
               onChangeText={setNItem}
               autoFocus
+              returnKeyType="next"
+            />
+            <TextInput
+              style={[styles.input, { marginTop: 0 }]}
+              placeholder="Job Number (optional) — e.g. P-26-1001"
+              placeholderTextColor={C.muted}
+              value={nJobNum}
+              onChangeText={setNJobNum}
+              autoCapitalize="characters"
               returnKeyType="go"
               onSubmitEditing={handleSubmit}
             />
