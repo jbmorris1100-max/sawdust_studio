@@ -1,4 +1,4 @@
-// ── Sawdust Studio Innergy Agent — content.js ─────────────────
+// ── Inline Innergy Agent — content.js ──────────────────────────
 // Injected into every app.innergy.com page.
 
 const JOB_RE  = /P-\d{2}-\d{4}/g;

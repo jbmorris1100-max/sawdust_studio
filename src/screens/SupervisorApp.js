@@ -16,24 +16,26 @@ import {
   Switch,
   Animated,
   PanResponder,
+  Modal,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
+import MorningBriefScreen from './MorningBriefScreen';
 
 // ── Design tokens ─────────────────────────────────────────────
 const C = {
-  bg:            '#0d0d0d',
-  surface:       '#141414',
-  input:         '#1a1a1a',
-  border:        '#2a2a2a',
-  text:          '#e5e5e5',
-  muted:         '#555555',
-  accent:        '#f59e0b',
+  bg:            '#07090F',
+  surface:       '#0D1117',
+  input:         '#111620',
+  border:        '#1A2535',
+  text:          '#FFFFFF',
+  muted:         '#2D8A94',
+  accent:        '#00C5CC',
   success:       '#22c55e',
   successBg:     '#0a1f10',
   successBorder: '#14532d',
-  error:         '#ef4444',
+  error:         '#FF4444',
   errorBg:       '#1f0a0a',
   errorBorder:   '#450a0a',
   blue:          '#3b82f6',
@@ -51,7 +53,7 @@ const DEPT_COLORS = {
 };
 
 const STATUS_STYLES = {
-  pending:   { bg: '#1a1000', text: '#f59e0b', border: '#3d2800' },
+  pending:   { bg: '#062022', text: '#00C5CC', border: '#0E4F52' },
   ordered:   { bg: '#0d1f3c', text: '#3b82f6', border: '#1e3a5f' },
   received:  { bg: '#0a1f10', text: '#22c55e', border: '#14532d' },
   cancelled: { bg: '#1a1a1a', text: '#555555', border: '#2a2a2a' },
@@ -61,11 +63,12 @@ const STATUS_STYLES = {
 };
 
 const TABS = [
-  { key: 'overview', label: 'Overview', icon: 'grid-outline',         activeIcon: 'grid'          },
-  { key: 'messages', label: 'Messages', icon: 'chatbubble-outline',   activeIcon: 'chatbubbles'   },
-  { key: 'needs',    label: 'Needs',    icon: 'cube-outline',          activeIcon: 'cube'          },
-  { key: 'damage',   label: 'Damage',   icon: 'warning-outline',       activeIcon: 'warning'       },
-  { key: 'ai',       label: 'AI',       icon: 'hardware-chip-outline', activeIcon: 'hardware-chip' },
+  { key: 'brief',    label: 'Brief',    icon: 'newspaper-outline',     activeIcon: 'newspaper'     },
+  { key: 'overview', label: 'Overview', icon: 'grid-outline',          activeIcon: 'grid'          },
+  { key: 'messages', label: 'Messages', icon: 'chatbubble-outline',    activeIcon: 'chatbubbles'   },
+  { key: 'needs',    label: 'Needs',    icon: 'cube-outline',           activeIcon: 'cube'          },
+  { key: 'damage',   label: 'Damage',   icon: 'warning-outline',        activeIcon: 'warning'       },
+  { key: 'ai',       label: 'AI',       icon: 'hardware-chip-outline',  activeIcon: 'hardware-chip' },
 ];
 
 const BOTTLENECK_OPTIONS = [
@@ -80,7 +83,7 @@ const RESOLUTION_TYPES = [
 
 const MODE_INFO = {
   observation: { label: 'Observation',  desc: 'Silently logs data. No suggestions.',       color: '#22c55e' },
-  assist:      { label: 'Assist',       desc: 'Surfaces insights. You decide.',             color: '#f59e0b' },
+  assist:      { label: 'Assist',       desc: 'Surfaces insights. You decide.',             color: '#00C5CC' },
   autonomous:  { label: 'Autonomous',   desc: 'Proactively flags bottlenecks & schedules.', color: '#ef4444' },
 };
 
@@ -226,7 +229,7 @@ const FilterChips = ({ options, value, onChange }) => (
 
 // ── Overview Tab ──────────────────────────────────────────────
 const SCAN_STATUS_COLORS = {
-  'In Progress':              { color: '#f59e0b', bg: '#1a1000' },
+  'In Progress':              { color: '#00C5CC', bg: '#062022' },
   'QC Check':                 { color: '#3b82f6', bg: '#0d1f3c' },
   'Passed QC':                { color: '#22c55e', bg: '#0a1f10' },
   'Failed QC — Rework':       { color: '#ef4444', bg: '#1f0a0a' },
@@ -1149,10 +1152,10 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
 
     try {
       await AsyncStorage.multiRemove([
-        '@sawdust_user_name',
-        '@sawdust_user_dept',
-        '@sawdust_user_role',
-        '@sawdust_current_task',
+        '@inline_user_name',
+        '@inline_user_dept',
+        '@inline_user_role',
+        '@inline_current_task',
       ]);
       await supabase
         .from('supervisor_sessions')
@@ -1163,7 +1166,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
     if (Platform.OS === 'web') {
       window.location.reload();
     } else {
-      if (global.sawdustSignOut) global.sawdustSignOut();
+      if (global.inlineSignOut) global.inlineSignOut();
     }
   };
 
@@ -1171,7 +1174,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
   const [needs,        setNeeds]        = useState([]);
   const [damage,       setDamage]       = useState([]);
   const [loading,      setLoading]      = useState(true);
-  const [activeTab,    setActiveTab]    = useState('overview');
+  const [activeTab,    setActiveTab]    = useState('brief');
   const [unreadMsgs,   setUnreadMsgs]   = useState(0);
   const [activeThread, setActiveThread] = useState(null);
   const [msgBody,      setMsgBody]      = useState('');
@@ -1201,7 +1204,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
   }, []);
 
   useEffect(() => {
-    AsyncStorage.getItem('@sawdust_dismissed_msgs').then((val) => {
+    AsyncStorage.getItem('@inline_dismissed_msgs').then((val) => {
       if (val) setDismissedMsgIds(JSON.parse(val));
     });
     fetchAll();
@@ -1315,7 +1318,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
   const dismissMessage = useCallback((id) => {
     setDismissedMsgIds((prev) => {
       const next = [...prev, id];
-      AsyncStorage.setItem('@sawdust_dismissed_msgs', JSON.stringify(next));
+      AsyncStorage.setItem('@inline_dismissed_msgs', JSON.stringify(next));
       return next;
     });
   }, []);
@@ -1365,6 +1368,9 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
             </View>
           ) : (
             <>
+            {activeTab === 'brief' && (
+              <MorningBriefScreen userName={userName} />
+            )}
             {activeTab === 'overview' && (
               <OverviewTab
                 needs={needs}
@@ -1666,7 +1672,7 @@ const styles = StyleSheet.create({
   },
   tabAccent: {
     position: 'absolute', top: 0, left: 10, right: 10,
-    height: 2.5, backgroundColor: C.accent,
+    height: 2.5, backgroundColor: '#00C5CC',
     borderBottomLeftRadius: 2, borderBottomRightRadius: 2,
   },
   tabLabel:       { fontSize: 10, fontWeight: '600', color: C.muted, marginTop: 3 },

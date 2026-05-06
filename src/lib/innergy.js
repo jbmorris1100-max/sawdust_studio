@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getTenant } from './tenant';
 
-const BASE_URL = 'https://app.innergy.com/api';
+const DEFAULT_BASE_URL = 'https://app.innergy.com/api';
 
 const DEPT_LABOR_NAMES = {
   Production: 'Production Labor',
@@ -9,15 +10,28 @@ const DEPT_LABOR_NAMES = {
   Craftsman:  'Craftsman Labor',
 };
 
-function getHeaders() {
+export async function hasInnergy() {
+  const tenant = await getTenant();
+  return !!(tenant?.innergy_api_key);
+}
+
+async function getHeaders() {
+  const tenant = await getTenant();
+  const apiKey = tenant?.innergy_api_key ?? null;
   return {
-    'Api-Key':      process.env.EXPO_PUBLIC_INNERGY_API_KEY,
+    'Api-Key':      apiKey ?? '',
     'Content-Type': 'application/json',
   };
 }
 
+async function getBaseUrl() {
+  const tenant = await getTenant();
+  return tenant?.innergy_base_url ?? DEFAULT_BASE_URL;
+}
+
 async function apiFetch(path, options = {}) {
-  const res = await fetch(`${BASE_URL}${path}`, { headers: getHeaders(), ...options });
+  const [headers, baseUrl] = await Promise.all([getHeaders(), getBaseUrl()]);
+  const res = await fetch(`${baseUrl}${path}`, { headers, ...options });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -27,9 +41,10 @@ function unwrapItems(data) {
   return Array.isArray(data) ? data : (data.Items ?? null);
 }
 
-// ── Existing exports ──────────────────────────────────────────
+// ── Exported functions — all return null silently if no API key ──
 
 export async function getProjects() {
+  if (!await hasInnergy()) return null;
   try {
     const data = await apiFetch('/projects');
     return unwrapItems(data);
@@ -40,6 +55,7 @@ export async function getProjects() {
 }
 
 export async function getWorkOrders() {
+  if (!await hasInnergy()) return null;
   try {
     const data = await apiFetch('/projectWorkOrders');
     return unwrapItems(data);
@@ -50,6 +66,7 @@ export async function getWorkOrders() {
 }
 
 export async function getShipmentItems(projectId) {
+  if (!await hasInnergy()) return null;
   try {
     const path = projectId ? `/project/${projectId}/shipmentItems` : '/shipmentItems';
     const data  = await apiFetch(path);
@@ -61,6 +78,7 @@ export async function getShipmentItems(projectId) {
 }
 
 export async function getMaterialsToBuy() {
+  if (!await hasInnergy()) return null;
   try {
     const data = await apiFetch('/materialsToBuy');
     return unwrapItems(data);
@@ -70,8 +88,30 @@ export async function getMaterialsToBuy() {
   }
 }
 
-// Matches WoNumber, ShipmentItemName, Sku, PartNumber, or Barcode
+export async function getLaborKanbanItems() {
+  if (!await hasInnergy()) return null;
+  try {
+    const data = await apiFetch('/laborKanbanItems');
+    return unwrapItems(data);
+  } catch (e) {
+    console.error('[innergy] getLaborKanbanItems:', e.message);
+    return null;
+  }
+}
+
+export async function getDateManagement(year, month) {
+  if (!await hasInnergy()) return null;
+  try {
+    const data = await apiFetch(`/dateManagement/${year}/${month}`);
+    return unwrapItems(data) ?? data;
+  } catch (e) {
+    console.error('[innergy] getDateManagement:', e.message);
+    return null;
+  }
+}
+
 export async function lookupPartByNumber(partNumber) {
+  if (!await hasInnergy()) return null;
   try {
     const data  = await apiFetch('/shipmentItems');
     const items = unwrapItems(data);
@@ -90,7 +130,6 @@ export async function lookupPartByNumber(partNumber) {
   }
 }
 
-// Extract a normalized work-order context object from a shipment item
 export function extractWorkOrderContext(item) {
   if (!item) return null;
   return {
@@ -103,6 +142,7 @@ export function extractWorkOrderContext(item) {
 }
 
 export async function testConnection() {
+  if (!await hasInnergy()) return false;
   try {
     await apiFetch('/version');
     return true;
@@ -115,6 +155,7 @@ export async function testConnection() {
 // ── Employee / labor ID caching ───────────────────────────────
 
 export async function getEmployees() {
+  if (!await hasInnergy()) return null;
   try {
     const data = await apiFetch('/employees');
     return unwrapItems(data);
@@ -125,6 +166,7 @@ export async function getEmployees() {
 }
 
 export async function getEmployeeId(name) {
+  if (!await hasInnergy()) return null;
   try {
     const cached = await AsyncStorage.getItem('@innergy_employee_id');
     if (cached) return parseInt(cached, 10);
@@ -146,7 +188,12 @@ export async function getEmployeeId(name) {
 }
 
 export async function getLaborItemId(dept) {
+  if (!await hasInnergy()) return null;
   try {
+    const tenant = await getTenant();
+    const laborMap = tenant?.labor_item_map ?? {};
+    if (laborMap[dept]) return laborMap[dept];
+
     const key    = `@innergy_labor_id_${dept.toLowerCase()}`;
     const cached = await AsyncStorage.getItem(key);
     if (cached) return parseInt(cached, 10);
@@ -172,6 +219,7 @@ export async function getLaborItemId(dept) {
 // ── Time tracking ─────────────────────────────────────────────
 
 export async function logTimeEntry({ employeeId, workOrderId, laborItemId, startTime, endTime }) {
+  if (!await hasInnergy()) return null;
   try {
     return await apiFetch('/timeTracking', {
       method: 'POST',
@@ -192,7 +240,7 @@ export async function logTimeEntry({ employeeId, workOrderId, laborItemId, start
 // ── Work order lookup ─────────────────────────────────────────
 
 export async function getWorkOrdersByProjectNumber(projectNum) {
-  // Try filtered endpoint first, fall back to client-side filter
+  if (!await hasInnergy()) return null;
   try {
     const data  = await apiFetch(`/projectWorkOrders?projectNumber=${encodeURIComponent(projectNum)}`);
     const items = unwrapItems(data);
@@ -216,6 +264,7 @@ export async function getWorkOrdersByProjectNumber(projectNum) {
 // ── Part / work-order mutations ───────────────────────────────
 
 export async function markPartScanned(workOrderId, shipmentItemId) {
+  if (!await hasInnergy()) return null;
   try {
     return await apiFetch('/workOrderShipmentItemParts/externalFields', {
       method: 'POST',
@@ -228,6 +277,7 @@ export async function markPartScanned(workOrderId, shipmentItemId) {
 }
 
 export async function applyWorkOrderTag(workOrderId, tag) {
+  if (!await hasInnergy()) return null;
   try {
     return await apiFetch(`/projectWorkOrders/${workOrderId}/tags`, {
       method: 'POST',
@@ -240,6 +290,7 @@ export async function applyWorkOrderTag(workOrderId, tag) {
 }
 
 export async function postWorkOrderNote(workOrderId, note) {
+  if (!await hasInnergy()) return null;
   try {
     return await apiFetch(`/projectWorkOrders/${workOrderId}/notes`, {
       method: 'POST',
@@ -252,6 +303,7 @@ export async function postWorkOrderNote(workOrderId, note) {
 }
 
 export async function createImpediment({ type, workOrderId, description }) {
+  if (!await hasInnergy()) return null;
   try {
     return await apiFetch('/impediments', {
       method: 'POST',

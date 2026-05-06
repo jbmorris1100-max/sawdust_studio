@@ -1,15 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
 import { logTimeEntry } from './innergy';
-
-// SQL needed in Supabase:
-// CREATE TABLE IF NOT EXISTS time_clock (
-//   id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-//   employee_name text, work_order_id text, job_name text,
-//   clock_in timestamptz, clock_out timestamptz,
-//   minutes_logged int, dept text, sync_status text DEFAULT 'pending',
-//   created_at timestamptz DEFAULT now()
-// );
+import { getTenantId } from './tenant';
 
 export async function clockOutEmployee(employeeId, currentTask) {
   if (!currentTask) return;
@@ -30,6 +22,7 @@ export async function clockOutEmployee(employeeId, currentTask) {
   } catch (_) {}
 
   const ms = new Date(endTime).getTime() - new Date(currentTask.startedAt ?? endTime).getTime();
+  const tenantId = await getTenantId();
   await supabase.from('time_clock').insert({
     employee_name:  currentTask.employeeName ?? 'Unknown',
     work_order_id:  currentTask.workOrderId ?? null,
@@ -39,7 +32,8 @@ export async function clockOutEmployee(employeeId, currentTask) {
     minutes_logged: Math.round(ms / 60000),
     dept:           currentTask.dept ?? null,
     sync_status:    synced ? 'synced' : 'pending',
+    ...(tenantId && { tenant_id: tenantId }),
   }).catch(() => {});
 
-  await AsyncStorage.multiRemove(['@sawdust_current_task', '@sawdust_shift_start']);
+  await AsyncStorage.multiRemove(['@inline_current_task', '@inline_shift_start']);
 }

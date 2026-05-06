@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useContext } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
   Modal, SafeAreaView, StatusBar, KeyboardAvoidingView,
-  Platform, ActivityIndicator, Alert,
+  Platform, ActivityIndicator, Alert, ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -13,17 +13,29 @@ import {
   logTimeEntry, applyWorkOrderTag,
 } from '../lib/innergy';
 import { setSyncStatus, getSyncStatus } from '../lib/syncQueue';
+import { clockOutEmployee } from '../lib/clockOut';
+import { getTenantId } from '../lib/tenant';
+
+const CURRENT_TASK_KEY = '@inline_current_task';
+const RECENT_JOBS_KEY  = '@inline_recent_jobs';
+
+const GENERIC_ACTIVITIES = [
+  'Shop Maintenance',  'Machine Maintenance',
+  'Cleaning',          'Training',
+  'Material Handling', 'Shop Setup',
+  'Receiving',         'Warranty / Repair',
+];
 
 const C = {
-  bg:      '#0d0d0d',
-  surface: '#141414',
-  input:   '#1a1a1a',
-  border:  '#2a2a2a',
-  text:    '#e5e5e5',
-  muted:   '#555555',
-  accent:  '#f59e0b',
+  bg:      '#07090F',
+  surface: '#0D1117',
+  input:   '#111620',
+  border:  '#1A2535',
+  text:    '#FFFFFF',
+  muted:   '#2D8A94',
+  accent:  '#00C5CC',
   success: '#22c55e',
-  danger:  '#ef4444',
+  danger:  '#FF4444',
   pink:    '#f9a8d4',
   pinkBg:  '#500724',
 };
@@ -58,25 +70,70 @@ export default function CraftsmanHomeScreen({ route }) {
   const [confirmMsg,   setConfirmMsg]   = useState('');
   const [syncOk,       setSyncOk]       = useState(true);
   const [endDayMode,   setEndDayMode]   = useState(false);
+  const [switchVisible,  setSwitchVisible]  = useState(false);
+  const [recentJobs,     setRecentJobs]     = useState([]);
+  const [switchBanner,   setSwitchBanner]   = useState('');
 
-  const endDay      = useContext(EndDayContext);
-  const intervalRef = useRef(null);
-  const confirmRef  = useRef(null);
+  const endDay        = useContext(EndDayContext);
+  const intervalRef   = useRef(null);
+  const confirmRef    = useRef(null);
+  const switchBannerRef = useRef(null);
 
   useEffect(() => {
-    AsyncStorage.multiGet(['@sawdust_user_name', '@sawdust_user_dept', '@sawdust_shift_start'])
+    AsyncStorage.multiGet(['@inline_user_name', '@inline_user_dept', '@inline_shift_start'])
       .then(pairs => {
         const n = pairs[0][1]; const d = pairs[1][1]; let start = pairs[2][1];
         if (n && !userName) setUserName(n);
         if (d && !userDept) setUserDept(d);
         if (!start) {
           start = new Date().toISOString();
-          AsyncStorage.setItem('@sawdust_shift_start', start);
+          AsyncStorage.setItem('@inline_shift_start', start);
         }
         setLastQCTime(start);
       });
     getSyncStatus().then(({ ok }) => setSyncOk(ok));
+    AsyncStorage.getItem(RECENT_JOBS_KEY).then(raw => {
+      if (raw) { try { setRecentJobs(JSON.parse(raw)); } catch (_) {} }
+    });
   }, []);
+
+  const showSwitchBanner = (msg) => {
+    setSwitchBanner(msg);
+    if (switchBannerRef.current) clearTimeout(switchBannerRef.current);
+    switchBannerRef.current = setTimeout(() => setSwitchBanner(''), 2000);
+  };
+
+  const handleQuickSwitch = async (item) => {
+    setSwitchVisible(false);
+    const now  = new Date().toISOString();
+    const name = await AsyncStorage.getItem('@inline_user_name') ?? userName;
+
+    const prevRaw = await AsyncStorage.getItem(CURRENT_TASK_KEY);
+    if (prevRaw) {
+      try {
+        const prevTask = JSON.parse(prevRaw);
+        const empId = prevTask.employeeId ?? (name ? await getEmployeeId(name) : null);
+        await clockOutEmployee(empId, prevTask);
+      } catch (_) {}
+    }
+
+    const isGeneric = typeof item === 'string';
+    const newTask = isGeneric
+      ? { jobName: item, workOrderName: item, workOrderId: null, dept: userDept, startedAt: now, employeeName: name }
+      : { ...item, startedAt: now, employeeName: name };
+
+    await AsyncStorage.setItem(CURRENT_TASK_KEY, JSON.stringify(newTask));
+
+    if (!isGeneric && item.workOrderId) {
+      const prevJobs = recentJobs.filter(j => j.workOrderId !== item.workOrderId);
+      const next = [{ ...item, lastWorkedAt: now }, ...prevJobs].slice(0, 5);
+      setRecentJobs(next);
+      await AsyncStorage.setItem(RECENT_JOBS_KEY, JSON.stringify(next));
+    }
+
+    const label = isGeneric ? item : (item.jobName || item.workOrderName);
+    showSwitchBanner(`Switched to ${label}`);
+  };
 
   // Elapsed timer
   useEffect(() => {
@@ -118,6 +175,7 @@ export default function CraftsmanHomeScreen({ route }) {
     }
 
     const ms = new Date(endTime).getTime() - new Date(startTime).getTime();
+    const tenantId = await getTenantId();
     await supabase.from('time_clock').insert({
       employee_name:  userName || 'Unknown',
       work_order_id:  (wo?.Id ?? wo?.WorkOrderId)?.toString() ?? jobNum,
@@ -127,6 +185,7 @@ export default function CraftsmanHomeScreen({ route }) {
       minutes_logged: Math.round(ms / 60000),
       dept:           'Craftsman',
       sync_status:    innergyOk ? 'synced' : 'pending',
+      ...(tenantId && { tenant_id: tenantId }),
     }).catch(() => {});
 
     await setSyncStatus(innergyOk);
@@ -145,7 +204,7 @@ export default function CraftsmanHomeScreen({ route }) {
 
       setLastJobName(jobName);
       setLastQCTime(endTime);
-      await AsyncStorage.setItem('@sawdust_shift_start', endTime);
+      await AsyncStorage.setItem('@inline_shift_start', endTime);
 
       const logged = formatLoggedTime(ms);
       setConfirmMsg(`✅ ${logged} logged to ${jobName}`);
@@ -175,7 +234,7 @@ export default function CraftsmanHomeScreen({ route }) {
             text: 'No, just sign out',
             style: 'destructive',
             onPress: async () => {
-              await AsyncStorage.multiRemove(['@sawdust_shift_start', '@sawdust_current_task']);
+              await AsyncStorage.multiRemove(['@inline_shift_start', '@inline_current_task']);
               await endDay();
             },
           },
@@ -193,6 +252,14 @@ export default function CraftsmanHomeScreen({ route }) {
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="light-content" backgroundColor={C.bg} />
+
+      {/* Switch banner */}
+      {!!switchBanner && (
+        <View style={styles.switchBanner}>
+          <Ionicons name="checkmark-circle" size={14} color={C.success} />
+          <Text style={styles.switchBannerText}>{switchBanner}</Text>
+        </View>
+      )}
 
       {/* Header */}
       <View style={styles.header}>
@@ -232,6 +299,16 @@ export default function CraftsmanHomeScreen({ route }) {
           <Ionicons name="checkmark-circle-outline" size={36} color="#000" style={{ marginRight: 12 }} />
           <Text style={styles.qcBtnText}>QC ✓</Text>
         </TouchableOpacity>
+
+        {/* Quick Switch */}
+        <TouchableOpacity
+          style={styles.switchBtn}
+          onPress={() => setSwitchVisible(true)}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="swap-horizontal-outline" size={18} color={C.accent} style={{ marginRight: 8 }} />
+          <Text style={styles.switchBtnText}>Quick Switch</Text>
+        </TouchableOpacity>
       </View>
 
       {/* End Day */}
@@ -240,6 +317,40 @@ export default function CraftsmanHomeScreen({ route }) {
           <Text style={styles.endDayText}>End Day</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Quick Switch modal */}
+      <Modal visible={switchVisible} animationType="slide" transparent onRequestClose={() => setSwitchVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalBox, { maxHeight: '75%' }]}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.modalTitle}>Quick Switch</Text>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              {recentJobs.length > 0 && (
+                <>
+                  <Text style={styles.fieldLabel}>RECENT JOBS</Text>
+                  {recentJobs.map((job, i) => (
+                    <TouchableOpacity key={i} style={styles.switchRow} onPress={() => handleQuickSwitch(job)} activeOpacity={0.7}>
+                      <Ionicons name="time-outline" size={16} color={C.accent} style={{ marginRight: 10 }} />
+                      <Text style={styles.switchRowName}>{job.jobName || job.workOrderName}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </>
+              )}
+              <Text style={styles.fieldLabel}>GENERIC ACTIVITIES</Text>
+              <View style={styles.activityGrid}>
+                {GENERIC_ACTIVITIES.map((act, i) => (
+                  <TouchableOpacity key={i} style={styles.activityChip} onPress={() => handleQuickSwitch(act)} activeOpacity={0.7}>
+                    <Text style={styles.activityChipText}>{act}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
+            <TouchableOpacity style={{ alignItems: 'center', paddingTop: 16 }} onPress={() => setSwitchVisible(false)}>
+              <Text style={{ color: C.muted, fontSize: 14 }}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* QC Modal */}
       <Modal visible={qcVisible} animationType="slide" transparent onRequestClose={() => { setQcVisible(false); setEndDayMode(false); }}>
@@ -335,6 +446,33 @@ const styles = StyleSheet.create({
     shadowColor: C.pink, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 12, elevation: 6,
   },
   qcBtnText: { fontSize: 28, fontWeight: '800', color: '#000' },
+
+  // Switch banner
+  switchBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#062022', paddingVertical: 8, paddingHorizontal: 16,
+    borderBottomWidth: 1, borderBottomColor: '#0E4F52',
+  },
+  switchBannerText: { color: C.success, fontSize: 12, fontWeight: '600', flex: 1 },
+
+  // Quick Switch button
+  switchBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: C.surface, borderRadius: 14, borderWidth: 1.5, borderColor: C.border,
+    paddingVertical: 14,
+  },
+  switchBtnText: { color: C.accent, fontSize: 15, fontWeight: '700' },
+
+  // Quick Switch modal
+  sheetHandle: { width: 36, height: 4, backgroundColor: C.border, borderRadius: 2, alignSelf: 'center', marginBottom: 14 },
+  switchRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: C.border },
+  switchRowName: { fontSize: 14, color: C.text, fontWeight: '600', flex: 1 },
+  activityGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8, marginBottom: 16 },
+  activityChip: {
+    paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20,
+    backgroundColor: C.input, borderWidth: 1.5, borderColor: C.border,
+  },
+  activityChipText: { fontSize: 13, color: C.muted, fontWeight: '600' },
 
   // End Day
   endDayBtn: {

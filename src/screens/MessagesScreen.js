@@ -19,21 +19,22 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 import { postWorkOrderNote, getWorkOrdersByProjectNumber } from '../lib/innergy';
+import { getTenantId } from '../lib/tenant';
 
 // ── Design tokens ─────────────────────────────────────────────
 const C = {
-  bg:          '#0d0d0d',
-  surface:     '#141414',
-  input:       '#1a1a1a',
-  border:      '#2a2a2a',
-  text:        '#e5e5e5',
-  muted:       '#555555',
-  accent:      '#f59e0b',
-  accentDark:  '#d97706',
+  bg:          '#07090F',
+  surface:     '#0D1117',
+  input:       '#111620',
+  border:      '#1A2535',
+  text:        '#FFFFFF',
+  muted:       '#2D8A94',
+  accent:      '#00C5CC',
+  accentDark:  '#0AAFB8',
   // Bubbles
   bubbleIn:    '#1e1e1e',
-  bubbleOwn:   '#1a3a1a',
-  bubbleSup:   '#f59e0b',
+  bubbleOwn:   '#0a2a2a',
+  bubbleSup:   '#00C5CC',
 };
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -169,7 +170,7 @@ const DateSeparator = ({ date }) => (
 // Post message to Innergy work order notes when a task is active or a job number is mentioned
 async function syncMessageToInnergy(text, senderName) {
   try {
-    const raw  = await AsyncStorage.getItem('@sawdust_current_task');
+    const raw  = await AsyncStorage.getItem('@inline_current_task');
     const task = raw ? JSON.parse(raw) : null;
     const note = `[${senderName ?? 'Crew'}] ${text}`;
 
@@ -281,9 +282,10 @@ export default function MessagesScreen({ route }) {
     setBody('');
     setSending(true);
 
+    const tenantId = await getTenantId();
     const { data, error } = await supabase
       .from('messages')
-      .insert({ sender_name: userName, dept: userDept, body: trimmed })
+      .insert({ sender_name: userName, dept: userDept, body: trimmed, ...(tenantId && { tenant_id: tenantId }) })
       .select()
       .single();
 

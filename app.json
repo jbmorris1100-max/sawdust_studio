@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "sawdust-crew",
-    "slug": "sawdust-crew",
+    "name": "InlineIQ",
+    "slug": "inline-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -10,11 +10,11 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0d0d0d"
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.munkey1100.sawdustcrew",
+      "bundleIdentifier": "com.inline.app",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "Take photos of damaged parts for damage reports."
@@ -23,7 +23,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#0d0d0d"
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
@@ -33,9 +33,9 @@
     "web": {
       "favicon": "./assets/favicon.png",
       "bundler": "metro",
-      "name": "Sawdust Crew",
-      "shortName": "Sawdust",
-      "description": "Shop floor crew management — messages, inventory, time clock",
+      "name": "InlineIQ",
+      "shortName": "InlineIQ",
+      "description": "Keep your shop sharp.",
       "themeColor": "#0d0d0d",
       "backgroundColor": "#0d0d0d",
       "lang": "en"
@@ -50,14 +50,14 @@
       [
         "expo-image-picker",
         {
-          "cameraPermission": "Allow Sawdust Studio to take photos of damaged parts."
+          "cameraPermission": "Allow Inline to take photos of damaged parts."
         }
       ],
       [
         "expo-notifications",
         {
           "icon": "./assets/icon.png",
-          "color": "#f59e0b",
+          "color": "#00C5CC",
           "sounds": []
         }
       ]

@@ -10,15 +10,25 @@ import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { RoleContext } from '../lib/RoleContext';
 import { EndDayContext } from '../lib/EndDayContext';
-import { getEmployeeId } from '../lib/innergy';
+import { getEmployeeId, hasInnergy } from '../lib/innergy';
 import { clockOutEmployee } from '../lib/clockOut';
 import { getSyncStatus } from '../lib/syncQueue';
+import { getTenant } from '../lib/tenant';
+import InlineIQLogo from '../components/InlineIQLogo';
 
-const STORAGE_KEY_NAME = '@sawdust_user_name';
-const STORAGE_KEY_DEPT = '@sawdust_user_dept';
-const LAST_READ_KEY    = '@sawdust_last_read';
-const DEVICE_ID_KEY    = '@sawdust_device_id';
-const CURRENT_TASK_KEY = '@sawdust_current_task';
+const STORAGE_KEY_NAME = '@inline_user_name';
+const STORAGE_KEY_DEPT = '@inline_user_dept';
+const LAST_READ_KEY    = '@inline_last_read';
+const DEVICE_ID_KEY    = '@inline_device_id';
+const CURRENT_TASK_KEY = '@inline_current_task';
+const RECENT_JOBS_KEY  = '@inline_recent_jobs';
+
+const GENERIC_ACTIVITIES = [
+  'Shop Maintenance',  'Machine Maintenance',
+  'Cleaning',          'Training',
+  'Material Handling', 'Shop Setup',
+  'Receiving',         'Warranty / Repair',
+];
 
 const DEPARTMENTS = ['Production', 'Assembly', 'Finishing', 'Craftsman'];
 
@@ -30,14 +40,14 @@ const DEPT_COLORS = {
 };
 
 const C = {
-  bg:       '#0d0d0d',
-  surface:  '#141414',
-  input:    '#1a1a1a',
-  border:   '#2a2a2a',
-  text:     '#e5e5e5',
-  muted:    '#555555',
-  accent:   '#f59e0b',
-  danger:   '#ef4444',
+  bg:       '#07090F',
+  surface:  '#0D1117',
+  input:    '#111620',
+  border:   '#1A2535',
+  text:     '#FFFFFF',
+  muted:    '#2D8A94',
+  accent:   '#00C5CC',
+  danger:   '#FF4444',
   success:  '#22c55e',
 };
 
@@ -53,6 +63,14 @@ function formatElapsed(ms) {
   return `${m}:${String(sc).padStart(2, '0')}`;
 }
 
+function formatTimeSince(iso) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ago`;
+}
+
 export default function HomeScreen({ navigation, route }) {
   const { onClearUnread } = route?.params ?? {};
   const resetRole = useContext(RoleContext);
@@ -64,6 +82,7 @@ export default function HomeScreen({ navigation, route }) {
   const [deptOnlyMode, setDeptOnlyMode]   = useState(false);
   const [draftName, setDraftName] = useState('');
   const [draftDept, setDraftDept] = useState('');
+  const [departments, setDepartments] = useState(DEPARTMENTS);
 
   const [currentTask, setCurrentTask] = useState(null);
   const [elapsed,     setElapsed]     = useState('');
@@ -77,7 +96,11 @@ export default function HomeScreen({ navigation, route }) {
   const [isOnline,       setIsOnline]       = useState(null);
   const [syncOk,         setSyncOk]         = useState(true);
 
-  const [settingsVisible, setSettingsVisible] = useState(false);
+  const [settingsVisible,   setSettingsVisible]   = useState(false);
+  const [switchVisible,     setSwitchVisible]     = useState(false);
+  const [recentJobs,        setRecentJobs]        = useState([]);
+  const [switchBanner,      setSwitchBanner]      = useState('');
+  const switchBannerRef = useRef(null);
 
   const lastSeenAtRef = useRef('');
   const intervalRef   = useRef(null);
@@ -102,6 +125,20 @@ export default function HomeScreen({ navigation, route }) {
       }
       const { ok } = await getSyncStatus();
       setSyncOk(ok);
+
+      // Load tenant departments
+      const tenant = await getTenant();
+      if (tenant?.departments) {
+        try {
+          const depts = typeof tenant.departments === 'string'
+            ? JSON.parse(tenant.departments) : tenant.departments;
+          if (Array.isArray(depts) && depts.length > 0) setDepartments(depts);
+        } catch (_) {}
+      }
+
+      // Load recent jobs
+      const raw = await AsyncStorage.getItem(RECENT_JOBS_KEY);
+      if (raw) { try { setRecentJobs(JSON.parse(raw)); } catch (_) {} }
     })();
   }, []);
 
@@ -119,6 +156,9 @@ export default function HomeScreen({ navigation, route }) {
   useFocusEffect(useCallback(() => {
     AsyncStorage.getItem(CURRENT_TASK_KEY).then(raw => {
       try { setCurrentTask(raw ? JSON.parse(raw) : null); } catch { setCurrentTask(null); }
+    });
+    AsyncStorage.getItem(RECENT_JOBS_KEY).then(raw => {
+      if (raw) { try { setRecentJobs(JSON.parse(raw)); } catch (_) {} }
     });
     if (userDept) fetchAlerts(userDept);
     if (userName) {
@@ -180,6 +220,48 @@ export default function HomeScreen({ navigation, route }) {
     const { data } = await q;
     if (data) setRecentMessages(data);
   }, []);
+
+  // ── Quick Switch ──────────────────────────────────────────────
+  const showSwitchBanner = (msg) => {
+    setSwitchBanner(msg);
+    if (switchBannerRef.current) clearTimeout(switchBannerRef.current);
+    switchBannerRef.current = setTimeout(() => setSwitchBanner(''), 2000);
+  };
+
+  const handleQuickSwitch = async (item) => {
+    setSwitchVisible(false);
+    const now = new Date().toISOString();
+    const name = await AsyncStorage.getItem(STORAGE_KEY_NAME) ?? userName;
+
+    // Clock out previous
+    const prevRaw = await AsyncStorage.getItem(CURRENT_TASK_KEY);
+    if (prevRaw) {
+      try {
+        const prevTask = JSON.parse(prevRaw);
+        const empId = prevTask.employeeId ?? (name ? await getEmployeeId(name) : null);
+        await clockOutEmployee(empId, prevTask);
+      } catch (_) {}
+    }
+
+    const isGeneric = typeof item === 'string';
+    const newTask = isGeneric
+      ? { jobName: item, workOrderName: item, workOrderId: null, dept: userDept, startedAt: now, employeeName: name }
+      : { ...item, startedAt: now, employeeName: name };
+
+    await AsyncStorage.setItem(CURRENT_TASK_KEY, JSON.stringify(newTask));
+    setCurrentTask(newTask);
+
+    // Update recent jobs (only for real work orders, not generic activities)
+    if (!isGeneric && item.workOrderId) {
+      const prevJobs = recentJobs.filter(j => j.workOrderId !== item.workOrderId);
+      const next = [{ ...item, lastWorkedAt: now }, ...prevJobs].slice(0, 5);
+      setRecentJobs(next);
+      await AsyncStorage.setItem(RECENT_JOBS_KEY, JSON.stringify(next));
+    }
+
+    const label = isGeneric ? item : (item.jobName || item.workOrderName);
+    showSwitchBanner(`Switched to ${label}`);
+  };
 
   // ── Setup modal ───────────────────────────────────────────────
   const handleSaveSetup = async () => {
@@ -265,10 +347,18 @@ export default function HomeScreen({ navigation, route }) {
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="light-content" backgroundColor={C.bg} />
 
+      {/* Switch banner */}
+      {!!switchBanner && (
+        <View style={styles.switchBanner}>
+          <Ionicons name="checkmark-circle" size={14} color={C.success} />
+          <Text style={styles.switchBannerText}>{switchBanner}</Text>
+        </View>
+      )}
+
       {/* Header */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.appTitle}>Sawdust Crew</Text>
+          <InlineIQLogo size="header" />
           {userName ? (
             <View style={styles.userRow}>
               <Text style={styles.userName}>{userName}</Text>
@@ -365,7 +455,7 @@ export default function HomeScreen({ navigation, route }) {
         {/* Quick actions */}
         <View style={styles.quickGrid}>
           <TouchableOpacity style={styles.quickCard} onPress={() => navigation.navigate('Needs', { userName, userDept })} activeOpacity={0.7}>
-            <Ionicons name="cube-outline" size={22} color="#f59e0b" />
+            <Ionicons name="cube-outline" size={22} color="#00C5CC" />
             <Text style={styles.quickLabel}>Log Need</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.quickCard} onPress={() => navigation.navigate('Damage', { userName, userDept })} activeOpacity={0.7}>
@@ -379,7 +469,7 @@ export default function HomeScreen({ navigation, route }) {
         </View>
       </ScrollView>
 
-      {/* Scan Part — primary action */}
+      {/* Bottom bar */}
       <View style={styles.bottomBar}>
         <TouchableOpacity
           style={styles.scanBtn}
@@ -389,6 +479,17 @@ export default function HomeScreen({ navigation, route }) {
           <Ionicons name="scan-outline" size={24} color="#000" style={{ marginRight: 10 }} />
           <Text style={styles.scanBtnText}>Scan New Part</Text>
         </TouchableOpacity>
+
+        {/* Quick Switch */}
+        <TouchableOpacity
+          style={styles.switchBtn}
+          onPress={() => setSwitchVisible(true)}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="swap-horizontal-outline" size={16} color={C.accent} style={{ marginRight: 6 }} />
+          <Text style={styles.switchBtnText}>Quick Switch</Text>
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={[styles.endDayBtn, endingDay && { opacity: 0.5 }]}
           onPress={handleEndDay}
@@ -418,7 +519,7 @@ export default function HomeScreen({ navigation, route }) {
 
             <Text style={styles.fieldLabel}>DEPARTMENT</Text>
             <FlatList
-              data={DEPARTMENTS} keyExtractor={d => d} scrollEnabled={false}
+              data={departments} keyExtractor={d => d} scrollEnabled={false}
               renderItem={({ item }) => {
                 const dc  = DEPT_COLORS[item] ?? { bg: '#1f1f1f', text: '#888' };
                 const sel = draftDept === item;
@@ -468,6 +569,63 @@ export default function HomeScreen({ navigation, route }) {
           </View>
         </View>
       </Modal>
+
+      {/* Quick Switch bottom sheet */}
+      <Modal visible={switchVisible} animationType="slide" transparent onRequestClose={() => setSwitchVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalBox, { maxHeight: '80%' }]}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.modalTitle}>Quick Switch</Text>
+
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              {recentJobs.length > 0 && (
+                <>
+                  <Text style={styles.fieldLabel}>RECENT JOBS</Text>
+                  {recentJobs.map((job, i) => (
+                    <TouchableOpacity
+                      key={i}
+                      style={styles.switchRow}
+                      onPress={() => handleQuickSwitch(job)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.switchRowIcon}>
+                        <Ionicons name="time-outline" size={16} color={C.accent} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.switchRowName}>{job.jobName || job.workOrderName}</Text>
+                        {job.workOrderName && job.jobName && (
+                          <Text style={styles.switchRowSub}>{job.workOrderName}</Text>
+                        )}
+                      </View>
+                      {job.lastWorkedAt && (
+                        <Text style={styles.switchRowTime}>{formatTimeSince(job.lastWorkedAt)}</Text>
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </>
+              )}
+
+              <Text style={styles.fieldLabel}>GENERIC ACTIVITIES</Text>
+              <View style={styles.activityGrid}>
+                {GENERIC_ACTIVITIES.map((act, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    style={styles.activityChip}
+                    onPress={() => handleQuickSwitch(act)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.activityChipText}>{act}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
+
+            <TouchableOpacity style={{ alignItems: 'center', paddingTop: 16 }} onPress={() => setSwitchVisible(false)}>
+              <Text style={{ color: C.muted, fontSize: 14 }}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -476,6 +634,14 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: C.bg },
   flex: { flex: 1 },
   scrollContent: { paddingBottom: 24 },
+
+  // Switch banner
+  switchBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#062022', paddingVertical: 8, paddingHorizontal: 16,
+    borderBottomWidth: 1, borderBottomColor: '#0E4F52',
+  },
+  switchBannerText: { color: C.success, fontSize: 12, fontWeight: '600', flex: 1 },
 
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
@@ -494,12 +660,11 @@ const styles = StyleSheet.create({
 
   offlineBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 7,
-    backgroundColor: '#2e1a1a', paddingVertical: 8, paddingHorizontal: 16,
-    borderBottomWidth: 1, borderBottomColor: '#7f1d1d',
+    backgroundColor: '#1f0a0a', paddingVertical: 8, paddingHorizontal: 16,
+    borderBottomWidth: 1, borderBottomColor: '#450a0a',
   },
   offlineBannerText: { color: '#fca5a5', fontSize: 12, fontWeight: '500' },
 
-  // Task card
   taskCard: {
     marginHorizontal: 16, marginTop: 16,
     backgroundColor: C.surface, borderRadius: 16,
@@ -515,18 +680,16 @@ const styles = StyleSheet.create({
   taskElapsed: { fontSize: 14, color: C.accent, fontWeight: '700', fontVariant: ['tabular-nums'] },
   taskEmpty:   { fontSize: 14, color: C.muted, fontStyle: 'italic' },
 
-  // Alerts
   alertBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginHorizontal: 16, marginTop: 12,
-    backgroundColor: '#1a1200', borderRadius: 10,
+    backgroundColor: '#062022', borderRadius: 10,
     paddingVertical: 10, paddingHorizontal: 14,
-    borderWidth: 1, borderColor: '#3d2e00',
+    borderWidth: 1, borderColor: '#0E4F52',
   },
   alertDot:  { width: 7, height: 7, borderRadius: 4, backgroundColor: C.accent },
   alertText: { color: C.accent, fontSize: 13, fontWeight: '600' },
 
-  // Messages
   notifSection: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
   notifLabel: { fontSize: 10, fontWeight: '700', color: C.muted, letterSpacing: 0.9, textTransform: 'uppercase', marginBottom: 8 },
   notifCard: {
@@ -544,10 +707,7 @@ const styles = StyleSheet.create({
   notifTime:   { fontSize: 11, color: C.muted, flexShrink: 0 },
   notifPreview:{ fontSize: 12, color: C.muted },
 
-  // Quick grid
-  quickGrid: {
-    flexDirection: 'row', paddingHorizontal: 16, paddingTop: 12, gap: 10,
-  },
+  quickGrid: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 12, gap: 10 },
   quickCard: {
     flex: 1, backgroundColor: C.surface, borderRadius: 14,
     borderWidth: 1, borderColor: '#222',
@@ -555,14 +715,19 @@ const styles = StyleSheet.create({
   },
   quickLabel: { fontSize: 11, fontWeight: '700', color: C.muted, textAlign: 'center' },
 
-  // Bottom bar
-  bottomBar: { paddingHorizontal: 16, paddingBottom: 16, paddingTop: 8, gap: 10 },
+  bottomBar: { paddingHorizontal: 16, paddingBottom: 16, paddingTop: 8, gap: 8 },
   scanBtn: {
     flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
     backgroundColor: C.accent, borderRadius: 16, paddingVertical: 18,
-    shadowColor: C.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    shadowColor: '#00C5CC', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   scanBtnText: { color: '#000', fontSize: 18, fontWeight: '800' },
+  switchBtn: {
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
+    borderRadius: 14, paddingVertical: 12,
+    backgroundColor: C.accent + '18', borderWidth: 1, borderColor: C.accent + '44',
+  },
+  switchBtnText: { color: C.accent, fontSize: 14, fontWeight: '700' },
   endDayBtn: {
     alignItems: 'center', paddingVertical: 12,
     borderRadius: 14, backgroundColor: C.surface,
@@ -570,18 +735,17 @@ const styles = StyleSheet.create({
   },
   endDayText: { color: C.muted, fontSize: 14, fontWeight: '600' },
 
-  // Day done
   dayDoneWrap:  { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 8 },
   dayDoneEmoji: { fontSize: 48 },
   dayDoneTitle: { fontSize: 26, fontWeight: '800', color: C.success },
   dayDoneSub:   { fontSize: 16, color: C.muted },
 
-  // Modals
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
   modalBox: {
     backgroundColor: C.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 24, paddingTop: 24, paddingBottom: 40,
+    paddingHorizontal: 24, paddingTop: 20, paddingBottom: 40,
   },
+  sheetHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: C.border, alignSelf: 'center', marginBottom: 16 },
   modalTitle: { fontSize: 22, fontWeight: '800', color: C.text, marginBottom: 4, letterSpacing: -0.3 },
   fieldLabel: { fontSize: 11, color: C.muted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.9, marginBottom: 8, marginTop: 18 },
   input: {
@@ -601,6 +765,27 @@ const styles = StyleSheet.create({
     marginTop: 14, backgroundColor: C.input, borderRadius: 12,
     borderWidth: 1.5, borderColor: C.border, paddingVertical: 15, alignItems: 'center',
   },
-  settingsBtnDanger: { borderColor: '#7f1d1d', backgroundColor: '#1a0a0a' },
+  settingsBtnDanger: { borderColor: '#7f1d1d', backgroundColor: '#1a0a0a', borderWidth: 1.5 },
   settingsBtnText: { color: C.text, fontSize: 16, fontWeight: '600' },
+
+  // Quick Switch sheet
+  switchRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: C.input, borderRadius: 12, borderWidth: 1, borderColor: C.border,
+    paddingHorizontal: 14, paddingVertical: 12, marginBottom: 8,
+  },
+  switchRowIcon: {
+    width: 32, height: 32, borderRadius: 8,
+    backgroundColor: C.accent + '18', justifyContent: 'center', alignItems: 'center',
+  },
+  switchRowName: { fontSize: 14, fontWeight: '700', color: C.text },
+  switchRowSub:  { fontSize: 11, color: C.muted, marginTop: 1 },
+  switchRowTime: { fontSize: 11, color: C.muted, flexShrink: 0 },
+
+  activityGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
+  activityChip: {
+    paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12,
+    backgroundColor: C.input, borderWidth: 1.5, borderColor: C.border,
+  },
+  activityChipText: { fontSize: 13, fontWeight: '600', color: C.muted },
 });

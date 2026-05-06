@@ -16,13 +16,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 
 const C = {
-  bg:      '#0d0d0d',
-  surface: '#141414',
-  input:   '#1a1a1a',
-  border:  '#2a2a2a',
-  text:    '#e5e5e5',
-  muted:   '#555555',
-  accent:  '#f59e0b',
+  bg:      '#07090F',
+  surface: '#0D1117',
+  input:   '#111620',
+  border:  '#1A2535',
+  text:    '#FFFFFF',
+  muted:   '#2D8A94',
+  accent:  '#00C5CC',
   blue:    '#3b82f6',
   blueBg:  '#0d1f3c',
 };

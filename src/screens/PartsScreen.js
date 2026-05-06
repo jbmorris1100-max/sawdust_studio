@@ -13,18 +13,19 @@ import {
   markPartScanned, applyWorkOrderTag, getWorkOrdersByProjectNumber,
 } from '../lib/innergy';
 import { setSyncStatus } from '../lib/syncQueue';
+import { getTenantId } from '../lib/tenant';
 
-const CURRENT_TASK_KEY = '@sawdust_current_task';
+const CURRENT_TASK_KEY = '@inline_current_task';
 const JOB_NUM_RE       = /^P-\d{2}-\d{4}$/i;
 
 const C = {
-  bg:            '#0d0d0d',
-  surface:       '#141414',
-  input:         '#1a1a1a',
-  border:        '#2a2a2a',
-  text:          '#e5e5e5',
-  muted:         '#555555',
-  accent:        '#f59e0b',
+  bg:            '#07090F',
+  surface:       '#0D1117',
+  input:         '#111620',
+  border:        '#1A2535',
+  text:          '#FFFFFF',
+  muted:         '#2D8A94',
+  accent:        '#00C5CC',
   success:       '#22c55e',
   successBg:     '#0a1f10',
   successBorder: '#14532d',
@@ -82,7 +83,7 @@ export default function PartsScreen({ route }) {
   const confirmTimer = useRef(null);
 
   useEffect(() => {
-    AsyncStorage.multiGet(['@sawdust_user_name', '@sawdust_user_dept']).then(pairs => {
+    AsyncStorage.multiGet(['@inline_user_name', '@inline_user_dept']).then(pairs => {
       const n = pairs[0][1]; const d = pairs[1][1];
       if (n && !userName) setUserName(n);
       if (d && !userDept) setUserDept(d);
@@ -180,6 +181,7 @@ export default function PartsScreen({ route }) {
       }
 
       // 6 – Always save to Supabase
+      const tenantId = await getTenantId();
       await supabase.from('part_scans').insert({
         part_num:   value.trim(),
         dept:       userDept || '',
@@ -187,6 +189,7 @@ export default function PartsScreen({ route }) {
         scanned_by: userName      || 'Unknown',
         status:     'In Production',
         notes:      ctx?.workOrderName || null,
+        ...(tenantId && { tenant_id: tenantId }),
       }).catch(() => {});
 
       await setSyncStatus(innergyOk);

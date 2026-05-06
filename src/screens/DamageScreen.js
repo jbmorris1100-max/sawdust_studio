@@ -11,16 +11,17 @@ import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { createImpediment, applyWorkOrderTag } from '../lib/innergy';
 import { getSyncStatus, setSyncStatus } from '../lib/syncQueue';
+import { getTenantId } from '../lib/tenant';
 
 const C = {
-  bg:      '#0d0d0d',
-  surface: '#141414',
-  input:   '#1a1a1a',
-  border:  '#2a2a2a',
-  text:    '#e5e5e5',
-  muted:   '#555555',
-  accent:  '#f59e0b',
-  danger:  '#ef4444',
+  bg:      '#07090F',
+  surface: '#0D1117',
+  input:   '#111620',
+  border:  '#1A2535',
+  text:    '#FFFFFF',
+  muted:   '#2D8A94',
+  accent:  '#00C5CC',
+  danger:  '#FF4444',
   success: '#22c55e',
   status: {
     open:     { bg: '#1f0a0a', text: '#ef4444', border: '#450a0a' },
@@ -33,7 +34,7 @@ const STATUSES = ['open', 'reviewed', 'resolved'];
 const formatDate = (iso) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
 
 const StatusPill = ({ status }) => {
-  const st = C.status[status] ?? { bg: '#1a1a1a', text: '#555', border: '#2a2a2a' };
+  const st = C.status[status] ?? { bg: '#111620', text: '#555', border: '#1A2535' };
   return (
     <View style={[styles.pill, { backgroundColor: st.bg, borderColor: st.border }]}>
       <Text style={[styles.pillText, { color: st.text }]}>{status.toUpperCase()}</Text>
@@ -88,7 +89,7 @@ export default function DamageScreen({ route }) {
   const [syncOk,       setSyncOk]       = useState(true);
 
   useFocusEffect(useCallback(() => {
-    AsyncStorage.multiGet(['@sawdust_user_name', '@sawdust_user_dept']).then(pairs => {
+    AsyncStorage.multiGet(['@inline_user_name', '@inline_user_dept']).then(pairs => {
       const n = pairs[0][1]; const d = pairs[1][1];
       if (n && !userName) setUserName(n);
       if (d && !userDept) setUserDept(d);
@@ -98,7 +99,7 @@ export default function DamageScreen({ route }) {
   }, [userDept]));
 
   const fetchData = useCallback(async () => {
-    const dept = userDept || await AsyncStorage.getItem('@sawdust_user_dept');
+    const dept = userDept || await AsyncStorage.getItem('@inline_user_dept');
     if (!dept) { setLoading(false); return; }
     setLoading(true);
     const { data } = await supabase
@@ -139,7 +140,7 @@ export default function DamageScreen({ route }) {
   const handleSubmit = async () => {
     if (!dWhat.trim() || saving) return;
     setSaving(true);
-    const dept    = userDept || await AsyncStorage.getItem('@sawdust_user_dept') || '';
+    const dept    = userDept || await AsyncStorage.getItem('@inline_user_dept') || '';
     const photoUri = dPhoto;
     const tempId  = `opt-${Date.now()}`;
     const text    = dWhat.trim();
@@ -166,15 +167,17 @@ export default function DamageScreen({ route }) {
     }
 
     try {
+      const tenantId = await getTenantId();
       const { data, error } = await supabase.from('damage_reports').insert({
         part_name: text, dept, notes: null, photo_url: photoUrl, status: 'open',
+        ...(tenantId && { tenant_id: tenantId }),
       }).select().single();
       if (error) throw error;
       setDamage(prev => prev.map(d => d.id === tempId ? data : d));
 
       // Sync to Innergy — best-effort
       let innergyOk = true;
-      const raw  = await AsyncStorage.getItem('@sawdust_current_task');
+      const raw  = await AsyncStorage.getItem('@inline_current_task');
       const task = raw ? JSON.parse(raw) : null;
       if (task?.workOrderId) {
         const [impRes, tagRes] = await Promise.all([
@@ -330,7 +333,7 @@ const styles = StyleSheet.create({
   actionBtn:     { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, backgroundColor: C.input, borderWidth: 1, borderColor: C.border },
   actionBtnText: { fontSize: 12, color: C.muted, fontWeight: '600' },
 
-  photoThumb: { width: '100%', height: 160, borderRadius: 10, marginTop: 10, backgroundColor: '#1a1a1a' },
+  photoThumb: { width: '100%', height: 160, borderRadius: 10, marginTop: 10, backgroundColor: '#111620' },
 
   fab: {
     position: 'absolute', bottom: 28, right: 20,

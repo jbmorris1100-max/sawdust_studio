@@ -8,16 +8,16 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 
-const CACHE_KEY = '@sawdust_sops_v1';
+const CACHE_KEY = '@inline_sops_v1';
 
 const C = {
-  bg:      '#0d0d0d',
-  surface: '#141414',
-  input:   '#1a1a1a',
-  border:  '#2a2a2a',
-  text:    '#e5e5e5',
-  muted:   '#555555',
-  active:  '#f59e0b',
+  bg:      '#07090F',
+  surface: '#0D1117',
+  input:   '#111620',
+  border:  '#1A2535',
+  text:    '#FFFFFF',
+  muted:   '#2D8A94',
+  active:  '#00C5CC',
 };
 
 const DEPT_COLORS = {
@@ -346,7 +346,7 @@ const s = StyleSheet.create({
   filterPill:   {
     paddingHorizontal: 14, paddingVertical: 5,
     borderRadius: 99, borderWidth: 1,
-    borderColor: '#2a2a2a', backgroundColor: 'transparent',
+    borderColor: '#1A2535', backgroundColor: 'transparent',
   },
   filterPillActive: {
     backgroundColor: '#1c0e00', borderColor: C.active,

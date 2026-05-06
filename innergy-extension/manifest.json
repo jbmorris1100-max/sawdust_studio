@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Sawdust Studio - Innergy Agent",
+  "name": "Inline - Innergy Agent",
   "version": "1.0",
   "description": "Watches Innergy sessions and logs workflow data for AI analysis",
   "permissions": ["activeTab", "storage", "scripting", "tabs", "alarms"],

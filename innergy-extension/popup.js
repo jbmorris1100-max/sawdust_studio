@@ -1,4 +1,4 @@
-// ── Sawdust Studio Innergy Agent — popup.js ───────────────────
+// ── Inline Innergy Agent — popup.js ────────────────────────────
 
 const statusDot  = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');

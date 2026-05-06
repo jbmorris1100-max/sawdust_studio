@@ -12,17 +12,18 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import InlineIQLogo from '../components/InlineIQLogo';
 
-const STORAGE_KEY_NAME = '@sawdust_user_name';
+const STORAGE_KEY_NAME = '@inline_user_name';
 
 const C = {
-  bg:      '#0d0d0d',
-  surface: '#141414',
-  input:   '#1a1a1a',
-  border:  '#2a2a2a',
-  text:    '#e5e5e5',
-  muted:   '#555555',
-  accent:  '#f59e0b',
+  bg:      '#07090F',
+  surface: '#0D1117',
+  input:   '#111620',
+  border:  '#1A2535',
+  text:    '#FFFFFF',
+  muted:   '#2D8A94',
+  accent:  '#00C5CC',
 };
 
 const BULLETS = [
@@ -50,7 +51,7 @@ export default function OnboardingScreen({ onComplete }) {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View style={styles.inner}>
-          <Text style={styles.brand}>SAWDUST STUDIO</Text>
+          <InlineIQLogo size="small" />
           <Text style={styles.heading}>Welcome to{'\n'}the crew.</Text>
           <Text style={styles.sub}>Let's get you set up quick.</Text>
 

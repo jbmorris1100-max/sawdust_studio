@@ -10,18 +10,19 @@ import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { createImpediment, applyWorkOrderTag } from '../lib/innergy';
 import { getSyncStatus, setSyncStatus } from '../lib/syncQueue';
+import { getTenantId } from '../lib/tenant';
 
 const C = {
-  bg:      '#0d0d0d',
-  surface: '#141414',
-  input:   '#1a1a1a',
-  border:  '#2a2a2a',
-  text:    '#e5e5e5',
-  muted:   '#555555',
-  accent:  '#f59e0b',
+  bg:      '#07090F',
+  surface: '#0D1117',
+  input:   '#111620',
+  border:  '#1A2535',
+  text:    '#FFFFFF',
+  muted:   '#2D8A94',
+  accent:  '#00C5CC',
   success: '#22c55e',
   status: {
-    pending:   { bg: '#1a1000', text: '#f59e0b', border: '#3d2800' },
+    pending:   { bg: '#062022', text: '#00C5CC', border: '#0E4F52' },
     ordered:   { bg: '#0d1f3c', text: '#3b82f6', border: '#1e3a5f' },
     received:  { bg: '#0a1f10', text: '#22c55e', border: '#14532d' },
     cancelled: { bg: '#1a1a1a', text: '#555555', border: '#2a2a2a' },
@@ -72,7 +73,7 @@ export default function InventoryScreen({ route }) {
   const [syncOk,       setSyncOk]       = useState(true);
 
   useFocusEffect(useCallback(() => {
-    AsyncStorage.multiGet(['@sawdust_user_name', '@sawdust_user_dept']).then(pairs => {
+    AsyncStorage.multiGet(['@inline_user_name', '@inline_user_dept']).then(pairs => {
       const n = pairs[0][1]; const d = pairs[1][1];
       if (n && !userName) setUserName(n);
       if (d && !userDept) setUserDept(d);
@@ -82,7 +83,7 @@ export default function InventoryScreen({ route }) {
   }, [userDept]));
 
   const fetchData = useCallback(async () => {
-    const dept = userDept || await AsyncStorage.getItem('@sawdust_user_dept');
+    const dept = userDept || await AsyncStorage.getItem('@inline_user_dept');
     if (!dept) { setLoading(false); return; }
     setLoading(true);
     const { data } = await supabase
@@ -105,7 +106,7 @@ export default function InventoryScreen({ route }) {
   const handleSubmit = async () => {
     if (!nItem.trim() || saving) return;
     setSaving(true);
-    const dept = userDept || await AsyncStorage.getItem('@sawdust_user_dept') || '';
+    const dept = userDept || await AsyncStorage.getItem('@inline_user_dept') || '';
     const tempId = `opt-${Date.now()}`;
     const optimistic = {
       id: tempId, item: nItem.trim(), dept, qty: 1,
@@ -117,15 +118,16 @@ export default function InventoryScreen({ route }) {
     setNItem('');
 
     try {
+      const tenantId = await getTenantId();
       const { data, error } = await supabase.from('inventory_needs')
-        .insert({ item: itemText, dept, qty: 1, status: 'pending' })
+        .insert({ item: itemText, dept, qty: 1, status: 'pending', ...(tenantId && { tenant_id: tenantId }) })
         .select().single();
       if (error) throw error;
       setNeeds(prev => prev.map(n => n.id === tempId ? data : n));
 
       // Sync to Innergy — best-effort
       let innergyOk = true;
-      const raw = await AsyncStorage.getItem('@sawdust_current_task');
+      const raw = await AsyncStorage.getItem('@inline_current_task');
       const task = raw ? JSON.parse(raw) : null;
       if (task?.workOrderId) {
         const [impRes, tagRes] = await Promise.all([
@@ -237,7 +239,7 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 20, fontWeight: '800', color: C.text, letterSpacing: -0.3 },
   headerSub:   { fontSize: 13, color: C.muted },
   headerRight: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerBadge: { backgroundColor: '#1a1000', borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: '#3d2800' },
+  headerBadge: { backgroundColor: '#062022', borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: '#0E4F52' },
   headerBadgeText: { fontSize: 11, fontWeight: '700', color: C.accent },
   syncDot:   { width: 8, height: 8, borderRadius: 4 },
   syncGreen: { backgroundColor: C.success },

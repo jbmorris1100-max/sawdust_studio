@@ -13,8 +13,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { supabase } from './src/lib/supabase';
 import { registerForPushNotifications } from './src/lib/notifications';
+import InlineIQLogo from './src/components/InlineIQLogo';
 import { RoleContext }    from './src/lib/RoleContext';
 import { EndDayContext }  from './src/lib/EndDayContext';
+import { getTenant, isTrialExpired } from './src/lib/tenant';
 import HomeScreen         from './src/screens/HomeScreen';
 import PartsScreen        from './src/screens/PartsScreen';
 import InventoryScreen    from './src/screens/InventoryScreen';
@@ -24,17 +26,19 @@ import SOPsScreen         from './src/screens/SOPsScreen';
 import PlansScreen        from './src/screens/PlansScreen';
 import SupervisorApp      from './src/screens/SupervisorApp';
 import OnboardingScreen   from './src/screens/OnboardingScreen';
+import OnboardingFlow     from './src/screens/OnboardingFlow';
 import CraftsmanHomeScreen from './src/screens/CraftsmanHomeScreen';
+import TrialExpiredScreen, { TrialExpiredBanner } from './src/screens/TrialExpiredScreen';
 
 const Tab           = createBottomTabNavigator();
 const CraftsmanTab  = createBottomTabNavigator();
 
 const STORAGE = {
-  NAME:      '@sawdust_user_name',
-  DEPT:      '@sawdust_user_dept',
-  ROLE:      '@sawdust_user_role',
-  VERSION:   '@sawdust_app_version',
-  DEVICE_ID: '@sawdust_device_id',
+  NAME:      '@inline_user_name',
+  DEPT:      '@inline_user_dept',
+  ROLE:      '@inline_user_role',
+  VERSION:   '@inline_app_version',
+  DEVICE_ID: '@inline_device_id',
 };
 
 async function getDeviceId() {
@@ -48,16 +52,16 @@ async function getDeviceId() {
 
 // ── Colors ────────────────────────────────────────────────────
 const C = {
-  bg:       '#0d0d0d',
-  surface:  '#141414',
-  input:    '#1a1a1a',
-  border:   '#2a2a2a',
-  text:     '#e5e5e5',
-  muted:    '#555555',
-  tabBar:   '#111111',
-  active:   '#f59e0b',
-  inactive: '#444444',
-  badge:    '#ef4444',
+  bg:       '#07090F',
+  surface:  '#0D1117',
+  input:    '#111620',
+  border:   '#1A2535',
+  text:     '#FFFFFF',
+  muted:    '#2D8A94',
+  tabBar:   '#07090F',
+  active:   '#00C5CC',
+  inactive: '#2D8A94',
+  badge:    '#FF4444',
   blue:     '#3b82f6',
   pink:     '#f9a8d4',
 };
@@ -73,7 +77,7 @@ function TabButton({ children, onPress, accessibilityState, style }) {
 }
 
 // ── Role Picker ───────────────────────────────────────────────
-function RolePicker({ onSelect }) {
+function RolePicker({ onSelect, tenant }) {
   const [pickingSupervisor, setPickingSupervisor] = useState(false);
   const [name, setName] = useState('');
 
@@ -81,7 +85,7 @@ function RolePicker({ onSelect }) {
     <SafeAreaView style={rp.safe}>
       <StatusBar barStyle="light-content" backgroundColor={C.bg} />
       <KeyboardAvoidingView style={rp.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-        <Text style={rp.appName}>Sawdust Crew</Text>
+        <InlineIQLogo size="medium" />
         <Text style={rp.heading}>Who are you?</Text>
 
         {!pickingSupervisor ? (
@@ -315,11 +319,14 @@ function SupervisorNavigator({ userName }) {
 
 // ── App ───────────────────────────────────────────────────────
 export default function App() {
-  const [role,           setRole]           = useState(null);
-  const [userName,       setUserName]       = useState('');
-  const [userDept,       setUserDept]       = useState('');
-  const [unreadCount,    setUnreadCount]    = useState(0);
-  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [role,              setRole]              = useState(null);
+  const [userName,          setUserName]          = useState('');
+  const [userDept,          setUserDept]          = useState('');
+  const [unreadCount,       setUnreadCount]       = useState(0);
+  const [showOnboarding,    setShowOnboarding]    = useState(false);
+  const [showFullOnboarding, setShowFullOnboarding] = useState(false);
+  const [tenant,            setTenant]            = useState(null);
+  const [trialExpired,      setTrialExpired]      = useState(false);
   const channelRef = useRef(null);
 
   useEffect(() => {
@@ -332,6 +339,20 @@ export default function App() {
             .update({ is_active: false, logged_out_at: new Date().toISOString() })
             .eq('is_active', true).lt('logged_in_at', cutoff);
         } catch (_) {}
+
+        // Check for tenant config
+        const tenantData = await getTenant();
+        if (!tenantData) {
+          // No tenant — show full onboarding flow
+          setShowFullOnboarding(true);
+          setRole('');
+          return;
+        }
+        setTenant(tenantData);
+
+        // Check trial expiry
+        const expired = await isTrialExpired();
+        setTrialExpired(expired);
 
         const [name, dept, storedRole, storedVersion] = await Promise.all([
           AsyncStorage.getItem(STORAGE.NAME),
@@ -413,7 +434,6 @@ export default function App() {
       if (!storedName) {
         setRole('crew'); setShowOnboarding(true); return;
       }
-      // Restore cached name/dept to App state
       const storedDept = await AsyncStorage.getItem(STORAGE.DEPT);
       if (storedName) setUserName(storedName);
       if (storedDept) setUserDept(storedDept);
@@ -446,13 +466,12 @@ export default function App() {
   const handleEndDayReset = useCallback(async () => {
     await Promise.all([
       AsyncStorage.removeItem(STORAGE.ROLE),
-      AsyncStorage.removeItem('@sawdust_current_task'),
-      AsyncStorage.removeItem('@sawdust_shift_start'),
+      AsyncStorage.removeItem('@inline_current_task'),
+      AsyncStorage.removeItem('@inline_shift_start'),
     ]);
     setRole(''); setUserName(''); setUserDept('');
   }, []);
 
-  // Stable refs so context consumers always get the latest function
   const resetRoleRef  = useRef(null); resetRoleRef.current  = handleResetRole;
   const endDayRef     = useRef(null); endDayRef.current     = handleEndDayReset;
   const stableReset   = useCallback(() => resetRoleRef.current?.(),  []);
@@ -460,27 +479,43 @@ export default function App() {
 
   // Global supervisor sign-out hook
   useEffect(() => {
-    if (role !== 'supervisor') { global.sawdustSignOut = null; return; }
-    global.sawdustSignOut = async () => {
+    if (role !== 'supervisor') { global.inlineSignOut = null; return; }
+    global.inlineSignOut = async () => {
       try {
-        await AsyncStorage.multiRemove(['@sawdust_user_name','@sawdust_user_dept','@sawdust_user_role','@sawdust_current_task']);
+        await AsyncStorage.multiRemove(['@inline_user_name','@inline_user_dept','@inline_user_role','@inline_current_task']);
         await supabase.from('supervisor_sessions').update({ is_active: false, logged_out_at: new Date().toISOString() }).eq('is_active', true);
       } catch (_) {}
       setRole(''); setUserName(''); setUserDept('');
     };
-    return () => { global.sawdustSignOut = null; };
+    return () => { global.inlineSignOut = null; };
   }, [role]);
 
   const handleOnboardingComplete = useCallback((name) => {
     setUserName(name); setShowOnboarding(false);
   }, []);
 
+  const handleFullOnboardingComplete = useCallback((tenantData, name, userRole) => {
+    setTenant(tenantData);
+    setShowFullOnboarding(false);
+    setUserName(name);
+    setRole('');
+  }, []);
+
   if (role === null) return null;
+
+  // Show full onboarding for new installs
+  if (showFullOnboarding) {
+    return (
+      <SafeAreaProvider>
+        <OnboardingFlow onComplete={handleFullOnboardingComplete} />
+      </SafeAreaProvider>
+    );
+  }
 
   if (role === '') {
     return (
       <SafeAreaProvider>
-        <RolePicker onSelect={handleRoleSelect} />
+        <RolePicker onSelect={handleRoleSelect} tenant={tenant} />
       </SafeAreaProvider>
     );
   }
@@ -493,12 +528,23 @@ export default function App() {
     );
   }
 
+  // Trial gate for supervisors (full screen)
+  if (role === 'supervisor' && trialExpired) {
+    return (
+      <SafeAreaProvider>
+        <TrialExpiredScreen shopName={tenant?.shop_name} />
+      </SafeAreaProvider>
+    );
+  }
+
   const isCraftsman = userDept === 'Craftsman';
 
   return (
     <SafeAreaProvider>
       <RoleContext.Provider value={stableReset}>
         <EndDayContext.Provider value={stableEndDay}>
+          {/* Trial expired banner for crew */}
+          {trialExpired && role === 'crew' && <TrialExpiredBanner />}
           <NavigationContainer>
             {role === 'supervisor' ? (
               <SupervisorNavigator userName={userName} />
@@ -532,17 +578,16 @@ const styles = StyleSheet.create({
   },
   tabAccent: {
     position: 'absolute', top: 0, left: 10, right: 10,
-    height: 2.5, backgroundColor: C.active,
+    height: 2.5, backgroundColor: '#00C5CC',
     borderBottomLeftRadius: 2, borderBottomRightRadius: 2,
   },
-  nativeBadge: { backgroundColor: C.badge, fontSize: 10, fontWeight: '700' },
+  nativeBadge: { backgroundColor: '#FF4444', fontSize: 10, fontWeight: '700' },
 });
 
 const rp = StyleSheet.create({
   safe:      { flex: 1, backgroundColor: C.bg },
-  container: { flex: 1, paddingHorizontal: 24, justifyContent: 'center' },
-  appName:   { fontSize: 13, fontWeight: '700', color: C.active, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 12 },
-  heading:   { fontSize: 28, fontWeight: '800', color: C.text, letterSpacing: -0.5, marginBottom: 32 },
+  container: { flex: 1, paddingHorizontal: 24, justifyContent: 'center', alignItems: 'stretch' },
+  heading:   { fontSize: 28, fontWeight: '800', color: C.text, letterSpacing: -0.5, marginBottom: 32, marginTop: 24 },
   roleCard:  { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: C.surface, borderRadius: 18, borderWidth: 1, borderColor: '#222', padding: 18, marginBottom: 12 },
   roleCardSup: { borderColor: C.blue + '30' },
   roleIcon:  { width: 52, height: 52, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },

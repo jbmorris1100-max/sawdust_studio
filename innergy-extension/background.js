@@ -1,4 +1,4 @@
-// ── Sawdust Studio Innergy Agent — background.js ──────────────
+// ── Inline Innergy Agent — background.js ───────────────────────
 // Service worker: batches events and sends to Supabase.
 
 const SUPABASE_URL      = 'https://suwadpgtqifwufmlwhpk.supabase.co';

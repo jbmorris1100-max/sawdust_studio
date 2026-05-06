@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sawdust Studio — Shop Supervisor</title>
+<title>InlineIQ — Shop Supervisor</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -14,7 +14,7 @@ input,select,textarea{
   background:#1a1a1a;border:1px solid #2a2a2a;border-radius:6px;
   color:#e5e5e5;padding:8px 12px;width:100%;outline:none;
 }
-input:focus,select:focus,textarea:focus{border-color:#f59e0b;box-shadow:0 0 0 2px rgba(245,158,11,.12)}
+input:focus,select:focus,textarea:focus{border-color:#00C5CC;box-shadow:0 0 0 2px rgba(0,197,204,.12)}
 select option{background:#1a1a1a;color:#e5e5e5}
 textarea{resize:vertical}
 button{
@@ -24,8 +24,8 @@ button{
   transition:background .1s,color .1s,border-color .1s;
 }
 button:hover{background:#1a1a1a;color:#e5e5e5}
-.bp{background:#f59e0b;color:#1a0900;border-color:#f59e0b;font-weight:500}
-.bp:hover{background:#d97706;border-color:#d97706;color:#0d0500}
+.bp{background:#00C5CC;color:#071F20;border-color:#00C5CC;font-weight:500}
+.bp:hover{background:#0AAFB8;border-color:#0AAFB8;color:#071F20}
 .bd{color:#f87171;border-color:#7f1d1d}.bd:hover{background:#2e1a1a}
 .bg{color:#4ade80;border-color:#14532d}.bg:hover{background:#1a2e1a}
 .chk{
@@ -36,7 +36,7 @@ button:hover{background:#1a1a1a;color:#e5e5e5}
 .chk.on{background:#22c55e;border-color:#22c55e;color:#061206;font-weight:500}
 /* message bubbles */
 .bubble-in{background:#2a2a2a;border-radius:0 14px 14px 14px;padding:9px 14px;word-break:break-word;word-wrap:break-word;overflow-wrap:break-word}
-.bubble-out{background:#f59e0b;border-radius:14px 0 14px 14px;padding:9px 14px;word-break:break-word;word-wrap:break-word;overflow-wrap:break-word}
+.bubble-out{background:#00C5CC;border-radius:14px 0 14px 14px;padding:9px 14px;word-break:break-word;word-wrap:break-word;overflow-wrap:break-word}
 .toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#22c55e;color:#0a1f0a;border-radius:8px;padding:12px 22px;font-size:13px;font-weight:500;z-index:300;box-shadow:0 4px 24px rgba(0,0,0,.5);white-space:nowrap;pointer-events:none;font-family:'DM Mono','Courier New',monospace}
 </style>
 </head>
@@ -77,7 +77,7 @@ const CTYPES = ["Base cabinet","Upper cabinet","Tall cabinet","Island","Drawer b
 const STAGES = ["Production","Assembly","Finishing","Craftsman"];
 const UNITS      = ["sheets","pcs","lbs","ft","rolls","boxes","gallons"];
 const CREW_DEPTS = ["Production","Assembly","Finishing","Craftsman","Management"];
-const AM = "#f59e0b";
+const AM = "#00C5CC";
 const SM = {
   active:  { bar:"#3b82f6", bg:"#1e2a3a", txt:"#60a5fa" },
   passed:  { bar:"#22c55e", bg:"#1a2e1a", txt:"#4ade80" },
@@ -569,7 +569,7 @@ function App() {
   };
   const updQ = (id, q) => UI(inv.map(i => i.uid===id ? { ...i, qty:Number(q), updated:new Date().toISOString() } : i));
   const iStatus = i => i.qty===0 ? "critical" : i.qty<=i.threshold ? "low" : "ok";
-  const iColor  = s => s==="critical" ? "#ef4444" : s==="low" ? "#f59e0b" : "#22c55e";
+  const iColor  = s => s==="critical" ? "#ef4444" : s==="low" ? "#00C5CC" : "#22c55e";
 
   // ── CSV import ────────────────────────────────────────────────────────────
   const handleCSV = e => {
@@ -641,7 +641,7 @@ function App() {
     const tcTotal = Object.values(tcDeptHrs).reduce((a,b)=>a+b,0);
 
     const lines = [
-      "SAWDUST STUDIO — QC WEEKLY REPORT",
+      "Inline — QC WEEKLY REPORT",
       "Generated: " + fmtDT(new Date().toISOString()),
       "",
       "-- QC CHECKS (LAST 7 DAYS) --",
@@ -899,8 +899,8 @@ function App() {
     return h("button", { key:t.id, onClick:t.onClick, style:{
       fontSize:11, padding:"7px 14px",
       background:  active ? AM : "transparent",
-      color:       active ? "#1a0900" : t.id==="messages"&&unread>0 ? "#f59e0b" : "#666",
-      borderColor: active ? AM : t.id==="messages"&&unread>0 ? "#78350f" : "#1e1e1e",
+      color:       active ? "#071F20" : t.id==="messages"&&unread>0 ? "#00C5CC" : "#666",
+      borderColor: active ? AM : t.id==="messages"&&unread>0 ? "#0E4F52" : "#1e1e1e",
       fontWeight:  active ? 500 : 400,
     }}, t.label);
   };
@@ -950,7 +950,7 @@ function App() {
     // SUPERVISOR LOGIN MODAL
     !supervisorName && h("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:24}},
       h("div",{style:{background:"#141414",borderRadius:12,border:"1px solid #2a2a2a",padding:28,width:"100%",maxWidth:400}},
-        h("div",{style:{fontSize:10,color:AM,letterSpacing:".15em",marginBottom:8,fontWeight:500}}, "SAWDUST STUDIO"),
+        h("div",{style:{fontSize:10,color:AM,letterSpacing:".15em",marginBottom:8,fontWeight:500}}, "Inline"),
         h("div",{style:{fontSize:20,fontWeight:500,color:"#e5e5e5",marginBottom:4}}, "Supervisor Sign In"),
         h("div",{style:{fontSize:12,color:"#555",marginBottom:20}}, "One supervisor session at a time. Enter your name to continue."),
         h("input",{
@@ -974,10 +974,10 @@ function App() {
     // HEADER
     h("div", {style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.75rem",paddingBottom:"1.25rem",borderBottom:"1px solid #1a1a1a"}},
       h("div", null,
-        h("div", {style:{fontSize:10,color:AM,letterSpacing:".15em",marginBottom:4,fontWeight:500}}, "SAWDUST STUDIO"),
+        h("div", {style:{fontSize:10,color:AM,letterSpacing:".15em",marginBottom:4,fontWeight:500}}, "Inline"),
         h("div", {style:{display:"flex",alignItems:"center",gap:10}},
           h("div", {style:{fontSize:22,fontWeight:500,letterSpacing:"-.3px"}}, "shop supervisor"),
-          h("div", {style:{display:"flex",alignItems:"center",gap:4,fontSize:10,color:sbReady?"#22c55e":"#f59e0b"}},
+          h("div", {style:{display:"flex",alignItems:"center",gap:4,fontSize:10,color:sbReady?"#22c55e":"#00C5CC"}},
             h(StatusDot,{ok:sbReady}),
             sbReady ? "live" : "connecting…"
           ),
@@ -995,7 +995,7 @@ function App() {
       h("div", {style:{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10,marginBottom:"1.5rem"}},
         h(Stat, {label:"qc passes 7d",         val:sevenDayPasses,                               color:"#22c55e"}),
         h(Stat, {label:"flagged jobs",           val:jobs.filter(j=>j.status==="flagged").length,  color:"#ef4444"}),
-        h(Stat, {label:"pending inventory needs",val:miss.filter(m=>m.status==="pending").length,  color:"#f59e0b"}),
+        h(Stat, {label:"pending inventory needs",val:miss.filter(m=>m.status==="pending").length,  color:"#00C5CC"}),
         h(Stat, {label:"open damage reports",    val:damageRpts.filter(d=>d.status==="open").length,color:"#3b82f6"})
       ),
 
@@ -1066,7 +1066,7 @@ function App() {
           ),
           h("div",{style:{display:"flex",gap:8}},
             h("button",{onClick:()=>openDetail(job),style:{color:"#60a5fa",borderColor:"#1e3a5f"}}, "parts →"),
-            h("button",{onClick:()=>startCheck(job),style:{color:AM,borderColor:"#78350f"}},        "qc →"),
+            h("button",{onClick:()=>startCheck(job),style:{color:AM,borderColor:"#0E4F52"}},        "qc →"),
             h("button",{className:"bd",onClick:()=>UJ(jobs.filter(j=>j.uid!==job.uid)),style:{padding:"7px 10px"}}, "✕")
           )
         )
@@ -1136,7 +1136,7 @@ function App() {
         ["first-article","in-process"].map(t =>
           h("button",{key:t,onClick:()=>setQcType(t),style:{
             background:  qcType===t ? AM : "transparent",
-            color:       qcType===t ? "#1a0900" : "#555",
+            color:       qcType===t ? "#071F20" : "#555",
             borderColor: qcType===t ? AM : "#1e1e1e",
             fontWeight:  qcType===t ? 500 : 400,
           }}, t)
@@ -1188,7 +1188,7 @@ function App() {
       h("div", {style:{display:"grid",gridTemplateColumns:"repeat(6,minmax(0,1fr))",gap:8,marginBottom:"1.5rem"}},
         STAGES.map(s => {
           const n = miss.filter(m => m.dept===s && m.status==="pending").length;
-          const c = n>2 ? "#ef4444" : n>0 ? "#f59e0b" : "#222";
+          const c = n>2 ? "#ef4444" : n>0 ? "#00C5CC" : "#222";
           return h("div",{key:s,style:{background:"#141414",borderRadius:6,padding:"10px 12px",borderTop:`2px solid ${n>0?c:"#1a1a1a"}`}},
             h("div",{style:{fontSize:24,fontWeight:500,color:n>0?c:"#333"}}, String(n)),
             h("div",{style:{fontSize:10,color:"#444",letterSpacing:".06em",marginTop:3}}, s.toLowerCase())
@@ -1213,7 +1213,7 @@ function App() {
       ),
       filtMiss.length===0 && h(Empty,{msg:"No "+missF+" inventory needs."}),
       filtMiss.map(m =>
-        h("div",{key:m.id,style:{...CS,borderLeft:`3px solid ${m.status==="pending"?"#f59e0b":"#22c55e"}`,display:"flex",alignItems:"center",justifyContent:"space-between"}},
+        h("div",{key:m.id,style:{...CS,borderLeft:`3px solid ${m.status==="pending"?"#00C5CC":"#22c55e"}`,display:"flex",alignItems:"center",justifyContent:"space-between"}},
           h("div",null,
             h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:4}},
               h("span",{style:{color:AM,fontWeight:500}}, "#"+(m.job_id||"—")),
@@ -1243,7 +1243,7 @@ function App() {
       (damageF==="all" ? damageRpts : damageRpts.filter(d=>d.status===damageF)).length===0
         && h(Empty,{msg:"No "+damageF+" damage reports."}),
       (damageF==="all" ? damageRpts : damageRpts.filter(d=>d.status===damageF)).map(d => {
-        const col = d.status==="open" ? "#ef4444" : d.status==="reviewed" ? "#f59e0b" : "#22c55e";
+        const col = d.status==="open" ? "#ef4444" : d.status==="reviewed" ? "#00C5CC" : "#22c55e";
         return h("div",{key:d.id,style:{...CS,borderLeft:`3px solid ${col}`,display:"flex",alignItems:"center",justifyContent:"space-between",opacity:d.archived?0.45:1}},
           h("div",{style:{flex:1}},
             h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:4}},
@@ -1386,7 +1386,7 @@ function App() {
           ),
           h("div",{style:{position:"relative",display:"flex",alignItems:"center",gap:6,flexDirection:isOwn?"row-reverse":"row"}},
             h("div",{ className: isOwn ? "bubble-out" : "bubble-in" },
-              h("span",{style:{fontSize:13,color:isOwn?"#1a0900":"#e5e5e5",whiteSpace:"pre-wrap",lineHeight:1.5}}, m.body)
+              h("span",{style:{fontSize:13,color:isOwn?"#071F20":"#e5e5e5",whiteSpace:"pre-wrap",lineHeight:1.5}}, m.body)
             ),
             hov && h("button",{
               onClick: () => { if(window.confirm("Delete this message for everyone?")) onDelete(m.id); },
@@ -1569,7 +1569,7 @@ function App() {
           ? h("div",{style:{color:"#444",fontSize:12,paddingBottom:12}}, "No damage reports on record.")
           : h("div",{style:{marginBottom:20}},
               [...damageRpts].sort((a,b) => b.created_at.localeCompare(a.created_at)).map(d => {
-                const col = d.status==="open" ? "#ef4444" : d.status==="reviewed" ? "#f59e0b" : "#22c55e";
+                const col = d.status==="open" ? "#ef4444" : d.status==="reviewed" ? "#00C5CC" : "#22c55e";
                 return h("div",{key:d.id,style:{
                   ...CS, borderLeft:`3px solid ${d.archived?"#333":col}`,
                   opacity: d.archived ? 0.45 : 1, marginBottom:6,
@@ -1608,11 +1608,11 @@ function App() {
       h("div",{style:{display:"flex",gap:6,marginBottom:16}},
         h("button",{
           onClick:()=>setCrewSubView("devices"),
-          style:{fontSize:11,padding:"6px 14px",background:crewSubView==="devices"?AM:"transparent",color:crewSubView==="devices"?"#1a0900":"#666",borderColor:crewSubView==="devices"?AM:"#1e1e1e"},
+          style:{fontSize:11,padding:"6px 14px",background:crewSubView==="devices"?AM:"transparent",color:crewSubView==="devices"?"#071F20":"#666",borderColor:crewSubView==="devices"?AM:"#1e1e1e"},
         }, "Devices"),
         h("button",{
           onClick:()=>{ setCrewSubView("audit"); if(loginAudit.length===0) loadLoginAudit(); },
-          style:{fontSize:11,padding:"6px 14px",background:crewSubView==="audit"?AM:"transparent",color:crewSubView==="audit"?"#1a0900":"#666",borderColor:crewSubView==="audit"?AM:"#1e1e1e"},
+          style:{fontSize:11,padding:"6px 14px",background:crewSubView==="audit"?AM:"transparent",color:crewSubView==="audit"?"#071F20":"#666",borderColor:crewSubView==="audit"?AM:"#1e1e1e"},
         }, "Login Audit")
       ),
 
@@ -1708,7 +1708,7 @@ function App() {
                   h("span",{style:{fontWeight:500,fontSize:13,color:isSup?"#60a5fa":"#e5e5e5"}}, r.worker_name),
                   h(Pill,{label:r.role,color:isSup?"#3b82f6":"#22c55e"}),
                   r.dept && h(Pill,{label:r.dept,color:"#555"}),
-                  multiDep && h("span",{style:{fontSize:11,color:"#f59e0b"}}, "⚠ multi-dept"),
+                  multiDep && h("span",{style:{fontSize:11,color:"#00C5CC"}}, "⚠ multi-dept"),
                   isOffHrs && h("span",{style:{fontSize:11,color:"#818cf8"}}, "🌙 off-hours")
                 ),
                 h("div",{style:{fontSize:11,color:"#444"}},
@@ -1765,7 +1765,7 @@ function App() {
           planFile && h("span",{style:{fontSize:12,color:"#60a5fa",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}, planFile.name),
           planFile && h("button",{onClick:()=>setPlanFile(null),style:{fontSize:11,color:"#f87171",borderColor:"#7f1d1d",padding:"4px 8px"}}, "✕")
         ),
-        planUploading && h("div",{style:{fontSize:11,color:"#f59e0b",marginBottom:8}}, "Uploading…"),
+        planUploading && h("div",{style:{fontSize:11,color:"#00C5CC",marginBottom:8}}, "Uploading…"),
         h("button",{
           className:"bp",
           onClick:uploadPlan,
@@ -1840,11 +1840,11 @@ function App() {
           h(Divider,{label:dept.toUpperCase()}),
           deptSops.map(sop => {
             const uniqueViewers = new Set(sopViews.filter(v=>v.sop_id===sop.id).map(v=>v.viewer_name)).size;
-            return h("div",{key:sop.id,style:{...CS,borderLeft:"3px solid #f59e0b",display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}},
+            return h("div",{key:sop.id,style:{...CS,borderLeft:"3px solid #00C5CC",display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}},
               h("div",{style:{flex:1,minWidth:0}},
                 h("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}},
                   h("span",{style:{fontWeight:500,fontSize:14,color:"#e5e5e5"}}, sop.title),
-                  h(Pill,{label:sop.dept,color:"#f59e0b"}),
+                  h(Pill,{label:sop.dept,color:"#00C5CC"}),
                   sop.file_url && h(Pill,{label:sop.file_type==="drive"?"Drive":"PDF",color:"#3b82f6"})
                 ),
                 sop.description && h("div",{style:{fontSize:12,color:"#666",marginBottom:6,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:500}}, sop.description),
@@ -1901,8 +1901,8 @@ function App() {
                 style:{
                   flex:1,padding:"7px 0",fontSize:11,fontWeight:600,letterSpacing:".04em",
                   background: sopMode===mode ? "#1c0e00" : "#111",
-                  color:      sopMode===mode ? "#f59e0b" : "#555",
-                  border:     sopMode===mode ? "1px solid #78350f" : "1px solid #1e1e1e",
+                  color:      sopMode===mode ? "#00C5CC" : "#555",
+                  border:     sopMode===mode ? "1px solid #0E4F52" : "1px solid #1e1e1e",
                   borderRadius:6, cursor:"pointer",
                 }
               }, mode==="steps"?"Build Steps":mode==="pdf"?"Upload PDF":"Google Drive")
@@ -1938,7 +1938,7 @@ function App() {
             ),
             h("button",{
               onClick:()=>setSopForm(p=>({...p,steps:[...p.steps,{instruction:"",warning:""}]})),
-              style:{fontSize:11,color:"#f59e0b",borderColor:"#78350f",marginBottom:18,display:"block"}
+              style:{fontSize:11,color:"#00C5CC",borderColor:"#0E4F52",marginBottom:18,display:"block"}
             }, "+ add step")
           ),
 
