@@ -1,9 +1,10 @@
 import 'react-native-url-polyfill/auto';
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Text, View, StyleSheet, TouchableOpacity,
   TextInput, SafeAreaView, StatusBar,
   KeyboardAvoidingView, Platform, Alert,
+  Modal, FlatList,
 } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -14,8 +15,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './src/lib/supabase';
 import { registerForPushNotifications } from './src/lib/notifications';
 import InlineIQLogo from './src/components/InlineIQLogo';
-import { RoleContext }    from './src/lib/RoleContext';
-import { EndDayContext }  from './src/lib/EndDayContext';
+import { RoleContext }       from './src/lib/RoleContext';
+import { EndDayContext }     from './src/lib/EndDayContext';
+import { SwitchDeptContext } from './src/lib/SwitchDeptContext';
 import { getTenant, isTrialExpired } from './src/lib/tenant';
 import HomeScreen         from './src/screens/HomeScreen';
 import PartsScreen        from './src/screens/PartsScreen';
@@ -49,6 +51,13 @@ async function getDeviceId() {
   }
   return id;
 }
+
+const DEPT_COLORS = {
+  Production: { bg: '#172554', text: '#93c5fd' },
+  Assembly:   { bg: '#052e16', text: '#86efac' },
+  Finishing:  { bg: '#431407', text: '#fdba74' },
+  Craftsman:  { bg: '#500724', text: '#f9a8d4' },
+};
 
 // ── Colors ────────────────────────────────────────────────────
 const C = {
@@ -327,6 +336,8 @@ export default function App() {
   const [showFullOnboarding, setShowFullOnboarding] = useState(false);
   const [tenant,            setTenant]            = useState(null);
   const [trialExpired,      setTrialExpired]      = useState(false);
+  const [deptPickerVisible, setDeptPickerVisible] = useState(false);
+  const [pendingDept,       setPendingDept]       = useState('');
   const channelRef = useRef(null);
 
   useEffect(() => {
@@ -472,10 +483,35 @@ export default function App() {
     setRole(''); setUserName(''); setUserDept('');
   }, []);
 
-  const resetRoleRef  = useRef(null); resetRoleRef.current  = handleResetRole;
-  const endDayRef     = useRef(null); endDayRef.current     = handleEndDayReset;
-  const stableReset   = useCallback(() => resetRoleRef.current?.(),  []);
-  const stableEndDay  = useCallback(() => endDayRef.current?.(),     []);
+  const tenantDepartments = useMemo(() => {
+    const defaults = ['Production', 'Assembly', 'Finishing', 'Craftsman'];
+    if (!tenant?.departments) return defaults;
+    try {
+      const d = typeof tenant.departments === 'string'
+        ? JSON.parse(tenant.departments) : tenant.departments;
+      return Array.isArray(d) && d.length > 0 ? d : defaults;
+    } catch { return defaults; }
+  }, [tenant]);
+
+  const handleSwitchDept = useCallback(() => {
+    setPendingDept(userDept);
+    setDeptPickerVisible(true);
+  }, [userDept]);
+
+  const handleDeptConfirmed = useCallback(async (dept) => {
+    if (!dept) return;
+    await AsyncStorage.setItem(STORAGE.DEPT, dept);
+    setUserDept(dept);
+    setDeptPickerVisible(false);
+    setPendingDept('');
+  }, []);
+
+  const resetRoleRef    = useRef(null); resetRoleRef.current    = handleResetRole;
+  const endDayRef       = useRef(null); endDayRef.current       = handleEndDayReset;
+  const switchDeptRef   = useRef(null); switchDeptRef.current   = handleSwitchDept;
+  const stableReset     = useCallback(() => resetRoleRef.current?.(),  []);
+  const stableEndDay    = useCallback(() => endDayRef.current?.(),     []);
+  const stableSwitchDept = useCallback(() => switchDeptRef.current?.(), []);
 
   // Global supervisor sign-out hook
   useEffect(() => {
@@ -543,23 +579,65 @@ export default function App() {
     <SafeAreaProvider>
       <RoleContext.Provider value={stableReset}>
         <EndDayContext.Provider value={stableEndDay}>
-          {/* Trial expired banner for crew */}
-          {trialExpired && role === 'crew' && <TrialExpiredBanner />}
-          <NavigationContainer>
-            {role === 'supervisor' ? (
-              <SupervisorNavigator userName={userName} />
-            ) : isCraftsman ? (
-              <CraftsmanNavigator
-                userName={userName} userDept={userDept}
-                unreadCount={unreadCount} setUnreadCount={setUnreadCount}
-              />
-            ) : (
-              <CrewNavigator
-                userName={userName} userDept={userDept}
-                unreadCount={unreadCount} setUnreadCount={setUnreadCount}
-              />
-            )}
-          </NavigationContainer>
+          <SwitchDeptContext.Provider value={stableSwitchDept}>
+            {/* Trial expired banner for crew */}
+            {trialExpired && role === 'crew' && <TrialExpiredBanner />}
+            <NavigationContainer>
+              {role === 'supervisor' ? (
+                <SupervisorNavigator userName={userName} />
+              ) : isCraftsman ? (
+                <CraftsmanNavigator
+                  userName={userName} userDept={userDept}
+                  unreadCount={unreadCount} setUnreadCount={setUnreadCount}
+                />
+              ) : (
+                <CrewNavigator
+                  userName={userName} userDept={userDept}
+                  unreadCount={unreadCount} setUnreadCount={setUnreadCount}
+                />
+              )}
+            </NavigationContainer>
+
+            {/* Dept picker — rendered outside NavigationContainer so it works from any screen */}
+            <Modal
+              visible={deptPickerVisible}
+              animationType="slide"
+              transparent
+              onRequestClose={() => setDeptPickerVisible(false)}
+            >
+              <View style={dpStyles.overlay}>
+                <View style={dpStyles.box}>
+                  <View style={dpStyles.handle} />
+                  <Text style={dpStyles.title}>Switch Department</Text>
+                  {tenantDepartments.map(dept => {
+                    const dc  = DEPT_COLORS[dept] ?? { bg: '#1f1f1f', text: '#888' };
+                    const sel = dept === pendingDept;
+                    return (
+                      <TouchableOpacity
+                        key={dept}
+                        style={[dpStyles.option, sel && { borderColor: dc.text, backgroundColor: dc.bg }]}
+                        onPress={() => setPendingDept(dept)}
+                      >
+                        <Text style={[dpStyles.optionText, sel && { color: dc.text, fontWeight: '700' }]}>{dept}</Text>
+                        {sel && <Text style={{ color: dc.text, fontSize: 16 }}>✓</Text>}
+                      </TouchableOpacity>
+                    );
+                  })}
+                  <TouchableOpacity
+                    style={[dpStyles.confirmBtn, !pendingDept && dpStyles.confirmBtnDisabled]}
+                    onPress={() => handleDeptConfirmed(pendingDept)}
+                    disabled={!pendingDept}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={dpStyles.confirmBtnText}>Switch Department</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={dpStyles.cancelBtn} onPress={() => setDeptPickerVisible(false)}>
+                    <Text style={dpStyles.cancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </Modal>
+          </SwitchDeptContext.Provider>
         </EndDayContext.Provider>
       </RoleContext.Provider>
     </SafeAreaProvider>
@@ -582,6 +660,27 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 2, borderBottomRightRadius: 2,
   },
   nativeBadge: { backgroundColor: '#FF4444', fontSize: 10, fontWeight: '700' },
+});
+
+const dpStyles = StyleSheet.create({
+  overlay:  { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
+  box: {
+    backgroundColor: '#0D1117', borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 24, paddingTop: 16, paddingBottom: 40,
+  },
+  handle:    { width: 36, height: 4, borderRadius: 2, backgroundColor: '#1A2535', alignSelf: 'center', marginBottom: 18 },
+  title:     { fontSize: 20, fontWeight: '800', color: '#fff', letterSpacing: -0.3, marginBottom: 16 },
+  option: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: 13, paddingHorizontal: 14, borderRadius: 12, marginBottom: 6,
+    backgroundColor: '#111620', borderWidth: 1.5, borderColor: '#1A2535',
+  },
+  optionText:      { color: '#2D8A94', fontSize: 15, fontWeight: '500' },
+  confirmBtn:      { marginTop: 18, backgroundColor: '#00C5CC', borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
+  confirmBtnDisabled: { opacity: 0.35 },
+  confirmBtnText:  { color: '#000', fontSize: 16, fontWeight: '700' },
+  cancelBtn:       { alignItems: 'center', paddingTop: 14 },
+  cancelText:      { color: '#2D8A94', fontSize: 14 },
 });
 
 const rp = StyleSheet.create({

@@ -10,6 +10,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { RoleContext } from '../lib/RoleContext';
 import { EndDayContext } from '../lib/EndDayContext';
+import { SwitchDeptContext } from '../lib/SwitchDeptContext';
 import { getEmployeeId, hasInnergy } from '../lib/innergy';
 import { clockOutEmployee } from '../lib/clockOut';
 import { getSyncStatus } from '../lib/syncQueue';
@@ -73,8 +74,9 @@ function formatTimeSince(iso) {
 
 export default function HomeScreen({ navigation, route }) {
   const { onClearUnread } = route?.params ?? {};
-  const resetRole = useContext(RoleContext);
-  const endDay    = useContext(EndDayContext);
+  const resetRole  = useContext(RoleContext);
+  const endDay     = useContext(EndDayContext);
+  const switchDept = useContext(SwitchDeptContext);
 
   const [userName, setUserName]   = useState('');
   const [userDept, setUserDept]   = useState('');
@@ -371,6 +373,14 @@ export default function HomeScreen({ navigation, route }) {
         </View>
         <View style={styles.headerIcons}>
           <View style={[styles.syncDot, syncOk ? styles.syncGreen : styles.syncRed]} />
+          <TouchableOpacity
+            onPress={() => switchDept?.()}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={styles.switchDeptBtn}
+          >
+            <Ionicons name="swap-vertical-outline" size={14} color={C.accent} />
+            <Text style={styles.switchDeptText}>Dept</Text>
+          </TouchableOpacity>
           <TouchableOpacity onPress={handleSwitchRole} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Ionicons name="settings-outline" size={24} color={C.muted} />
           </TouchableOpacity>
@@ -655,6 +665,13 @@ const styles = StyleSheet.create({
   deptBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 20 },
   deptBadgeText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.2 },
   headerIcons: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  switchDeptBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: '#00C5CC18', borderRadius: 8,
+    paddingHorizontal: 8, paddingVertical: 5,
+    borderWidth: 1, borderColor: '#00C5CC40',
+  },
+  switchDeptText: { fontSize: 11, fontWeight: '700', color: '#00C5CC' },
   syncDot:   { width: 8, height: 8, borderRadius: 4 },
   syncGreen: { backgroundColor: C.success },
   syncRed:   { backgroundColor: C.danger },

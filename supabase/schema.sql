@@ -24,6 +24,7 @@ create table if not exists inventory_needs (
   item       text        not null,
   dept       text        not null,
   job_id     text,
+  job_number text,
   qty        integer     not null default 1 check (qty > 0),
   status     text        not null default 'pending'
                check (status in ('pending', 'ordered', 'received', 'cancelled')),
