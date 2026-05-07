@@ -242,7 +242,7 @@ function scanColor(status) {
   return SCAN_STATUS_COLORS[status] ?? { color: '#555', bg: '#141414' };
 }
 
-function OverviewTab({ needs, damage, messages, threads, timeClock, userName, onSwitchRole, dismissedMsgIds, onDismissMsg, onOpenThread, partScans }) {
+function OverviewTab({ needs, damage, messages, threads, timeClock, userName, onSwitchRole, dismissedMsgIds, onDismissMsg, onOpenThread, partScans, unreadNeeds, unreadDamage, unreadMsgs, onNavigateTab }) {
   const pendingNeeds = needs.filter((n) => n.status === 'pending').length;
   const openDamage   = damage.filter((d) => d.status === 'open').length;
 
@@ -284,6 +284,34 @@ function OverviewTab({ needs, damage, messages, threads, timeClock, userName, on
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Notification banner */}
+      {(unreadNeeds > 0 || unreadDamage > 0 || unreadMsgs > 0) && (
+        <View style={styles.notifBanner}>
+          <Ionicons name="notifications" size={13} color={C.error} style={{ marginTop: 1 }} />
+          {unreadNeeds > 0 && (
+            <TouchableOpacity onPress={() => onNavigateTab('needs')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={[styles.notifItem, { color: C.accent }]}>
+                {unreadNeeds} new need{unreadNeeds !== 1 ? 's' : ''}
+              </Text>
+            </TouchableOpacity>
+          )}
+          {unreadDamage > 0 && (
+            <TouchableOpacity onPress={() => onNavigateTab('damage')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={[styles.notifItem, { color: C.error }]}>
+                {unreadDamage} damage report{unreadDamage !== 1 ? 's' : ''}
+              </Text>
+            </TouchableOpacity>
+          )}
+          {unreadMsgs > 0 && (
+            <TouchableOpacity onPress={() => onNavigateTab('messages')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={[styles.notifItem, { color: C.success }]}>
+                {unreadMsgs} message{unreadMsgs !== 1 ? 's' : ''}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
 
       {/* Stat cards */}
       <View style={styles.statRow}>
@@ -1209,10 +1237,13 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
   const [dismissedMsgIds,    setDismissedMsgIds]    = useState([]);
   const [partScans,          setPartScans]          = useState([]);
   const [timeClock,          setTimeClock]          = useState([]);
+  const [unreadNeeds,        setUnreadNeeds]        = useState(0);
+  const [unreadDamage,       setUnreadDamage]       = useState(0);
 
-  const msgListRef  = useRef(null);
-  const channels    = useRef([]);
-  const tenantIdRef = useRef(null);
+  const msgListRef   = useRef(null);
+  const channels     = useRef([]);
+  const tenantIdRef  = useRef(null);
+  const activeTabRef = useRef('brief');
 
   const fetchAll = useCallback(async (tid) => {
     setLoading(true);
@@ -1260,17 +1291,27 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
 
       const needsCh = supabase.channel('sup-app-needs')
         .on('postgres_changes', withFilter({ event: '*', schema: 'public', table: 'inventory_needs' }), (p) => {
-          if      (p.eventType === 'INSERT') setNeeds((prev) => [p.new, ...prev]);
-          else if (p.eventType === 'UPDATE') setNeeds((prev) => prev.map((r) => r.id === p.new.id ? p.new : r));
-          else if (p.eventType === 'DELETE') setNeeds((prev) => prev.filter((r) => r.id !== p.old.id));
+          if (p.eventType === 'INSERT') {
+            setNeeds((prev) => [p.new, ...prev]);
+            if (activeTabRef.current !== 'needs') setUnreadNeeds((n) => n + 1);
+          } else if (p.eventType === 'UPDATE') {
+            setNeeds((prev) => prev.map((r) => r.id === p.new.id ? p.new : r));
+          } else if (p.eventType === 'DELETE') {
+            setNeeds((prev) => prev.filter((r) => r.id !== p.old.id));
+          }
         })
         .subscribe();
 
       const dmgCh = supabase.channel('sup-app-damage')
         .on('postgres_changes', withFilter({ event: '*', schema: 'public', table: 'damage_reports' }), (p) => {
-          if      (p.eventType === 'INSERT') setDamage((prev) => [p.new, ...prev]);
-          else if (p.eventType === 'UPDATE') setDamage((prev) => prev.map((r) => r.id === p.new.id ? p.new : r));
-          else if (p.eventType === 'DELETE') setDamage((prev) => prev.filter((r) => r.id !== p.old.id));
+          if (p.eventType === 'INSERT') {
+            setDamage((prev) => [p.new, ...prev]);
+            if (activeTabRef.current !== 'damage') setUnreadDamage((n) => n + 1);
+          } else if (p.eventType === 'UPDATE') {
+            setDamage((prev) => prev.map((r) => r.id === p.new.id ? p.new : r));
+          } else if (p.eventType === 'DELETE') {
+            setDamage((prev) => prev.filter((r) => r.id !== p.old.id));
+          }
         })
         .subscribe();
 
@@ -1384,7 +1425,10 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
   }, []);
 
   const handleTabPress = (key) => {
+    activeTabRef.current = key;
     if (key === 'messages') setUnreadMsgs(0);
+    if (key === 'needs')    setUnreadNeeds(0);
+    if (key === 'damage')   setUnreadDamage(0);
     if (key !== 'messages' && activeThread) setActiveThread(null);
     setActiveTab(key);
   };
@@ -1438,6 +1482,10 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
                 onDismissMsg={dismissMessage}
                 onOpenThread={openThread}
                 partScans={partScans}
+                unreadNeeds={unreadNeeds}
+                unreadDamage={unreadDamage}
+                unreadMsgs={unreadMsgs}
+                onNavigateTab={handleTabPress}
               />
             )}
             {activeTab === 'messages' && (
@@ -1484,7 +1532,10 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
       <View style={styles.tabBar}>
         {TABS.map((tab) => {
           const active = activeTab === tab.key;
-          const badge  = tab.key === 'messages' ? unreadMsgs : 0;
+          const badge  = tab.key === 'messages' ? unreadMsgs
+                     : tab.key === 'needs'    ? unreadNeeds
+                     : tab.key === 'damage'   ? unreadDamage
+                     : 0;
           return (
             <TouchableOpacity
               key={tab.key}
@@ -1844,6 +1895,15 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1.5,
   },
+
+  // Notification banner (Overview tab)
+  notifBanner: {
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10,
+    backgroundColor: '#1a0a0a', borderRadius: 10,
+    borderWidth: 1, borderColor: C.errorBorder,
+    paddingHorizontal: 12, paddingVertical: 10, marginBottom: 14,
+  },
+  notifItem: { fontSize: 12, fontWeight: '700' },
 
   // Clock crew rows (Overview tab)
   clockNoneText: { fontSize: 12, color: C.muted, marginBottom: 12 },

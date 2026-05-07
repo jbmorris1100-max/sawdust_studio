@@ -176,8 +176,11 @@ function App() {
   const [msgBody,       setMsgBody]       = useState("");
   const [sending,       setSending]       = useState(false);
   const [unread,        setUnread]        = useState(0);
+  const [unreadNeeds,   setUnreadNeeds]   = useState(0);
+  const [unreadDmg,     setUnreadDmg]     = useState(0);
   const [activeThread,  setActiveThread]  = useState(null); // { name, dept } | null
-  const msgListRef = useRef(null);
+  const msgListRef    = useRef(null);
+  const activeViewRef = useRef("dashboard");
 
   // ── Supabase: initial fetch + real-time subscriptions ─────────────────────
   useEffect(() => {
@@ -206,6 +209,7 @@ function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "inventory_needs" }, payload => {
         if (payload.eventType === "INSERT") {
           setMiss(p => [payload.new, ...p]);
+          if (activeViewRef.current !== "missing") setUnreadNeeds(n => n + 1);
         } else if (payload.eventType === "UPDATE") {
           setMiss(p => p.map(r => r.id === payload.new.id ? payload.new : r));
         } else if (payload.eventType === "DELETE") {
@@ -217,9 +221,9 @@ function App() {
     // Real-time: damage_reports
     const dmgCh = sb.channel("sup-damage")
       .on("postgres_changes", { event: "*", schema: "public", table: "damage_reports" }, payload => {
-        console.log("[realtime] damage_reports", payload.eventType, payload.new || payload.old);
         if (payload.eventType === "INSERT") {
           setDamageRpts(p => [payload.new, ...p]);
+          if (activeViewRef.current !== "damage") setUnreadDmg(n => n + 1);
         } else if (payload.eventType === "UPDATE") {
           setDamageRpts(p => p.map(r => r.id === payload.new.id ? payload.new : r));
         } else if (payload.eventType === "DELETE") {
@@ -301,8 +305,7 @@ function App() {
     }
   }, [messages, view]);
 
-  // Clear unread badge when opening messages tab
-  const openMessages = () => { setView("messages"); setUnread(0); };
+  const openMessages = () => { setView("messages"); setUnread(0); activeViewRef.current = "messages"; };
 
   // ── localStorage setters (supervisor-local) ───────────────────────────────
   const UJ = u => { setJobs(u);   sv(K.j,  u); };
@@ -901,26 +904,30 @@ function App() {
 
   // ── Nav ───────────────────────────────────────────────────────────────────
   const TABS = [
-    {id:"dashboard", label:"Dashboard",   onClick:()=>setView("dashboard")},
-    {id:"missing",   label:"Needs",        onClick:()=>setView("missing")},
-    {id:"damage",    label:"Damage",       onClick:()=>setView("damage")},
-    {id:"standup",   label:"Standup",      onClick:()=>setView("standup")},
-    {id:"inventory", label:"Inventory",    onClick:()=>setView("inventory")},
+    {id:"brief",     label:"Morning Brief", onClick:()=>{ setView("brief");     activeViewRef.current="brief"; }},
+    {id:"dashboard", label:"Dashboard",     onClick:()=>{ setView("dashboard"); activeViewRef.current="dashboard"; }},
+    {id:"missing",   label:`Needs${unreadNeeds>0?" ("+unreadNeeds+")":""}`,  onClick:()=>{ setView("missing"); setUnreadNeeds(0); activeViewRef.current="missing"; }},
+    {id:"damage",    label:`Damage${unreadDmg>0?" ("+unreadDmg+")":""}`,     onClick:()=>{ setView("damage");  setUnreadDmg(0);   activeViewRef.current="damage"; }},
+    {id:"standup",   label:"Standup",       onClick:()=>{ setView("standup");   activeViewRef.current="standup"; }},
+    {id:"inventory", label:"Inventory",     onClick:()=>{ setView("inventory"); activeViewRef.current="inventory"; }},
     {id:"messages",  label:`Messages${unread>0?" ("+unread+")":""}`, onClick:openMessages},
-    {id:"crew",       label:"Crew",          onClick:()=>{ setView("crew"); setCrewSubView("devices"); loadCrewMembers(); }},
-    {id:"sops",       label:"SOPs",          onClick:()=>setView("sops")},
-    {id:"plans",      label:"Plans",         onClick:()=>setView("plans")},
-    {id:"report",    label:"Report",       onClick:()=>setView("report")},
+    {id:"crew",      label:"Crew",          onClick:()=>{ setView("crew"); setCrewSubView("devices"); loadCrewMembers(); activeViewRef.current="crew"; }},
+    {id:"sops",      label:"SOPs",          onClick:()=>{ setView("sops");   activeViewRef.current="sops"; }},
+    {id:"plans",     label:"Plans",         onClick:()=>{ setView("plans");  activeViewRef.current="plans"; }},
+    {id:"report",    label:"Report",        onClick:()=>{ setView("report"); activeViewRef.current="report"; }},
   ];
 
   const navBtn = t => {
     const active = t.id === "dashboard" ? isDash : view === t.id;
+    const hasUnread = (t.id==="messages"&&unread>0) || (t.id==="missing"&&unreadNeeds>0) || (t.id==="damage"&&unreadDmg>0);
+    const unreadColor  = t.id==="damage" ? "#ef4444" : "#00C5CC";
+    const unreadBorder = t.id==="damage" ? "#450a0a" : "#0E4F52";
     return h("button", { key:t.id, onClick:t.onClick, style:{
       fontSize:11, padding:"7px 14px",
       background:  active ? AM : "transparent",
-      color:       active ? "#071F20" : t.id==="messages"&&unread>0 ? "#00C5CC" : "#666",
-      borderColor: active ? AM : t.id==="messages"&&unread>0 ? "#0E4F52" : "#1e1e1e",
-      fontWeight:  active ? 500 : 400,
+      color:       active ? "#071F20" : hasUnread ? unreadColor : "#666",
+      borderColor: active ? AM : hasUnread ? unreadBorder : "#1e1e1e",
+      fontWeight:  active ? 500 : hasUnread ? 500 : 400,
     }}, t.label);
   };
 
@@ -1009,8 +1016,114 @@ function App() {
       h("div", {style:{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}, TABS.map(navBtn))
     ),
 
+    // ── MORNING BRIEF ─────────────────────────────────────────────────────────
+    view==="brief" && (() => {
+      const yesterday  = new Date(Date.now() - 24*60*60*1000);
+      const recentMsgs = messages.filter(m => new Date(m.created_at) > yesterday && m.sender_name !== "Supervisor").slice(0, 8);
+      const openDmg    = damageRpts.filter(d => d.status === "open");
+      const pendingMats = miss.filter(m => m.status === "pending");
+      const todayStr   = new Date().toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"});
+
+      const BriefSec = ({emoji, label, color, count}) =>
+        h("div",{style:{display:"flex",alignItems:"center",gap:8,marginTop:20,marginBottom:10}},
+          h("span",{style:{fontSize:15}}, emoji),
+          h("div",{style:{fontSize:10,fontWeight:700,color:color??AM,letterSpacing:".1em"}},
+            label.toUpperCase()+(count!=null&&count>0?" ("+count+")":"")),
+          h("div",{style:{flex:1,height:1,background:"#1a1a1a",marginLeft:8}})
+        );
+
+      const BCard = ({children,color}) =>
+        h("div",{style:{...CS,borderLeft:`3px solid ${color??"#333"}`,marginBottom:6}}, children);
+
+      return h("div", null,
+        h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:24,paddingBottom:16,borderBottom:"1px solid #1a1a1a"}},
+          h("div",null,
+            h("div",{style:{fontSize:22,fontWeight:500,letterSpacing:"-.3px"}}, "Morning Brief"),
+            h("div",{style:{fontSize:12,color:"#555",marginTop:4}}, todayStr)
+          ),
+          h("div",{style:{display:"flex",alignItems:"center",gap:6}},
+            h("div",{style:{width:7,height:7,borderRadius:"50%",background:"#22c55e"}}),
+            h("span",{style:{fontSize:10,color:"#22c55e",fontWeight:600}}, "live")
+          )
+        ),
+
+        h(BriefSec,{emoji:"🔧",label:"Open Damage Reports",color:"#ef4444",count:openDmg.length}),
+        openDmg.length===0
+          ? h("div",{style:{fontSize:12,color:"#444",padding:"8px 0",fontStyle:"italic"}}, "No open damage reports — clear!")
+          : openDmg.slice(0,8).map(d =>
+              h(BCard,{key:d.id,color:"#ef4444"},
+                h("div",{style:{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}},
+                  h("span",{style:{fontWeight:500,color:"#ccc",fontSize:13}}, d.part_name),
+                  h(Pill,{label:d.dept,color:"#3b82f6"}),
+                  d.job_id && h("span",{style:{fontSize:11,color:"#555"}}, "Job #"+d.job_id)
+                ),
+                d.notes && h("div",{style:{fontSize:12,color:"#666",marginTop:4,fontStyle:"italic"}}, d.notes),
+                d.resolution_type && h("div",{style:{display:"flex",gap:6,marginTop:4,alignItems:"center"}},
+                  h(Pill,{label:d.resolution_type,color:RES_COLORS[d.resolution_type]||"#6b7280"}),
+                  d.resolved_by && h("span",{style:{fontSize:11,color:"#555"}}, "— "+d.resolved_by)
+                ),
+                h("div",{style:{fontSize:11,color:"#333",marginTop:4}}, fmtD(d.created_at))
+              )
+            ),
+
+        h(BriefSec,{emoji:"📦",label:"Pending Inventory Needs",color:AM,count:pendingMats.length}),
+        pendingMats.length===0
+          ? h("div",{style:{fontSize:12,color:"#444",padding:"8px 0",fontStyle:"italic"}}, "No pending inventory needs — all clear!")
+          : pendingMats.slice(0,8).map(m =>
+              h(BCard,{key:m.id,color:AM},
+                h("div",{style:{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}},
+                  h("span",{style:{fontWeight:500,color:"#ccc",fontSize:13}}, m.item),
+                  h("span",{style:{fontSize:11,color:"#555"}}, m.qty+" units"),
+                  h(Pill,{label:m.dept,color:"#3b82f6"}),
+                  m.job_id && h("span",{style:{fontSize:11,color:"#555"}}, "Job #"+m.job_id)
+                ),
+                h("div",{style:{fontSize:11,color:"#333",marginTop:4}}, fmtD(m.created_at))
+              )
+            ),
+
+        recentMsgs.length>0 && h("div",null,
+          h(BriefSec,{emoji:"💬",label:"Messages — Last 24h",color:"#22c55e",count:recentMsgs.length}),
+          recentMsgs.map(m =>
+            h(BCard,{key:m.id},
+              h("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:3}},
+                h("span",{style:{fontWeight:500,color:AM,fontSize:13}}, m.sender_name),
+                m.dept && h("span",{style:{fontSize:10,color:"#555",background:"#1a1a1a",padding:"2px 7px",borderRadius:99,border:"1px solid #222"}}, m.dept)
+              ),
+              h("div",{style:{fontSize:13,color:"#ccc"}}, (m.body||"").slice(0,120)+((m.body||"").length>120?"…":""))
+            )
+          )
+        ),
+
+        pendingMats.length===0 && openDmg.length===0 && recentMsgs.length===0 &&
+          h("div",{style:{textAlign:"center",padding:"48px 0",color:"#333",fontSize:13}}, "All clear — nothing urgent this morning."),
+
+        h("div",{style:{height:40}})
+      );
+    })(),
+
     // ── DASHBOARD ─────────────────────────────────────────────────────────────
     view==="dashboard" && h("div", null,
+      (unread>0||unreadNeeds>0||unreadDmg>0) && h("div",{style:{
+        display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",
+        background:"#0c1a10",border:"1px solid #1a3020",borderRadius:8,
+        padding:"10px 16px",marginBottom:12,fontSize:12,
+      }},
+        h("span",{style:{fontSize:13}}, "🔔"),
+        unreadNeeds>0 && h("span",{
+          onClick:()=>{ setView("missing"); setUnreadNeeds(0); activeViewRef.current="missing"; },
+          style:{color:"#00C5CC",cursor:"pointer",fontWeight:500},
+        }, unreadNeeds+" new need"+(unreadNeeds!==1?"s":"")),
+        unreadNeeds>0&&unreadDmg>0 && h("span",{style:{color:"#333"}}, "·"),
+        unreadDmg>0 && h("span",{
+          onClick:()=>{ setView("damage"); setUnreadDmg(0); activeViewRef.current="damage"; },
+          style:{color:"#ef4444",cursor:"pointer",fontWeight:500},
+        }, unreadDmg+" damage report"+(unreadDmg!==1?"s":"")),
+        (unreadNeeds>0||unreadDmg>0)&&unread>0 && h("span",{style:{color:"#333"}}, "·"),
+        unread>0 && h("span",{
+          onClick:openMessages,
+          style:{color:"#22c55e",cursor:"pointer",fontWeight:500},
+        }, unread+" message"+(unread!==1?"s":""))
+      ),
       h("div", {style:{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10,marginBottom:"1.5rem"}},
         h(Stat, {label:"qc passes 7d",         val:sevenDayPasses,                               color:"#22c55e"}),
         h(Stat, {label:"flagged jobs",           val:jobs.filter(j=>j.status==="flagged").length,  color:"#ef4444"}),
