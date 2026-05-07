@@ -23,12 +23,15 @@ export async function clockOutEmployee(employeeId, currentTask) {
 
   const ms = new Date(endTime).getTime() - new Date(currentTask.startedAt ?? endTime).getTime();
   const tenantId = await getTenantId();
+  const clockInTime = currentTask.startedAt ?? endTime;
   await supabase.from('time_clock').insert({
     employee_name:  currentTask.employeeName ?? 'Unknown',
+    worker_name:    currentTask.employeeName ?? 'Unknown',
     work_order_id:  currentTask.workOrderId ?? null,
     job_name:       currentTask.jobName ?? null,
-    clock_in:       currentTask.startedAt ?? null,
+    clock_in:       clockInTime,
     clock_out:      endTime,
+    date:           clockInTime.slice(0, 10),
     minutes_logged: Math.round(ms / 60000),
     dept:           currentTask.dept ?? null,
     sync_status:    synced ? 'synced' : 'pending',

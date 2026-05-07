@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 import { EndDayContext } from '../lib/EndDayContext';
+import { SwitchDeptContext } from '../lib/SwitchDeptContext';
 import {
   getWorkOrdersByProjectNumber, getEmployeeId, getLaborItemId,
   logTimeEntry, applyWorkOrderTag,
@@ -75,6 +76,7 @@ export default function CraftsmanHomeScreen({ route }) {
   const [switchBanner,   setSwitchBanner]   = useState('');
 
   const endDay        = useContext(EndDayContext);
+  const switchDept    = useContext(SwitchDeptContext);
   const intervalRef   = useRef(null);
   const confirmRef    = useRef(null);
   const switchBannerRef = useRef(null);
@@ -178,10 +180,12 @@ export default function CraftsmanHomeScreen({ route }) {
     const tenantId = await getTenantId();
     await supabase.from('time_clock').insert({
       employee_name:  userName || 'Unknown',
+      worker_name:    userName || 'Unknown',
       work_order_id:  (wo?.Id ?? wo?.WorkOrderId)?.toString() ?? jobNum,
       job_name:       jobName,
       clock_in:       startTime,
       clock_out:      endTime,
+      date:           startTime.slice(0, 10),
       minutes_logged: Math.round(ms / 60000),
       dept:           'Craftsman',
       sync_status:    innergyOk ? 'synced' : 'pending',
@@ -267,7 +271,17 @@ export default function CraftsmanHomeScreen({ route }) {
           <Text style={styles.appTitle}>Craftsman</Text>
           {userName ? <Text style={styles.userName}>{userName}</Text> : null}
         </View>
-        <View style={[styles.syncDot, syncOk ? styles.syncGreen : styles.syncRed]} />
+        <View style={styles.headerIcons}>
+          <View style={[styles.syncDot, syncOk ? styles.syncGreen : styles.syncRed]} />
+          <TouchableOpacity
+            onPress={() => switchDept?.()}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={styles.switchDeptBtn}
+          >
+            <Ionicons name="swap-vertical-outline" size={14} color={C.accent} />
+            <Text style={styles.switchDeptText}>Dept</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Main body */}
@@ -416,9 +430,17 @@ const styles = StyleSheet.create({
   },
   appTitle: { fontSize: 22, fontWeight: '800', color: C.text, letterSpacing: -0.3 },
   userName: { fontSize: 13, color: C.muted, marginTop: 2 },
+  headerIcons: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   syncDot:   { width: 8, height: 8, borderRadius: 4 },
   syncGreen: { backgroundColor: C.success },
   syncRed:   { backgroundColor: C.danger },
+  switchDeptBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: '#00C5CC18', borderRadius: 8,
+    paddingHorizontal: 8, paddingVertical: 5,
+    borderWidth: 1, borderColor: '#00C5CC40',
+  },
+  switchDeptText: { fontSize: 11, fontWeight: '700', color: '#00C5CC' },
 
   body:   { flex: 1, paddingHorizontal: 20, justifyContent: 'center', gap: 24 },
   footer: { paddingHorizontal: 20, paddingBottom: 20, paddingTop: 8 },

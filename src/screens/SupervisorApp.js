@@ -21,6 +21,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
+import { getTenantId } from '../lib/tenant';
 import MorningBriefScreen from './MorningBriefScreen';
 
 // ── Design tokens ─────────────────────────────────────────────
@@ -241,7 +242,7 @@ function scanColor(status) {
   return SCAN_STATUS_COLORS[status] ?? { color: '#555', bg: '#141414' };
 }
 
-function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole, dismissedMsgIds, onDismissMsg, onOpenThread, partScans }) {
+function OverviewTab({ needs, damage, messages, threads, timeClock, userName, onSwitchRole, dismissedMsgIds, onDismissMsg, onOpenThread, partScans }) {
   const pendingNeeds = needs.filter((n) => n.status === 'pending').length;
   const openDamage   = damage.filter((d) => d.status === 'open').length;
 
@@ -295,7 +296,7 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
           <Text style={styles.statLabel}>Open{'\n'}Damage</Text>
         </View>
         <View style={[styles.statCard, { borderTopColor: C.success }]}>
-          <Text style={[styles.statValue, { color: C.success }]}>{threads.length}</Text>
+          <Text style={[styles.statValue, { color: C.success }]}>{(timeClock || []).length}</Text>
           <Text style={styles.statLabel}>Crew{'\n'}Active</Text>
         </View>
       </View>
@@ -344,6 +345,29 @@ function OverviewTab({ needs, damage, messages, threads, userName, onSwitchRole,
               </View>
             ));
           })()}
+        </>
+      )}
+
+      {/* Who's Working Now */}
+      {(timeClock || []).length > 0 && (
+        <>
+          <Text style={[styles.sectionLabel, { marginTop: 20 }]}>WHO'S WORKING NOW</Text>
+          {(timeClock || []).map((entry) => (
+            <View key={entry.id} style={[styles.dataCard, { borderLeftColor: C.success, marginBottom: 8 }]}>
+              <View style={styles.cardTopRow}>
+                <View style={styles.cardMainBlock}>
+                  <Text style={styles.cardTitle}>{entry.employee_name || entry.worker_name || '—'}</Text>
+                  <Text style={styles.cardMeta}>
+                    {entry.dept || ''}
+                    {entry.job_name ? ` · ${entry.job_name}` : ''}
+                  </Text>
+                </View>
+                <Text style={[styles.cardDate, { color: C.success }]}>
+                  {entry.clock_in ? `In ${formatTime(entry.clock_in)}` : ''}
+                </Text>
+              </View>
+            </View>
+          ))}
         </>
       )}
 
@@ -1184,22 +1208,27 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
 
   const [dismissedMsgIds,    setDismissedMsgIds]    = useState([]);
   const [partScans,          setPartScans]          = useState([]);
+  const [timeClock,          setTimeClock]          = useState([]);
 
-  const msgListRef = useRef(null);
-  const channels   = useRef([]);
+  const msgListRef  = useRef(null);
+  const channels    = useRef([]);
+  const tenantIdRef = useRef(null);
 
-  const fetchAll = useCallback(async () => {
+  const fetchAll = useCallback(async (tid) => {
     setLoading(true);
-    const [msgsRes, needsRes, dmgRes, scansRes] = await Promise.all([
-      supabase.from('messages').select('*').order('created_at', { ascending: true }).limit(300),
-      supabase.from('inventory_needs').select('*').order('created_at', { ascending: false }),
-      supabase.from('damage_reports').select('*').order('created_at', { ascending: false }),
-      supabase.from('part_scans').select('*').order('created_at', { ascending: false }).limit(60),
+    const tf = (q) => tid ? q.eq('tenant_id', tid) : q;
+    const [msgsRes, needsRes, dmgRes, scansRes, clockRes] = await Promise.all([
+      tf(supabase.from('messages').select('*')).order('created_at', { ascending: true }).limit(300),
+      tf(supabase.from('inventory_needs').select('*')).order('created_at', { ascending: false }),
+      tf(supabase.from('damage_reports').select('*')).order('created_at', { ascending: false }),
+      tf(supabase.from('part_scans').select('*')).order('created_at', { ascending: false }).limit(60),
+      tf(supabase.from('time_clock').select('*')).is('clock_out', null).order('clock_in', { ascending: false }),
     ]);
     if (msgsRes.data)   setMessages(msgsRes.data);
     if (needsRes.data)  setNeeds(needsRes.data);
     if (dmgRes.data)    setDamage(dmgRes.data);
     if (scansRes.data)  setPartScans(scansRes.data);
+    if (clockRes.data)  setTimeClock(clockRes.data);
     setLoading(false);
   }, []);
 
@@ -1207,44 +1236,69 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
     AsyncStorage.getItem('@inline_dismissed_msgs').then((val) => {
       if (val) setDismissedMsgIds(JSON.parse(val));
     });
-    fetchAll();
 
-    const msgCh = supabase.channel('sup-app-messages')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (p) => {
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === p.new.id)) return prev;
-          return [...prev, p.new];
-        });
-        if (p.new.sender_name !== 'Supervisor') setUnreadMsgs((n) => n + 1);
-      })
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (p) => {
-        setMessages((prev) => prev.filter((m) => m.id !== p.old.id));
-      })
-      .subscribe();
+    (async () => {
+      const tid = await getTenantId();
+      tenantIdRef.current = tid;
+      await fetchAll(tid);
 
-    const needsCh = supabase.channel('sup-app-needs')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_needs' }, (p) => {
-        if      (p.eventType === 'INSERT') setNeeds((prev) => [p.new, ...prev]);
-        else if (p.eventType === 'UPDATE') setNeeds((prev) => prev.map((r) => r.id === p.new.id ? p.new : r));
-        else if (p.eventType === 'DELETE') setNeeds((prev) => prev.filter((r) => r.id !== p.old.id));
-      })
-      .subscribe();
+      const tFilter = tid ? `tenant_id=eq.${tid}` : undefined;
+      const withFilter = (cfg) => tFilter ? { ...cfg, filter: tFilter } : cfg;
 
-    const dmgCh = supabase.channel('sup-app-damage')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'damage_reports' }, (p) => {
-        if      (p.eventType === 'INSERT') setDamage((prev) => [p.new, ...prev]);
-        else if (p.eventType === 'UPDATE') setDamage((prev) => prev.map((r) => r.id === p.new.id ? p.new : r));
-        else if (p.eventType === 'DELETE') setDamage((prev) => prev.filter((r) => r.id !== p.old.id));
-      })
-      .subscribe();
+      const msgCh = supabase.channel('sup-app-messages')
+        .on('postgres_changes', withFilter({ event: 'INSERT', schema: 'public', table: 'messages' }), (p) => {
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === p.new.id)) return prev;
+            return [...prev, p.new];
+          });
+          if (p.new.sender_name !== 'Supervisor') setUnreadMsgs((n) => n + 1);
+        })
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (p) => {
+          setMessages((prev) => prev.filter((m) => m.id !== p.old.id));
+        })
+        .subscribe();
 
-    const scanCh = supabase.channel('sup-app-partscans')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'part_scans' }, (p) => {
-        setPartScans((prev) => [p.new, ...prev].slice(0, 60));
-      })
-      .subscribe();
+      const needsCh = supabase.channel('sup-app-needs')
+        .on('postgres_changes', withFilter({ event: '*', schema: 'public', table: 'inventory_needs' }), (p) => {
+          if      (p.eventType === 'INSERT') setNeeds((prev) => [p.new, ...prev]);
+          else if (p.eventType === 'UPDATE') setNeeds((prev) => prev.map((r) => r.id === p.new.id ? p.new : r));
+          else if (p.eventType === 'DELETE') setNeeds((prev) => prev.filter((r) => r.id !== p.old.id));
+        })
+        .subscribe();
 
-    channels.current = [msgCh, needsCh, dmgCh, scanCh];
+      const dmgCh = supabase.channel('sup-app-damage')
+        .on('postgres_changes', withFilter({ event: '*', schema: 'public', table: 'damage_reports' }), (p) => {
+          if      (p.eventType === 'INSERT') setDamage((prev) => [p.new, ...prev]);
+          else if (p.eventType === 'UPDATE') setDamage((prev) => prev.map((r) => r.id === p.new.id ? p.new : r));
+          else if (p.eventType === 'DELETE') setDamage((prev) => prev.filter((r) => r.id !== p.old.id));
+        })
+        .subscribe();
+
+      const scanCh = supabase.channel('sup-app-partscans')
+        .on('postgres_changes', withFilter({ event: 'INSERT', schema: 'public', table: 'part_scans' }), (p) => {
+          setPartScans((prev) => [p.new, ...prev].slice(0, 60));
+        })
+        .subscribe();
+
+      const clockCh = supabase.channel('sup-app-timeclock')
+        .on('postgres_changes', withFilter({ event: '*', schema: 'public', table: 'time_clock' }), (p) => {
+          if (p.eventType === 'INSERT') {
+            if (!p.new.clock_out) setTimeClock((prev) => [p.new, ...prev]);
+          } else if (p.eventType === 'UPDATE') {
+            setTimeClock((prev) =>
+              p.new.clock_out
+                ? prev.filter((r) => r.id !== p.new.id)
+                : prev.map((r) => r.id === p.new.id ? p.new : r)
+            );
+          } else if (p.eventType === 'DELETE') {
+            setTimeClock((prev) => prev.filter((r) => r.id !== p.old.id));
+          }
+        })
+        .subscribe();
+
+      channels.current = [msgCh, needsCh, dmgCh, scanCh, clockCh];
+    })();
+
     return () => channels.current.forEach((ch) => supabase.removeChannel(ch));
   }, []);
 
@@ -1273,7 +1327,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
 
     const { data, error } = await supabase
       .from('messages')
-      .insert({ sender_name: 'Supervisor', dept: replyDept, body: trimmed })
+      .insert({ sender_name: 'Supervisor', dept: replyDept, body: trimmed, tenant_id: tenantIdRef.current })
       .select()
       .single();
 
@@ -1377,6 +1431,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
                 damage={damage}
                 messages={messages}
                 threads={threads}
+                timeClock={timeClock}
                 userName={userName}
                 onSwitchRole={handleSignOut}
                 dismissedMsgIds={dismissedMsgIds}
