@@ -146,7 +146,7 @@ const RES_COLORS = {
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 function App() {
-  const [view,      setView]      = useState("dashboard");
+  const [view,      setView]      = useState("brief");
 
   // ── Supervisor session ─────────────────────────────────────────────────────
   const [supervisorName,   setSupervisorName]   = useState(() => localStorage.getItem("supervisor_name") || "");
@@ -180,7 +180,7 @@ function App() {
   const [unreadDmg,     setUnreadDmg]     = useState(0);
   const [activeThread,  setActiveThread]  = useState(null); // { name, dept } | null
   const msgListRef    = useRef(null);
-  const activeViewRef = useRef("dashboard");
+  const activeViewRef = useRef("brief");
 
   // ── Supabase: initial fetch + real-time subscriptions ─────────────────────
   useEffect(() => {
@@ -298,6 +298,12 @@ function App() {
     return () => clearInterval(t);
   }, []);
 
+  // Tick briefTick every 60s so Morning Brief shows a live "refreshed at" time
+  useEffect(() => {
+    const t = setInterval(() => setBriefTick(Date.now()), 60000);
+    return () => clearInterval(t);
+  }, []);
+
   // Auto-scroll messages list when new messages arrive
   useEffect(() => {
     if (view === "messages" && msgListRef.current) {
@@ -366,6 +372,7 @@ function App() {
   // ── Time Clock (Supabase) ─────────────────────────────────────────────────
   const [tcToday,      setTcToday]      = useState([]);
   const [tcNow,        setTcNow]        = useState(Date.now()); // tick for live elapsed
+  const [briefTick,    setBriefTick]    = useState(Date.now()); // tick for brief refresh
 
   // ── SOPs (Supabase) ───────────────────────────────────────────────────────
   const [sops,         setSops]         = useState([]);
@@ -1018,17 +1025,19 @@ function App() {
 
     // ── MORNING BRIEF ─────────────────────────────────────────────────────────
     view==="brief" && (() => {
-      const yesterday  = new Date(Date.now() - 24*60*60*1000);
-      const recentMsgs = messages.filter(m => new Date(m.created_at) > yesterday && m.sender_name !== "Supervisor").slice(0, 8);
-      const openDmg    = damageRpts.filter(d => d.status === "open");
+      const yesterday   = new Date(Date.now() - 24*60*60*1000);
+      const recentMsgs  = messages.filter(m => new Date(m.created_at) > yesterday && m.sender_name !== "Supervisor").slice(0,10);
+      const openDmg     = damageRpts.filter(d => d.status === "open");
       const pendingMats = miss.filter(m => m.status === "pending");
-      const todayStr   = new Date().toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"});
+      const activeCrew  = tcToday.filter(e => !e.clock_out || e.clock_out === "NULL");
+      const todayStr    = new Date().toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"});
+      const refreshedAt = new Date(briefTick).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
 
       const BriefSec = ({emoji, label, color, count}) =>
-        h("div",{style:{display:"flex",alignItems:"center",gap:8,marginTop:20,marginBottom:10}},
+        h("div",{style:{display:"flex",alignItems:"center",gap:8,marginTop:24,marginBottom:10}},
           h("span",{style:{fontSize:15}}, emoji),
           h("div",{style:{fontSize:10,fontWeight:700,color:color??AM,letterSpacing:".1em"}},
-            label.toUpperCase()+(count!=null&&count>0?" ("+count+")":"")),
+            label.toUpperCase()+(count!=null?" ("+count+")":"")),
           h("div",{style:{flex:1,height:1,background:"#1a1a1a",marginLeft:8}})
         );
 
@@ -1041,60 +1050,79 @@ function App() {
             h("div",{style:{fontSize:22,fontWeight:500,letterSpacing:"-.3px"}}, "Morning Brief"),
             h("div",{style:{fontSize:12,color:"#555",marginTop:4}}, todayStr)
           ),
-          h("div",{style:{display:"flex",alignItems:"center",gap:6}},
-            h("div",{style:{width:7,height:7,borderRadius:"50%",background:"#22c55e"}}),
-            h("span",{style:{fontSize:10,color:"#22c55e",fontWeight:600}}, "live")
+          h("div",{style:{display:"flex",alignItems:"center",gap:10}},
+            h("div",{style:{display:"flex",alignItems:"center",gap:5}},
+              h("div",{style:{width:7,height:7,borderRadius:"50%",background:"#22c55e"}}),
+              h("span",{style:{fontSize:10,color:"#22c55e",fontWeight:600}}, "live")
+            ),
+            h("span",{style:{fontSize:10,color:"#444"}}, "refreshed "+refreshedAt)
           )
         ),
 
-        h(BriefSec,{emoji:"🔧",label:"Open Damage Reports",color:"#ef4444",count:openDmg.length}),
+        h(BriefSec,{emoji:"🔴",label:"URGENT — Open Damage Reports",color:"#ef4444",count:openDmg.length}),
         openDmg.length===0
           ? h("div",{style:{fontSize:12,color:"#444",padding:"8px 0",fontStyle:"italic"}}, "No open damage reports — clear!")
-          : openDmg.slice(0,8).map(d =>
+          : openDmg.slice(0,10).map(d =>
               h(BCard,{key:d.id,color:"#ef4444"},
-                h("div",{style:{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}},
-                  h("span",{style:{fontWeight:500,color:"#ccc",fontSize:13}}, d.part_name),
-                  h(Pill,{label:d.dept,color:"#3b82f6"}),
+                h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:4}},
+                  h("span",{style:{fontWeight:600,color:"#fff",fontSize:13}}, d.part_name),
+                  d.dept && h("span",{style:{fontSize:10,color:"#3b82f6",background:"#0d1f3c",padding:"2px 7px",borderRadius:99,border:"1px solid #1e3a5f"}}, d.dept),
                   d.job_id && h("span",{style:{fontSize:11,color:"#555"}}, "Job #"+d.job_id)
                 ),
-                d.notes && h("div",{style:{fontSize:12,color:"#666",marginTop:4,fontStyle:"italic"}}, d.notes),
+                d.notes && h("div",{style:{fontSize:12,color:"#888",fontStyle:"italic",marginBottom:4}}, d.notes),
                 d.resolution_type && h("div",{style:{display:"flex",gap:6,marginTop:4,alignItems:"center"}},
-                  h(Pill,{label:d.resolution_type,color:RES_COLORS[d.resolution_type]||"#6b7280"}),
+                  h("span",{style:{fontSize:11,color:RES_COLORS[d.resolution_type]||"#6b7280",background:"#1a1a1a",padding:"2px 8px",borderRadius:99,border:"1px solid #333"}}, d.resolution_type),
                   d.resolved_by && h("span",{style:{fontSize:11,color:"#555"}}, "— "+d.resolved_by)
                 ),
-                h("div",{style:{fontSize:11,color:"#333",marginTop:4}}, fmtD(d.created_at))
+                h("div",{style:{fontSize:11,color:"#444"}}, fmtDT(d.created_at))
               )
             ),
 
-        h(BriefSec,{emoji:"📦",label:"Pending Inventory Needs",color:AM,count:pendingMats.length}),
+        h(BriefSec,{emoji:"🟡",label:"NEEDS — Pending Inventory",color:AM,count:pendingMats.length}),
         pendingMats.length===0
           ? h("div",{style:{fontSize:12,color:"#444",padding:"8px 0",fontStyle:"italic"}}, "No pending inventory needs — all clear!")
-          : pendingMats.slice(0,8).map(m =>
+          : pendingMats.slice(0,10).map(m =>
               h(BCard,{key:m.id,color:AM},
-                h("div",{style:{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}},
-                  h("span",{style:{fontWeight:500,color:"#ccc",fontSize:13}}, m.item),
+                h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:4}},
+                  h("span",{style:{fontWeight:600,color:"#fff",fontSize:13}}, m.item),
                   h("span",{style:{fontSize:11,color:"#555"}}, m.qty+" units"),
-                  h(Pill,{label:m.dept,color:"#3b82f6"}),
+                  m.dept && h("span",{style:{fontSize:10,color:"#3b82f6",background:"#0d1f3c",padding:"2px 7px",borderRadius:99,border:"1px solid #1e3a5f"}}, m.dept),
                   m.job_id && h("span",{style:{fontSize:11,color:"#555"}}, "Job #"+m.job_id)
                 ),
-                h("div",{style:{fontSize:11,color:"#333",marginTop:4}}, fmtD(m.created_at))
+                h("div",{style:{fontSize:11,color:"#444"}}, fmtDT(m.created_at))
               )
             ),
 
         recentMsgs.length>0 && h("div",null,
-          h(BriefSec,{emoji:"💬",label:"Messages — Last 24h",color:"#22c55e",count:recentMsgs.length}),
+          h(BriefSec,{emoji:"💬",label:"Messages — Last 24h",color:"#2D8A94",count:recentMsgs.length}),
           recentMsgs.map(m =>
             h(BCard,{key:m.id},
               h("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:3}},
-                h("span",{style:{fontWeight:500,color:AM,fontSize:13}}, m.sender_name),
-                m.dept && h("span",{style:{fontSize:10,color:"#555",background:"#1a1a1a",padding:"2px 7px",borderRadius:99,border:"1px solid #222"}}, m.dept)
+                h("span",{style:{fontWeight:600,color:AM,fontSize:13}}, m.sender_name),
+                m.dept && h("span",{style:{fontSize:10,color:"#555",background:"#1a1a1a",padding:"2px 7px",borderRadius:99,border:"1px solid #222"}}, m.dept),
+                h("span",{style:{fontSize:11,color:"#444",marginLeft:"auto"}}, fmtDT(m.created_at))
               ),
-              h("div",{style:{fontSize:13,color:"#ccc"}}, (m.body||"").slice(0,120)+((m.body||"").length>120?"…":""))
+              h("div",{style:{fontSize:13,color:"#ccc"}}, (m.body||"").slice(0,140)+((m.body||"").length>140?"…":""))
             )
           )
         ),
 
-        pendingMats.length===0 && openDmg.length===0 && recentMsgs.length===0 &&
+        h(BriefSec,{emoji:"👷",label:"Active Crew — Clocked In Now",color:"#22c55e",count:activeCrew.length}),
+        activeCrew.length===0
+          ? h("div",{style:{fontSize:12,color:"#444",padding:"8px 0",fontStyle:"italic"}}, "No crew currently clocked in")
+          : activeCrew.map(e => {
+              const hrs = ((tcNow - new Date(e.clock_in).getTime()) / 3600000).toFixed(1);
+              return h(BCard,{key:e.id,color:"#22c55e"},
+                h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
+                  h("span",{style:{fontWeight:600,color:"#fff",fontSize:13}}, e.worker_name),
+                  e.dept && h("span",{style:{fontSize:10,color:"#22c55e",background:"#052e16",padding:"2px 7px",borderRadius:99,border:"1px solid #14532d"}}, e.dept),
+                  h("span",{style:{fontSize:11,color:"#22c55e",marginLeft:"auto"}}, hrs+"h")
+                ),
+                h("div",{style:{fontSize:11,color:"#444",marginTop:2}}, "Clocked in "+fmtDT(e.clock_in))
+              );
+            }),
+
+        pendingMats.length===0 && openDmg.length===0 && recentMsgs.length===0 && activeCrew.length===0 &&
           h("div",{style:{textAlign:"center",padding:"48px 0",color:"#333",fontSize:13}}, "All clear — nothing urgent this morning."),
 
         h("div",{style:{height:40}})
