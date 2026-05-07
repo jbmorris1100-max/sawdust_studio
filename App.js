@@ -420,15 +420,52 @@ export default function App() {
 
     if (selectedRole === 'supervisor' && name) {
       const cutoff = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
-      const { data: activeSessions } = await supabase
+
+      // Clear any stale sessions from this same device so it can always re-enter
+      await supabase.from('supervisor_sessions')
+        .update({ is_active: false, logged_out_at: new Date().toISOString() })
+        .eq('device_id', deviceId).eq('is_active', true).catch(() => {});
+
+      // Block only if a DIFFERENT device has an active supervisor session
+      const { data: otherSessions } = await supabase
         .from('supervisor_sessions').select('name, device_id')
+        .neq('device_id', deviceId)
         .eq('is_active', true).gte('logged_in_at', cutoff);
 
-      const conflict = activeSessions?.find(s => s.name.toLowerCase() !== name.toLowerCase());
-      if (conflict) {
-        Alert.alert('Supervisor Already Live', `Supervisor already logged in as ${conflict.name}.`);
+      if (otherSessions?.length > 0) {
+        const other = otherSessions[0];
+        Alert.alert(
+          'Supervisor Active on Another Device',
+          `${other.name} is currently logged in as supervisor on another device.`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Force Login',
+              style: 'destructive',
+              onPress: async () => {
+                await supabase.from('supervisor_sessions')
+                  .update({ is_active: false, logged_out_at: new Date().toISOString() })
+                  .eq('is_active', true).catch(() => {});
+                await supabase.from('supervisor_sessions').insert({ name, device_id: deviceId, is_active: true });
+                await AsyncStorage.setItem(STORAGE.NAME, name);
+                setUserName(name); setUserDept('Management');
+                registerForPushNotifications(name, 'Supervisor').catch(console.warn);
+                await Promise.all([
+                  AsyncStorage.setItem(STORAGE.ROLE, selectedRole),
+                  AsyncStorage.setItem(STORAGE.VERSION, '2'),
+                ]);
+                await supabase.from('login_log').insert({
+                  worker_name: name, dept: 'Management', role: 'supervisor',
+                  device_id: deviceId, app_version: '2',
+                }).catch(console.warn);
+                setRole(selectedRole);
+              },
+            },
+          ]
+        );
         return;
       }
+
       await supabase.from('supervisor_sessions').insert({ name, device_id: deviceId, is_active: true });
       await AsyncStorage.setItem(STORAGE.NAME, name);
       setUserName(name); setUserDept('Management');

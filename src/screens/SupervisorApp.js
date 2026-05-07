@@ -919,30 +919,37 @@ function DamageTab({ allDamage, filter, setFilter, onStatusChange, onResolve, on
 }
 
 // ── AI Control Center Tab ─────────────────────────────────────
-function AIControlCenterTab({ userName }) {
+function AIControlCenterTab({ userName, needs, damage, messages, timeClock }) {
+  const [panel, setPanel] = useState('assistant');
+
+  // Panel 1: Assistant
+  const [chatHistory,  setChatHistory]  = useState([]);
+  const [chatInput,    setChatInput]    = useState('');
+  const [chatLoading,  setChatLoading]  = useState(false);
+  const chatListRef = useRef(null);
+
+  // Panel 2: Learning
   const [settings,        setSettings]        = useState(null);
   const [loadingSettings, setLoadingSettings] = useState(true);
-  const [savingMode,      setSavingMode]       = useState(false);
-  const [savingToggle,    setSavingToggle]     = useState(null);
-
-  // Daily input form
-  const [dailyBottlenecks,  setDailyBottlenecks]  = useState([]);
-  const [externalFactors,   setExternalFactors]   = useState('');
-  const [outputRating,      setOutputRating]      = useState(0);
-  const [dailyNotes,        setDailyNotes]        = useState('');
-  const [submittingDaily,   setSubmittingDaily]   = useState(false);
-  const [dailySubmitted,    setDailySubmitted]    = useState(false);
-
-  // Stats
+  const [savingToggle,    setSavingToggle]    = useState(null);
+  const [dailyBottlenecks, setDailyBottlenecks] = useState([]);
+  const [externalFactors,  setExternalFactors]  = useState('');
+  const [outputRating,     setOutputRating]     = useState(0);
+  const [dailyNotes,       setDailyNotes]       = useState('');
+  const [submittingDaily,  setSubmittingDaily]  = useState(false);
+  const [dailySubmitted,   setDailySubmitted]   = useState(false);
   const [logCount,   setLogCount]   = useState(null);
   const [inputCount, setInputCount] = useState(null);
+
+  // Panel 3: Insights
+  const [insights,        setInsights]        = useState([]);
+  const [insightsLoading, setInsightsLoading] = useState(false);
 
   useEffect(() => {
     (async () => {
       const { data } = await supabase.from('ai_settings').select('*').limit(1).maybeSingle();
       setSettings(data);
       setLoadingSettings(false);
-
       const today = new Date().toISOString().slice(0, 10);
       const [logRes, inputRes, todayInputRes] = await Promise.all([
         supabase.from('ai_learning_log').select('id', { count: 'exact', head: true }),
@@ -955,15 +962,8 @@ function AIControlCenterTab({ userName }) {
     })();
   }, []);
 
-  const setMode = async (mode) => {
-    setSavingMode(true);
-    const updated = { ...settings, mode, updated_by: userName, updated_at: new Date().toISOString() };
-    setSettings(updated);
-    await supabase.from('ai_settings').update({ mode, updated_by: userName, updated_at: updated.updated_at }).eq('id', settings.id);
-    setSavingMode(false);
-  };
-
   const toggleFeature = async (key) => {
+    if (!settings) return;
     setSavingToggle(key);
     const newVal = !settings[key];
     const updated = { ...settings, [key]: newVal, updated_by: userName, updated_at: new Date().toISOString() };
@@ -972,215 +972,486 @@ function AIControlCenterTab({ userName }) {
     setSavingToggle(null);
   };
 
-  const toggleBottleneck = (opt) => {
-    setDailyBottlenecks((prev) =>
-      prev.includes(opt) ? prev.filter((o) => o !== opt) : [...prev, opt]
-    );
-  };
-
   const submitDailyInput = async () => {
     if (outputRating === 0) {
-      Alert.alert('Rating required', 'Please select an output rating before submitting.');
+      Alert.alert('Rating required', 'Please select an output rating.');
       return;
     }
     setSubmittingDaily(true);
     const today = new Date().toISOString().slice(0, 10);
     await supabase.from('ai_daily_input').insert({
-      date:             today,
-      supervisor_name:  userName,
-      bottlenecks:      JSON.stringify(dailyBottlenecks),
+      date: today, supervisor_name: userName,
+      bottlenecks: JSON.stringify(dailyBottlenecks),
       external_factors: externalFactors.trim() || null,
-      output_rating:    outputRating,
-      notes:            dailyNotes.trim() || null,
+      output_rating: outputRating,
+      notes: dailyNotes.trim() || null,
     });
     setSubmittingDaily(false);
     setDailySubmitted(true);
     setInputCount((n) => (n ?? 0) + 1);
   };
 
-  if (loadingSettings) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={C.accent} />
-      </View>
-    );
-  }
+  const buildSystemPrompt = () => {
+    const openDmg     = damage.filter(d => d.status === 'open');
+    const pendingMats = needs.filter(n => n.status === 'pending');
+    const yesterday   = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const recentMsgs  = messages.filter(m => new Date(m.created_at) > yesterday);
+    const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+    const dmgList   = openDmg.slice(0, 5).map(d => `  - ${d.part_name} (${d.dept}${d.job_id ? `, Job #${d.job_id}` : ''})`).join('\n');
+    const needsList = pendingMats.slice(0, 5).map(n => `  - ${n.item} ×${n.qty} (${n.dept}${n.job_id ? `, Job #${n.job_id}` : ''})`).join('\n');
+    const crewList  = (timeClock || []).slice(0, 10).map(e => `  - ${e.worker_name || e.employee_name || '?'} (${e.dept || '?'})`).join('\n');
+    return `You are InlineIQ, an AI assistant for a cabinet manufacturing shop floor. You have access to real-time data from this shop including work orders, crew time logs, damage reports, inventory needs, and production metrics. Answer questions concisely and practically. Focus on actionable insights that help the supervisor run a more efficient and profitable shop.
 
-  if (!settings) {
-    return (
-      <View style={styles.centered}>
-        <Text style={{ color: C.muted }}>AI settings not found. Run ai_tables.sql migration.</Text>
-      </View>
-    );
-  }
+Today is ${today}.
+
+ACTIVE CREW (${(timeClock || []).length} clocked in):
+${crewList || '  None'}
+
+OPEN DAMAGE REPORTS (${openDmg.length}):
+${dmgList || '  None'}
+
+PENDING INVENTORY NEEDS (${pendingMats.length}):
+${needsList || '  None'}
+
+RECENT MESSAGES: ${recentMsgs.length} crew messages in the last 24h
+
+Keep answers short and actionable. If you don't have enough data, say so.`;
+  };
+
+  const callClaude = async (msgs, system, maxTokens = 1024) => {
+    const apiKey = process.env.EXPO_PUBLIC_ANTHROPIC_KEY;
+    if (!apiKey) throw new Error('EXPO_PUBLIC_ANTHROPIC_KEY not set in .env.local');
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: maxTokens, system, messages: msgs }),
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error.message);
+    return data.content?.[0]?.text ?? '';
+  };
+
+  const sendChat = async () => {
+    const text = chatInput.trim();
+    if (!text || chatLoading) return;
+    const newHistory = [...chatHistory, { role: 'user', content: text }];
+    setChatHistory(newHistory);
+    setChatInput('');
+    setChatLoading(true);
+    try {
+      const reply = await callClaude(newHistory, buildSystemPrompt());
+      setChatHistory(h => [...h, { role: 'assistant', content: reply }]);
+    } catch (e) {
+      setChatHistory(h => [...h, { role: 'assistant', content: `⚠️ ${e.message}` }]);
+    }
+    setChatLoading(false);
+  };
+
+  const generateInsights = async () => {
+    setInsightsLoading(true);
+    setInsights([]);
+    try {
+      const { data: recentInputs } = await supabase
+        .from('ai_daily_input').select('*').order('date', { ascending: false }).limit(30);
+
+      const openDmg     = damage.filter(d => d.status === 'open');
+      const pendingMats = needs.filter(n => n.status === 'pending');
+
+      const deptDmg = {};
+      damage.forEach(d => { deptDmg[d.dept] = (deptDmg[d.dept] || 0) + 1; });
+      const topDmgDept = Object.entries(deptDmg).sort((a, b) => b[1] - a[1])[0];
+
+      const itemFreq = {};
+      needs.forEach(n => { itemFreq[n.item] = (itemFreq[n.item] || 0) + 1; });
+      const topItem = Object.entries(itemFreq).sort((a, b) => b[1] - a[1])[0];
+
+      const dayFreq = {};
+      needs.forEach(n => {
+        const day = new Date(n.created_at).toLocaleDateString('en-US', { weekday: 'long' });
+        dayFreq[day] = (dayFreq[day] || 0) + 1;
+      });
+      const busyDay = Object.entries(dayFreq).sort((a, b) => b[1] - a[1])[0];
+
+      const bottlenecks = recentInputs?.length > 0
+        ? [...new Set(recentInputs.flatMap(d => { try { return JSON.parse(d.bottlenecks || '[]'); } catch { return []; } }))]
+        : [];
+      const avgRating = recentInputs?.length > 0
+        ? (recentInputs.reduce((s, d) => s + (d.output_rating || 0), 0) / recentInputs.length).toFixed(1)
+        : null;
+
+      const openDmgByDept = openDmg.reduce((acc, d) => ({ ...acc, [d.dept]: (acc[d.dept] || 0) + 1 }), {});
+
+      const context = [
+        `Damage reports: total=${damage.length}, open=${openDmg.length}`,
+        topDmgDept ? `Most damage dept: ${topDmgDept[0]} (${topDmgDept[1]} reports)` : '',
+        `Open damage by dept: ${Object.entries(openDmgByDept).map(([k,v]) => `${k}:${v}`).join(', ') || 'none'}`,
+        `Inventory needs: total=${needs.length}, pending=${pendingMats.length}`,
+        topItem ? `Most requested item: "${topItem[0]}" (${topItem[1]} times)` : '',
+        busyDay ? `Busiest day for requests: ${busyDay[0]} (${busyDay[1]} requests)` : '',
+        recentInputs?.length > 0
+          ? `Supervisor check-ins (${recentInputs.length} days): avg rating=${avgRating}/5, bottlenecks=[${bottlenecks.join(', ')}]`
+          : 'No supervisor check-in data yet.',
+      ].filter(Boolean).join('\n');
+
+      const raw = await callClaude(
+        [{ role: 'user', content: context }],
+        'You are an operations analyst for a cabinet manufacturing shop. Generate 3-4 specific, actionable insights based on the provided data. Format as JSON array only: [{"text":"...","confidence":"High|Medium|Low","basis":"..."}]',
+        1200
+      );
+      const match = raw.match(/\[[\s\S]*\]/);
+      const parsed = JSON.parse(match ? match[0] : '[]');
+      setInsights(Array.isArray(parsed) ? parsed : []);
+    } catch (e) {
+      setInsights([{ text: `⚠️ ${e.message}`, confidence: 'N/A', basis: 'Error' }]);
+    }
+    setInsightsLoading(false);
+  };
+
+  const PANELS = [
+    { key: 'assistant', label: 'Assistant' },
+    { key: 'learning',  label: 'Learning'  },
+    { key: 'insights',  label: 'Insights'  },
+  ];
 
   return (
-    <ScrollView style={styles.flex} showsVerticalScrollIndicator={false} contentContainerStyle={styles.aiScroll}>
-
-      {/* Header */}
-      <View style={styles.aiHeader}>
-        <Ionicons name="hardware-chip" size={22} color={C.accent} />
-        <View style={{ flex: 1, marginLeft: 10 }}>
-          <Text style={styles.aiHeaderTitle}>AI Control Center</Text>
-          <Text style={styles.aiHeaderSub}>Learning system & pattern engine</Text>
+    <View style={styles.flex}>
+      {/* Header + panel switcher */}
+      <View style={styles.aiTabHeader}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Ionicons name="hardware-chip" size={18} color={C.accent} />
+          <Text style={styles.aiHeaderTitle}>InlineIQ</Text>
         </View>
-      </View>
-
-      {/* ── Section 1: Mode ── */}
-      <Text style={[styles.sectionLabel, { marginTop: 4 }]}>OPERATING MODE</Text>
-      {Object.entries(MODE_INFO).map(([modeKey, info]) => {
-        const active = settings.mode === modeKey;
-        return (
-          <TouchableOpacity
-            key={modeKey}
-            style={[styles.modeCard, active && { borderColor: info.color + '80', backgroundColor: info.color + '12' }]}
-            onPress={() => !savingMode && setMode(modeKey)}
-            activeOpacity={0.75}
-          >
-            <View style={[styles.modeRadio, active && { borderColor: info.color, backgroundColor: info.color }]}>
-              {active && <View style={styles.modeRadioInner} />}
-            </View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={[styles.modeLabel, active && { color: info.color }]}>{info.label}</Text>
-              <Text style={styles.modeDesc}>{info.desc}</Text>
-            </View>
-            {active && savingMode && <ActivityIndicator size="small" color={info.color} />}
-          </TouchableOpacity>
-        );
-      })}
-
-      {/* ── Section 2: Feature toggles ── */}
-      <Text style={[styles.sectionLabel, { marginTop: 20 }]}>FEATURE TOGGLES</Text>
-      <View style={styles.aiCard}>
-        {Object.entries(FEATURE_LABELS).map(([key, label], idx, arr) => (
-          <View
-            key={key}
-            style={[styles.toggleRow, idx < arr.length - 1 && styles.toggleRowBorder]}
-          >
-            <View style={{ flex: 1 }}>
-              <Text style={styles.toggleLabel}>{label}</Text>
-            </View>
-            {savingToggle === key
-              ? <ActivityIndicator size="small" color={C.accent} style={{ marginRight: 4 }} />
-              : (
-                <Switch
-                  value={!!settings[key]}
-                  onValueChange={() => toggleFeature(key)}
-                  trackColor={{ false: C.border, true: C.accent + '80' }}
-                  thumbColor={settings[key] ? C.accent : C.muted}
-                />
-              )
-            }
-          </View>
-        ))}
-      </View>
-
-      {/* ── Section 3: Daily Input Form ── */}
-      <Text style={[styles.sectionLabel, { marginTop: 20 }]}>END-OF-SHIFT CHECK-IN</Text>
-      {dailySubmitted ? (
-        <View style={[styles.aiCard, { alignItems: 'center', paddingVertical: 20, gap: 8 }]}>
-          <Ionicons name="checkmark-circle" size={36} color={C.success} />
-          <Text style={{ color: C.success, fontWeight: '700', fontSize: 15 }}>Today's check-in submitted</Text>
-          <Text style={{ color: C.muted, fontSize: 12, textAlign: 'center' }}>
-            Come back tomorrow to log the next shift.
-          </Text>
-        </View>
-      ) : (
-        <View style={styles.aiCard}>
-          <Text style={styles.toggleLabel}>What slowed us down today?</Text>
-          <View style={styles.bottleneckGrid}>
-            {BOTTLENECK_OPTIONS.map((opt) => {
-              const sel = dailyBottlenecks.includes(opt);
-              return (
-                <TouchableOpacity
-                  key={opt}
-                  style={[styles.bChip, sel && styles.bChipActive]}
-                  onPress={() => toggleBottleneck(opt)}
-                  activeOpacity={0.75}
-                >
-                  <Text style={[styles.bChipText, sel && styles.bChipTextActive]}>{opt}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          <Text style={[styles.toggleLabel, { marginTop: 14 }]}>External factors (weather, rush orders…)</Text>
-          <TextInput
-            style={styles.aiInput}
-            value={externalFactors}
-            onChangeText={setExternalFactors}
-            placeholder="Optional…"
-            placeholderTextColor={C.muted}
-            multiline
-          />
-
-          <Text style={[styles.toggleLabel, { marginTop: 14 }]}>Overall output rating</Text>
-          <View style={styles.ratingRow}>
-            {[1, 2, 3, 4, 5].map((n) => (
-              <TouchableOpacity key={n} onPress={() => setOutputRating(n)} style={styles.ratingBtn}>
-                <Ionicons
-                  name={n <= outputRating ? 'star' : 'star-outline'}
-                  size={28}
-                  color={n <= outputRating ? C.accent : C.muted}
-                />
-              </TouchableOpacity>
-            ))}
-            {outputRating > 0 && (
-              <Text style={{ color: C.muted, fontSize: 12, marginLeft: 8 }}>
-                {['', 'Rough day', 'Below avg', 'Average', 'Good day', 'Great day'][outputRating]}
+        <View style={{ flexDirection: 'row', gap: 6 }}>
+          {PANELS.map(p => (
+            <TouchableOpacity
+              key={p.key}
+              style={[styles.aiPanelBtn, panel === p.key && styles.aiPanelBtnActive]}
+              onPress={() => setPanel(p.key)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.aiPanelBtnText, panel === p.key && styles.aiPanelBtnTextActive]}>
+                {p.label}
               </Text>
-            )}
-          </View>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
 
-          <Text style={[styles.toggleLabel, { marginTop: 14 }]}>Notes</Text>
-          <TextInput
-            style={styles.aiInput}
-            value={dailyNotes}
-            onChangeText={setDailyNotes}
-            placeholder="Anything the AI should know about today…"
-            placeholderTextColor={C.muted}
-            multiline
+      {/* ── PANEL 1: ASSISTANT ── */}
+      {panel === 'assistant' && (
+        <>
+          <FlatList
+            ref={chatListRef}
+            data={chatHistory}
+            keyExtractor={(_, i) => String(i)}
+            style={styles.flex}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12, flexGrow: 1 }}
+            showsVerticalScrollIndicator={false}
+            onContentSizeChange={() => chatListRef.current?.scrollToEnd({ animated: true })}
+            ListEmptyComponent={
+              <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 40, gap: 14, paddingHorizontal: 24 }}>
+                <Ionicons name="hardware-chip-outline" size={52} color={C.border} />
+                <Text style={{ color: C.muted, fontSize: 15, fontWeight: '700', textAlign: 'center' }}>
+                  Ask InlineIQ anything
+                </Text>
+                <Text style={{ color: C.border, fontSize: 13, textAlign: 'center', lineHeight: 20 }}>
+                  "Which jobs are most at risk this week?"{'\n'}
+                  "What materials need ordering?"{'\n'}
+                  "How many hours did Production log yesterday?"
+                </Text>
+              </View>
+            }
+            renderItem={({ item: msg }) => {
+              const isUser = msg.role === 'user';
+              return (
+                <View style={{ marginBottom: 12, alignSelf: isUser ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
+                  {!isUser && (
+                    <Text style={{ fontSize: 10, color: C.accent, fontWeight: '700', marginBottom: 3, marginLeft: 2 }}>
+                      INLINEIQ
+                    </Text>
+                  )}
+                  <View style={[
+                    { borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10 },
+                    isUser
+                      ? { backgroundColor: C.accent, borderBottomRightRadius: 4 }
+                      : { backgroundColor: C.surface, borderBottomLeftRadius: 4, borderWidth: 1, borderColor: C.border },
+                  ]}>
+                    <Text style={{ fontSize: 14, lineHeight: 20, color: isUser ? '#000' : C.text }}>
+                      {msg.content}
+                    </Text>
+                  </View>
+                </View>
+              );
+            }}
           />
 
-          <TouchableOpacity
-            style={[styles.aiSubmitBtn, submittingDaily && { opacity: 0.5 }]}
-            onPress={submitDailyInput}
-            disabled={submittingDaily}
-            activeOpacity={0.8}
-          >
-            {submittingDaily
-              ? <ActivityIndicator size="small" color="#000" />
-              : <Text style={styles.aiSubmitBtnText}>Submit Check-In</Text>
-            }
-          </TouchableOpacity>
-        </View>
+          {chatLoading && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingBottom: 8 }}>
+              <ActivityIndicator size="small" color={C.accent} />
+              <Text style={{ color: C.muted, fontSize: 12 }}>InlineIQ is thinking…</Text>
+            </View>
+          )}
+
+          <View style={[styles.composeBar, { paddingHorizontal: 12 }]}>
+            {chatHistory.length > 0 && (
+              <TouchableOpacity
+                onPress={() => setChatHistory([])}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{ paddingBottom: 8 }}
+              >
+                <Ionicons name="trash-outline" size={18} color={C.muted} />
+              </TouchableOpacity>
+            )}
+            <TextInput
+              style={styles.composeInput}
+              value={chatInput}
+              onChangeText={setChatInput}
+              placeholder="Ask InlineIQ anything…"
+              placeholderTextColor={C.muted}
+              multiline
+              maxLength={2000}
+            />
+            <TouchableOpacity
+              style={[styles.sendBtn, (!chatInput.trim() || chatLoading) && styles.sendBtnDisabled]}
+              onPress={sendChat}
+              disabled={!chatInput.trim() || chatLoading}
+              activeOpacity={0.7}
+            >
+              {chatLoading
+                ? <ActivityIndicator size="small" color="#000" />
+                : <Ionicons name="arrow-up" size={20} color="#000" />
+              }
+            </TouchableOpacity>
+          </View>
+        </>
       )}
 
-      {/* ── Section 4: Learning Status ── */}
-      <Text style={[styles.sectionLabel, { marginTop: 20 }]}>LEARNING STATUS</Text>
-      <View style={[styles.aiCard, { gap: 12 }]}>
-        <View style={styles.statLineRow}>
-          <Text style={styles.statLineLabel}>Data points logged</Text>
-          <Text style={styles.statLineValue}>{logCount ?? '…'}</Text>
-        </View>
-        <View style={styles.statLineRow}>
-          <Text style={styles.statLineLabel}>Daily check-ins recorded</Text>
-          <Text style={styles.statLineValue}>{inputCount ?? '…'}</Text>
-        </View>
-        <View style={styles.statLineRow}>
-          <Text style={styles.statLineLabel}>Baseline window</Text>
-          <Text style={styles.statLineValue}>45 days</Text>
-        </View>
-        <View style={[styles.aiInfoBox, { marginTop: 4 }]}>
-          <Ionicons name="information-circle-outline" size={14} color={C.blue} style={{ marginTop: 1 }} />
-          <Text style={styles.aiInfoText}>
-            Auto-capture activates when QC checks are submitted. Stage, department, job type, and outcome are logged automatically.
-          </Text>
-        </View>
-      </View>
+      {/* ── PANEL 2: LEARNING ── */}
+      {panel === 'learning' && (
+        <ScrollView style={styles.flex} showsVerticalScrollIndicator={false} contentContainerStyle={styles.aiScroll}>
+          {loadingSettings ? (
+            <ActivityIndicator size="large" color={C.accent} style={{ marginTop: 40 }} />
+          ) : !settings ? (
+            <View style={[styles.centered, { paddingTop: 40 }]}>
+              <Text style={{ color: C.muted, textAlign: 'center', lineHeight: 20 }}>
+                AI settings not found.{'\n'}Run ai_tables.sql migration.
+              </Text>
+            </View>
+          ) : (
+            <>
+              <Text style={[styles.sectionLabel, { marginTop: 0 }]}>LEARNING MODE</Text>
+              <View style={styles.aiCard}>
+                <View style={styles.toggleRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.toggleLabel}>Learning Active</Text>
+                    <Text style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
+                      {settings.learning_active
+                        ? 'AI is observing patterns and building insights'
+                        : 'Learning paused — AI only answers direct questions'}
+                    </Text>
+                  </View>
+                  {savingToggle === 'learning_active'
+                    ? <ActivityIndicator size="small" color={C.accent} style={{ marginRight: 4 }} />
+                    : <Switch
+                        value={!!settings.learning_active}
+                        onValueChange={() => toggleFeature('learning_active')}
+                        trackColor={{ false: C.border, true: C.accent + '80' }}
+                        thumbColor={settings.learning_active ? C.accent : C.muted}
+                      />
+                  }
+                </View>
+              </View>
 
-      <View style={{ height: 40 }} />
-    </ScrollView>
+              <Text style={[styles.sectionLabel, { marginTop: 16 }]}>ACTIVE MODULES</Text>
+              <View style={styles.aiCard}>
+                {Object.entries(FEATURE_LABELS).filter(([k]) => k !== 'learning_active').map(([key, label], idx, arr) => (
+                  <View key={key} style={[styles.toggleRow, idx < arr.length - 1 && styles.toggleRowBorder]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.toggleLabel}>{label}</Text>
+                    </View>
+                    {savingToggle === key
+                      ? <ActivityIndicator size="small" color={C.accent} style={{ marginRight: 4 }} />
+                      : <Switch
+                          value={!!settings[key]}
+                          onValueChange={() => toggleFeature(key)}
+                          trackColor={{ false: C.border, true: C.accent + '80' }}
+                          thumbColor={settings[key] ? C.accent : C.muted}
+                        />
+                    }
+                  </View>
+                ))}
+              </View>
+
+              <Text style={[styles.sectionLabel, { marginTop: 16 }]}>END-OF-SHIFT CHECK-IN</Text>
+              {dailySubmitted ? (
+                <View style={[styles.aiCard, { alignItems: 'center', paddingVertical: 20, gap: 8 }]}>
+                  <Ionicons name="checkmark-circle" size={36} color={C.success} />
+                  <Text style={{ color: C.success, fontWeight: '700', fontSize: 15 }}>Today's check-in submitted</Text>
+                  <Text style={{ color: C.muted, fontSize: 12, textAlign: 'center' }}>Come back tomorrow.</Text>
+                </View>
+              ) : (
+                <View style={styles.aiCard}>
+                  <Text style={styles.toggleLabel}>What slowed us down today?</Text>
+                  <View style={styles.bottleneckGrid}>
+                    {BOTTLENECK_OPTIONS.map(opt => {
+                      const sel = dailyBottlenecks.includes(opt);
+                      return (
+                        <TouchableOpacity
+                          key={opt}
+                          style={[styles.bChip, sel && styles.bChipActive]}
+                          onPress={() => setDailyBottlenecks(prev => sel ? prev.filter(o => o !== opt) : [...prev, opt])}
+                          activeOpacity={0.75}
+                        >
+                          <Text style={[styles.bChipText, sel && styles.bChipTextActive]}>{opt}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  <Text style={[styles.toggleLabel, { marginTop: 14 }]}>External factors</Text>
+                  <TextInput
+                    style={styles.aiInput}
+                    value={externalFactors}
+                    onChangeText={setExternalFactors}
+                    placeholder="Weather, rush orders…"
+                    placeholderTextColor={C.muted}
+                    multiline
+                  />
+
+                  <Text style={[styles.toggleLabel, { marginTop: 14 }]}>Overall output rating</Text>
+                  <View style={styles.ratingRow}>
+                    {[1, 2, 3, 4, 5].map(n => (
+                      <TouchableOpacity key={n} onPress={() => setOutputRating(n)} style={styles.ratingBtn}>
+                        <Ionicons name={n <= outputRating ? 'star' : 'star-outline'} size={28} color={n <= outputRating ? C.accent : C.muted} />
+                      </TouchableOpacity>
+                    ))}
+                    {outputRating > 0 && (
+                      <Text style={{ color: C.muted, fontSize: 12, marginLeft: 8 }}>
+                        {['', 'Rough day', 'Below avg', 'Average', 'Good day', 'Great day'][outputRating]}
+                      </Text>
+                    )}
+                  </View>
+
+                  <Text style={[styles.toggleLabel, { marginTop: 14 }]}>Notes</Text>
+                  <TextInput
+                    style={styles.aiInput}
+                    value={dailyNotes}
+                    onChangeText={setDailyNotes}
+                    placeholder="Anything the AI should know about today…"
+                    placeholderTextColor={C.muted}
+                    multiline
+                  />
+
+                  <TouchableOpacity
+                    style={[styles.aiSubmitBtn, submittingDaily && { opacity: 0.5 }]}
+                    onPress={submitDailyInput}
+                    disabled={submittingDaily}
+                    activeOpacity={0.8}
+                  >
+                    {submittingDaily
+                      ? <ActivityIndicator size="small" color="#000" />
+                      : <Text style={styles.aiSubmitBtnText}>Submit Check-In</Text>
+                    }
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              <Text style={[styles.sectionLabel, { marginTop: 16 }]}>LEARNING STATUS</Text>
+              <View style={[styles.aiCard, { gap: 12 }]}>
+                <View style={styles.statLineRow}>
+                  <Text style={styles.statLineLabel}>Data points logged</Text>
+                  <Text style={styles.statLineValue}>{logCount ?? '…'}</Text>
+                </View>
+                <View style={styles.statLineRow}>
+                  <Text style={styles.statLineLabel}>Daily check-ins recorded</Text>
+                  <Text style={styles.statLineValue}>{inputCount ?? '…'}</Text>
+                </View>
+                <View style={[styles.aiInfoBox, { marginTop: 4 }]}>
+                  <Ionicons name="information-circle-outline" size={14} color={C.blue} style={{ marginTop: 1 }} />
+                  <Text style={styles.aiInfoText}>
+                    Auto-capture activates when QC checks are submitted. Stage, department, job type, and outcome are logged automatically.
+                  </Text>
+                </View>
+              </View>
+            </>
+          )}
+          <View style={{ height: 40 }} />
+        </ScrollView>
+      )}
+
+      {/* ── PANEL 3: INSIGHTS ── */}
+      {panel === 'insights' && (
+        <ScrollView style={styles.flex} showsVerticalScrollIndicator={false} contentContainerStyle={styles.aiScroll}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <Text style={{ fontSize: 13, color: C.muted }}>
+              {insights.length > 0 ? `${insights.length} insights` : 'Based on your shop data'}
+            </Text>
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: C.accent, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 7 }}
+              onPress={generateInsights}
+              disabled={insightsLoading}
+              activeOpacity={0.8}
+            >
+              {insightsLoading
+                ? <ActivityIndicator size="small" color="#000" />
+                : <Ionicons name="refresh" size={14} color="#000" />
+              }
+              <Text style={{ color: '#000', fontWeight: '700', fontSize: 12 }}>
+                {insightsLoading ? 'Analyzing…' : insights.length > 0 ? 'Refresh' : 'Generate Insights'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {insightsLoading && insights.length === 0 && (
+            <View style={{ alignItems: 'center', paddingTop: 40, gap: 12 }}>
+              <ActivityIndicator size="large" color={C.accent} />
+              <Text style={{ color: C.muted, fontSize: 13 }}>Analyzing shop patterns…</Text>
+            </View>
+          )}
+
+          {!insightsLoading && insights.length === 0 && (
+            <View style={{ alignItems: 'center', paddingTop: 40, gap: 14, paddingHorizontal: 24 }}>
+              <Ionicons name="bulb-outline" size={52} color={C.border} />
+              <Text style={{ color: C.muted, fontSize: 15, fontWeight: '700', textAlign: 'center' }}>No insights yet</Text>
+              <Text style={{ color: C.border, fontSize: 12, textAlign: 'center', lineHeight: 18 }}>
+                Tap "Generate Insights" to analyze your shop data and surface patterns.
+              </Text>
+            </View>
+          )}
+
+          {insights.map((insight, i) => {
+            const confColor =
+              insight.confidence === 'High'   ? C.success :
+              insight.confidence === 'Medium' ? C.accent  : C.muted;
+            return (
+              <View key={i} style={[styles.dataCard, { borderLeftColor: confColor, marginBottom: 12 }]}>
+                <Text style={{ fontSize: 14, color: C.text, lineHeight: 21, marginBottom: 8 }}>
+                  {insight.text}
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <View style={{ backgroundColor: confColor + '22', borderRadius: 99, borderWidth: 1, borderColor: confColor + '44', paddingHorizontal: 8, paddingVertical: 2 }}>
+                    <Text style={{ fontSize: 10, fontWeight: '700', color: confColor }}>
+                      {insight.confidence ?? '?'} CONFIDENCE
+                    </Text>
+                  </View>
+                  {insight.basis ? (
+                    <Text style={{ fontSize: 11, color: C.muted, flex: 1 }} numberOfLines={2}>
+                      {insight.basis}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+            );
+          })}
+
+          <View style={{ height: 40 }} />
+        </ScrollView>
+      )}
+    </View>
   );
 }
 
@@ -1522,7 +1793,13 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
               />
             )}
             {activeTab === 'ai' && (
-              <AIControlCenterTab userName={userName} />
+              <AIControlCenterTab
+                userName={userName}
+                needs={needs}
+                damage={damage}
+                messages={messages}
+                timeClock={timeClock}
+              />
             )}
           </>
         )}
@@ -1792,13 +2069,25 @@ const styles = StyleSheet.create({
 
   // AI Control Center
   aiScroll: { paddingHorizontal: 16, paddingBottom: 32, paddingTop: 16 },
+  aiTabHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 16, paddingTop: 14, paddingBottom: 12,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  aiHeaderTitle: { fontSize: 16, fontWeight: '800', color: C.text },
+  aiHeaderSub:   { fontSize: 12, color: C.muted, marginTop: 2 },
+  aiPanelBtn: {
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20,
+    backgroundColor: C.input, borderWidth: 1, borderColor: C.border,
+  },
+  aiPanelBtnActive:     { backgroundColor: C.accent, borderColor: C.accent },
+  aiPanelBtnText:       { fontSize: 12, fontWeight: '600', color: C.muted },
+  aiPanelBtnTextActive: { color: '#000' },
   aiHeader: {
     flexDirection: 'row', alignItems: 'center',
     marginBottom: 20, paddingBottom: 16,
     borderBottomWidth: 1, borderBottomColor: C.border,
   },
-  aiHeaderTitle: { fontSize: 18, fontWeight: '800', color: C.text },
-  aiHeaderSub:   { fontSize: 12, color: C.muted, marginTop: 2 },
   aiCard: {
     backgroundColor: C.surface, borderRadius: 16,
     borderWidth: 1, borderColor: '#222', padding: 16, marginBottom: 8,
