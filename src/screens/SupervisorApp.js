@@ -84,59 +84,6 @@ const FEATURE_LABELS = {
 const formatDate = (iso) =>
   new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
 
-// ── Swipeable row with Alert confirmation (for messages) ──────
-function SwipeableMessageRow({ onDelete, children }) {
-  const translateX = useRef(new Animated.Value(0)).current;
-  const DELETE_WIDTH = 72;
-
-  const panResponder = useRef(PanResponder.create({
-    onMoveShouldSetPanResponder: (_, g) =>
-      Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 6,
-    onPanResponderMove: (_, g) => {
-      if (g.dx < 0) translateX.setValue(Math.max(g.dx, -DELETE_WIDTH - 20));
-    },
-    onPanResponderRelease: (_, g) => {
-      if (g.dx < -DELETE_WIDTH / 2) {
-        Animated.spring(translateX, { toValue: -DELETE_WIDTH, useNativeDriver: true }).start();
-      } else {
-        Animated.spring(translateX, { toValue: 0, useNativeDriver: true }).start();
-      }
-    },
-  })).current;
-
-  const snapBack = () =>
-    Animated.spring(translateX, { toValue: 0, useNativeDriver: true }).start();
-
-  const handleDeleteTap = () => {
-    Alert.alert(
-      'Delete message?',
-      'This message will be permanently removed for everyone.',
-      [
-        { text: 'Cancel', style: 'cancel', onPress: snapBack },
-        {
-          text: 'Delete', style: 'destructive',
-          onPress: () =>
-            Animated.timing(translateX, { toValue: -400, duration: 180, useNativeDriver: true })
-              .start(() => onDelete()),
-        },
-      ]
-    );
-  };
-
-  return (
-    <View style={{ overflow: 'hidden' }}>
-      <View style={[styles.swipeDeleteBg, { width: DELETE_WIDTH }]}>
-        <TouchableOpacity onPress={handleDeleteTap} style={styles.swipeDeleteBtn}>
-          <Text style={styles.swipeDeleteText}>Delete</Text>
-        </TouchableOpacity>
-      </View>
-      <Animated.View style={{ transform: [{ translateX }], backgroundColor: C.bg }} {...panResponder.panHandlers}>
-        {children}
-      </Animated.View>
-    </View>
-  );
-}
-
 // ── Swipeable row (left-swipe to reveal Delete) ───────────────
 function SwipeableRow({ onDelete, children }) {
   const translateX = useRef(new Animated.Value(0)).current;
@@ -461,7 +408,7 @@ function OverviewTab({ needs, damage, messages, threads, timeClock, userName, on
 }
 
 // ── Messages Tab ──────────────────────────────────────────────
-function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBody, setMsgBody, sending, sendMessage, listRef, onDeleteMsg, onDeleteThread }) {
+function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBody, setMsgBody, sending, sendMessage, listRef, onDeleteThread }) {
   if (!activeThread) {
     return (
       <View style={styles.flex}>
@@ -562,22 +509,21 @@ function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBo
         }
         renderItem={({ item: m }) => {
           const isOwn = m.sender_name === 'Supervisor';
-          const bubble = (
-            <View style={[styles.bubbleRow, isOwn ? styles.bubbleRowOut : styles.bubbleRowIn]}>
-              {!isOwn && (
-                <Text style={styles.bubbleSender}>{m.sender_name}</Text>
+          return (
+            <View style={[styles.bubbleRow, isOwn ? styles.bubbleRowIn : styles.bubbleRowOut]}>
+              {isOwn && (
+                <Text style={styles.bubbleSender}>Supervisor</Text>
               )}
               <View style={[styles.bubble, isOwn ? styles.bubbleOut : styles.bubbleIn]}>
                 <Text style={[styles.bubbleText, isOwn ? styles.bubbleTextOut : styles.bubbleTextIn]}>
                   {m.body}
                 </Text>
               </View>
-              <Text style={[styles.bubbleTime, isOwn ? styles.bubbleTimeRight : styles.bubbleTimeLeft]}>
+              <Text style={[styles.bubbleTime, isOwn ? styles.bubbleTimeLeft : styles.bubbleTimeRight]}>
                 {formatTime(m.created_at)}
               </Text>
             </View>
           );
-          return bubble;
         }}
       />
 
@@ -1673,11 +1619,6 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
     await supabase.from('damage_reports').update({ archived: true }).eq('id', id);
   };
 
-  const deleteMessage = useCallback(async (id) => {
-    setMessages((prev) => prev.filter((m) => m.id !== id));
-    await supabase.from('messages').delete().eq('id', id);
-  }, []);
-
   const deleteThread = useCallback((thread) => {
     Alert.alert(
       'Delete thread',
@@ -1798,7 +1739,6 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
                 sending={sending}
                 sendMessage={sendMessage}
                 listRef={msgListRef}
-                onDeleteMsg={deleteMessage}
                 onDeleteThread={deleteThread}
               />
             )}
