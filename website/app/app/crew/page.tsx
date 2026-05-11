@@ -37,7 +37,7 @@ type Drawing = {
   created_at: string;
 };
 
-type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | null;
+type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'message' | null;
 type ClockStep = 'lookup' | 'clockin' | 'clockout';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -155,6 +155,10 @@ export default function CrewPage() {
   const [drawings,      setDrawings]      = useState<Drawing[]>([]);
   const [plansLoading,  setPlansLoading]  = useState(false);
 
+  // Message modal
+  const [msgDept, setMsgDept] = useState('');
+  const [msgBody, setMsgBody] = useState('');
+
   // Load localStorage identity
   useEffect(() => {
     const n = localStorage.getItem('crew_name') ?? '';
@@ -222,6 +226,12 @@ export default function CrewPage() {
     setDmgWhat('');
     setDmgDept(crewDept);
     setModal('damage');
+  }
+
+  function openMessage() {
+    setMsgDept(crewDept);
+    setMsgBody('');
+    setModal('message');
   }
 
   async function openPlans() {
@@ -370,6 +380,31 @@ export default function CrewPage() {
     }
   }
 
+  // ── Message handler ─────────────────────────────────────────────────────────
+
+  async function handleMessageSubmit() {
+    const body = msgBody.trim();
+    const dept = msgDept;
+    if (!body || !dept || saving) return;
+    setSaving(true);
+    try {
+      const { error } = await supabase.from('messages').insert({
+        sender_name: crewName || 'Crew',
+        dept,
+        body,
+        tenant_id: tenant!.id,
+      });
+      if (error) throw error;
+      closeModal();
+      showToast('Message sent to supervisor ✓');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Send failed';
+      showToast(msg, true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   // ── Sign out ────────────────────────────────────────────────────────────────
 
   const handleSignOut = async () => {
@@ -417,6 +452,12 @@ export default function CrewPage() {
       color: '#A78BFA', bg: 'rgba(167,139,250,0.08)',
       onClick: openPlans,
       icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>,
+    },
+    {
+      label: 'Message Supervisor',
+      color: '#FBBF24', bg: 'rgba(251,191,36,0.08)',
+      onClick: openMessage,
+      icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
     },
   ];
 
@@ -696,6 +737,44 @@ export default function CrewPage() {
               ))}
             </div>
           )}
+        </ModalOverlay>
+      )}
+
+      {/* ── Message Modal ────────────────────────────────────────────────────── */}
+      {modal === 'message' && (
+        <ModalOverlay onClose={closeModal} title="Message Supervisor">
+          {crewName && (
+            <p style={{ fontSize: 13, color: 'var(--ink-dim)', marginBottom: 20 }}>
+              Sending as <b style={{ color: 'var(--ink)' }}>{crewName}</b>
+            </p>
+          )}
+          <Field label="Department *">
+            <select className="form-input" value={msgDept} onChange={(e) => setMsgDept(e.target.value)} autoFocus style={{ cursor: 'pointer' }}>
+              <option value="">Select department…</option>
+              <option value="Production">Production</option>
+              <option value="Assembly">Assembly</option>
+              <option value="Finishing">Finishing</option>
+              <option value="Craftsman">Craftsman</option>
+            </select>
+          </Field>
+          <Field label="Message *">
+            <textarea
+              className="form-input"
+              placeholder="Type a message to your supervisor…"
+              value={msgBody}
+              onChange={(e) => setMsgBody(e.target.value)}
+              rows={4}
+              style={{ resize: 'vertical', minHeight: 100 }}
+            />
+          </Field>
+          <button
+            className="btn btn-primary"
+            style={{ width: '100%', justifyContent: 'center', marginTop: 4, opacity: (!msgBody.trim() || !msgDept || saving) ? 0.5 : 1 }}
+            onClick={handleMessageSubmit}
+            disabled={!msgBody.trim() || !msgDept || saving}
+          >
+            {saving ? 'Sending…' : 'Send Message'}
+          </button>
         </ModalOverlay>
       )}
 

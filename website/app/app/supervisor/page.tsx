@@ -192,6 +192,80 @@ export default function SupervisorPage() {
     loadAll();
   }, [loadAll]);
 
+  // ── Realtime subscriptions ──────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!tenant) return;
+    const tenantId = tenant.id;
+
+    const clockCh = supabase
+      .channel('rt-clock')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'time_clock', filter: `tenant_id=eq.${tenantId}` }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          const row = payload.new as CrewRow & { clock_out: string | null };
+          if (!row.clock_out) {
+            setActiveCrew((prev) => prev.some((r) => r.id === row.id) ? prev : [...prev, row]);
+          }
+        } else if (payload.eventType === 'UPDATE') {
+          const row = payload.new as CrewRow & { clock_out: string | null };
+          if (row.clock_out) {
+            setActiveCrew((prev) => prev.filter((r) => r.id !== row.id));
+          } else {
+            setActiveCrew((prev) => prev.map((r) => r.id === row.id ? { ...r, ...row } : r));
+          }
+        } else if (payload.eventType === 'DELETE') {
+          setActiveCrew((prev) => prev.filter((r) => r.id !== payload.old.id));
+        }
+      })
+      .subscribe();
+
+    const msgCh = supabase
+      .channel('rt-messages')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages', filter: `tenant_id=eq.${tenantId}` }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setMessages((prev) => prev.some((m) => m.id === payload.new.id) ? prev : [payload.new as Message, ...prev]);
+        } else if (payload.eventType === 'UPDATE') {
+          setMessages((prev) => prev.map((m) => m.id === payload.new.id ? payload.new as Message : m));
+        } else if (payload.eventType === 'DELETE') {
+          setMessages((prev) => prev.filter((m) => m.id !== payload.old.id));
+        }
+      })
+      .subscribe();
+
+    const needsCh = supabase
+      .channel('rt-needs')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_needs', filter: `tenant_id=eq.${tenantId}` }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setNeeds((prev) => prev.some((n) => n.id === payload.new.id) ? prev : [payload.new as InventoryNeed, ...prev]);
+        } else if (payload.eventType === 'UPDATE') {
+          setNeeds((prev) => prev.map((n) => n.id === payload.new.id ? payload.new as InventoryNeed : n));
+        } else if (payload.eventType === 'DELETE') {
+          setNeeds((prev) => prev.filter((n) => n.id !== payload.old.id));
+        }
+      })
+      .subscribe();
+
+    const damageCh = supabase
+      .channel('rt-damage')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'damage_reports', filter: `tenant_id=eq.${tenantId}` }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setDamage((prev) => prev.some((d) => d.id === payload.new.id) ? prev : [payload.new as DamageReport, ...prev]);
+        } else if (payload.eventType === 'UPDATE') {
+          setDamage((prev) => prev.map((d) => d.id === payload.new.id ? payload.new as DamageReport : d));
+        } else if (payload.eventType === 'DELETE') {
+          setDamage((prev) => prev.filter((d) => d.id !== payload.old.id));
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(clockCh);
+      supabase.removeChannel(msgCh);
+      supabase.removeChannel(needsCh);
+      supabase.removeChannel(damageCh);
+    };
+  }, [tenant]);
+
   // ── Message send ────────────────────────────────────────────────────────────
 
   async function handleSendMessage() {
