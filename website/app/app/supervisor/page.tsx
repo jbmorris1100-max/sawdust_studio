@@ -448,6 +448,13 @@ export default function SupervisorPage() {
             <div>
               <div className="eyebrow" style={{ marginBottom: 8 }}>Supervisor Dashboard</div>
               <h2 style={{ fontSize: 28 }}>{tenant?.shop_name}</h2>
+              <Link
+                href="/app"
+                style={{ fontSize: 12, color: 'var(--ink-mute)', display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 8, textDecoration: 'none' }}
+              >
+                <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+                Switch Role
+              </Link>
             </div>
             <button onClick={loadAll} className="btn btn-ghost" style={{ fontSize: 12, padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 6 }}>
               <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
