@@ -17,22 +17,7 @@
  *   Password: 1
  */
 
-const path = require('path');
-const fs   = require('fs');
-
-// Load website/.env.local without requiring dotenv
-function loadEnv(filePath) {
-  try {
-    fs.readFileSync(filePath, 'utf8')
-      .split('\n')
-      .forEach((line) => {
-        const m = line.match(/^([^#=\s][^=]*)=(.*)$/);
-        if (m) process.env[m[1].trim()] = m[2].trim().replace(/^["']|["']$/g, '');
-      });
-  } catch { /* file may not exist */ }
-}
-
-loadEnv(path.join(__dirname, '..', '.env.local'));
+require('dotenv').config({ path: '.env.local' });
 
 const SUPABASE_URL        = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SERVICE_ROLE_KEY    = process.env.SUPABASE_SERVICE_ROLE_KEY;
