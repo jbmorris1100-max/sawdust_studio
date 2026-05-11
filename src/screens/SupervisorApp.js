@@ -23,45 +23,28 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 import { getTenantId } from '../lib/tenant';
 import MorningBriefScreen from './MorningBriefScreen';
+import { T, DEPT_COLORS as BASE_DEPT_COLORS, STATUS_COLORS, DEPARTMENTS } from '../lib/theme';
 
 // ── Design tokens ─────────────────────────────────────────────
 const C = {
-  bg:            '#07090F',
-  surface:       '#0D1117',
-  input:         '#111620',
-  border:        '#1A2535',
-  text:          '#FFFFFF',
-  muted:         '#2D8A94',
-  accent:        '#00C5CC',
-  success:       '#22c55e',
-  successBg:     '#0a1f10',
-  successBorder: '#14532d',
-  error:         '#FF4444',
-  errorBg:       '#1f0a0a',
-  errorBorder:   '#450a0a',
-  blue:          '#3b82f6',
-  blueBg:        '#0d1f3c',
-  blueBorder:    '#1e3a5f',
+  ...T,
+  // Backward-compatible aliases
+  error:      T.danger,
+  errorBg:    T.dangerBg,
+  errorBorder:T.dangerBorder,
+  blue:       T.violet,
+  blueBg:     T.violetBg,
+  blueBorder: T.violetBorder,
 };
-
-const DEPARTMENTS = ['Production', 'Assembly', 'Finishing', 'Craftsman'];
 
 const DEPT_COLORS = {
-  Production:  '#93c5fd',
-  Assembly:    '#86efac',
-  Finishing:   '#fdba74',
-  Craftsman:   '#f9a8d4',
+  Production: '#5EEAD4',
+  Assembly:   '#34D399',
+  Finishing:  '#FBBF24',
+  Craftsman:  '#A78BFA',
 };
 
-const STATUS_STYLES = {
-  pending:   { bg: '#062022', text: '#00C5CC', border: '#0E4F52' },
-  ordered:   { bg: '#0d1f3c', text: '#3b82f6', border: '#1e3a5f' },
-  received:  { bg: '#0a1f10', text: '#22c55e', border: '#14532d' },
-  cancelled: { bg: '#1a1a1a', text: '#555555', border: '#2a2a2a' },
-  open:      { bg: '#1f0a0a', text: '#ef4444', border: '#450a0a' },
-  reviewed:  { bg: '#0d1f3c', text: '#3b82f6', border: '#1e3a5f' },
-  resolved:  { bg: '#0a1f10', text: '#22c55e', border: '#14532d' },
-};
+const STATUS_STYLES = STATUS_COLORS;
 
 const TABS = [
   { key: 'brief',    label: 'Brief',    icon: 'newspaper-outline',     activeIcon: 'newspaper'     },
@@ -230,12 +213,12 @@ const FilterChips = ({ options, value, onChange }) => (
 
 // ── Overview Tab ──────────────────────────────────────────────
 const SCAN_STATUS_COLORS = {
-  'In Progress':              { color: '#00C5CC', bg: '#062022' },
-  'QC Check':                 { color: '#3b82f6', bg: '#0d1f3c' },
-  'Passed QC':                { color: '#22c55e', bg: '#0a1f10' },
-  'Failed QC — Rework':       { color: '#ef4444', bg: '#1f0a0a' },
-  'Moving to Next Stage':     { color: '#a78bfa', bg: '#1a1040' },
-  'approved_incoming':        { color: '#22c55e', bg: '#0a1f10' },
+  'In Progress':              { color: '#2DE1C9', bg: 'rgba(45,225,201,0.06)'  },
+  'QC Check':                 { color: '#A78BFA', bg: 'rgba(167,139,250,0.06)' },
+  'Passed QC':                { color: '#34D399', bg: 'rgba(52,211,153,0.06)'  },
+  'Failed QC — Rework':       { color: '#F87171', bg: 'rgba(248,113,113,0.06)' },
+  'Moving to Next Stage':     { color: '#5EEAD4', bg: 'rgba(94,234,212,0.06)'  },
+  'approved_incoming':        { color: '#34D399', bg: 'rgba(52,211,153,0.06)'  },
 };
 
 function scanColor(status) {
@@ -313,19 +296,28 @@ function OverviewTab({ needs, damage, messages, threads, timeClock, userName, on
         </View>
       )}
 
-      {/* Stat cards */}
+      {/* KPI stat cards */}
       <View style={styles.statRow}>
-        <View style={[styles.statCard, { borderTopColor: C.accent }]}>
-          <Text style={[styles.statValue, { color: C.accent }]}>{pendingNeeds}</Text>
-          <Text style={styles.statLabel}>Pending{'\n'}Needs</Text>
+        <View style={styles.statCard}>
+          <View style={[styles.statAccent, { backgroundColor: C.accent }]} />
+          <Text style={styles.statLabel}>PENDING NEEDS</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+            <Text style={styles.statValue}>{pendingNeeds}</Text>
+          </View>
         </View>
-        <View style={[styles.statCard, { borderTopColor: C.error }]}>
-          <Text style={[styles.statValue, { color: C.error }]}>{openDamage}</Text>
-          <Text style={styles.statLabel}>Open{'\n'}Damage</Text>
+        <View style={styles.statCard}>
+          <View style={[styles.statAccent, { backgroundColor: C.error }]} />
+          <Text style={styles.statLabel}>OPEN DAMAGE</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+            <Text style={[styles.statValue, { color: openDamage > 0 ? C.error : C.text }]}>{openDamage}</Text>
+          </View>
         </View>
-        <View style={[styles.statCard, { borderTopColor: C.success }]}>
-          <Text style={[styles.statValue, { color: C.success }]}>{(timeClock || []).length}</Text>
-          <Text style={styles.statLabel}>Crew{'\n'}Active</Text>
+        <View style={styles.statCard}>
+          <View style={[styles.statAccent, { backgroundColor: C.success }]} />
+          <Text style={styles.statLabel}>CREW ACTIVE</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+            <Text style={[styles.statValue, { color: C.success }]}>{(timeClock || []).length}</Text>
+          </View>
         </View>
       </View>
 
@@ -469,7 +461,7 @@ function OverviewTab({ needs, damage, messages, threads, timeClock, userName, on
 }
 
 // ── Messages Tab ──────────────────────────────────────────────
-function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBody, setMsgBody, sending, sendMessage, listRef, onDeleteMsg }) {
+function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBody, setMsgBody, sending, sendMessage, listRef, onDeleteMsg, onDeleteThread }) {
   if (!activeThread) {
     return (
       <View style={styles.flex}>
@@ -491,32 +483,41 @@ function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBo
           renderItem={({ item: t }) => {
             const last = t.messages[t.messages.length - 1];
             return (
-              <TouchableOpacity
-                style={styles.threadCard}
-                onPress={() => setActiveThread({ name: t.name, dept: t.dept })}
-                activeOpacity={0.7}
-              >
-                <View style={styles.threadAvatar}>
-                  <Text style={styles.threadAvatarLetter}>{t.name[0].toUpperCase()}</Text>
-                </View>
-                <View style={styles.threadMain}>
-                  <View style={styles.threadTopRow}>
-                    <Text style={styles.threadName}>{t.name}</Text>
-                    {t.dept ? (
-                      <View style={styles.deptPill}>
-                        <Text style={styles.deptPillText}>{t.dept}</Text>
-                      </View>
+              <View style={styles.threadCard}>
+                <TouchableOpacity
+                  style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 }}
+                  onPress={() => setActiveThread({ name: t.name, dept: t.dept })}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.threadAvatar}>
+                    <Text style={styles.threadAvatarLetter}>{t.name[0].toUpperCase()}</Text>
+                  </View>
+                  <View style={styles.threadMain}>
+                    <View style={styles.threadTopRow}>
+                      <Text style={styles.threadName}>{t.name}</Text>
+                      {t.dept ? (
+                        <View style={styles.deptPill}>
+                          <Text style={styles.deptPillText}>{t.dept}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    {last ? (
+                      <Text style={styles.threadPreview} numberOfLines={1}>{last.body}</Text>
                     ) : null}
                   </View>
-                  {last ? (
-                    <Text style={styles.threadPreview} numberOfLines={1}>{last.body}</Text>
-                  ) : null}
-                </View>
-                <View style={styles.threadRight}>
-                  <Text style={styles.threadTime}>{formatTime(t.lastTime)}</Text>
-                  <Ionicons name="chevron-forward" size={14} color={C.border} style={{ marginTop: 4 }} />
-                </View>
-              </TouchableOpacity>
+                  <View style={styles.threadRight}>
+                    <Text style={styles.threadTime}>{formatTime(t.lastTime)}</Text>
+                    <Ionicons name="chevron-forward" size={14} color={C.border} style={{ marginTop: 4 }} />
+                  </View>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => onDeleteThread(t)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  style={{ paddingLeft: 10 }}
+                >
+                  <Ionicons name="trash-outline" size={18} color="#F87171" />
+                </TouchableOpacity>
+              </View>
             );
           }}
         />
@@ -576,11 +577,7 @@ function MessagesTab({ threads, threadMsgs, activeThread, setActiveThread, msgBo
               </Text>
             </View>
           );
-          return (
-            <SwipeableMessageRow onDelete={() => onDeleteMsg(m.id)}>
-              {bubble}
-            </SwipeableMessageRow>
-          );
+          return bubble;
         }}
       />
 
@@ -793,12 +790,12 @@ function DamageTab({ allDamage, filter, setFilter, onStatusChange, onResolve, on
                   ) : null}
                   {d.resolution_type ? (
                     <View style={{ marginTop: 8, backgroundColor: C.successBg, borderRadius: 8, borderWidth: 1, borderColor: C.successBorder, padding: 8 }}>
-                      <Text style={{ fontSize: 11, fontWeight: '700', color: C.success, marginBottom: 2 }}>{d.resolution_type}</Text>
+                      <Text style={{ fontSize: 11, fontWeight: '600', color: C.success, marginBottom: 2 }}>{d.resolution_type}</Text>
                       {d.resolution_notes ? (
-                        <Text style={{ fontSize: 12, color: '#4ade80', fontStyle: 'italic' }}>{d.resolution_notes}</Text>
+                        <Text style={{ fontSize: 12, color: C.success, fontStyle: 'italic', opacity: 0.8 }}>{d.resolution_notes}</Text>
                       ) : null}
                       {d.resolved_by ? (
-                        <Text style={{ fontSize: 11, color: C.success, marginTop: 2 }}>Resolved by {d.resolved_by}</Text>
+                        <Text style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>Resolved by {d.resolved_by}</Text>
                       ) : null}
                     </View>
                   ) : null}
@@ -850,12 +847,12 @@ function DamageTab({ allDamage, filter, setFilter, onStatusChange, onResolve, on
       {resolveItem ? (
         <Modal visible animationType="slide" transparent>
           <KeyboardAvoidingView
-            style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.75)' }}
+            style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.8)' }}
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           >
-            <View style={{ backgroundColor: C.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40, maxHeight: '90%' }}>
+            <View style={{ backgroundColor: C.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40, maxHeight: '90%', borderTopWidth: 1, borderLeftWidth: 1, borderRightWidth: 1, borderColor: C.border }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, borderBottomWidth: 1, borderBottomColor: C.border, paddingBottom: 14 }}>
-                <Text style={{ fontSize: 17, fontWeight: '800', color: C.text }}>Resolve Report</Text>
+                <Text style={{ fontSize: 16, fontWeight: '700', color: C.text, letterSpacing: -0.3 }}>Resolve Report</Text>
                 <TouchableOpacity onPress={() => setResolveItem(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                   <Ionicons name="close" size={22} color={C.muted} />
                 </TouchableOpacity>
@@ -1154,11 +1151,11 @@ Keep answers short and actionable. If you don't have enough data, say so.`;
             onContentSizeChange={() => chatListRef.current?.scrollToEnd({ animated: true })}
             ListEmptyComponent={
               <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 40, gap: 14, paddingHorizontal: 24 }}>
-                <Ionicons name="hardware-chip-outline" size={52} color={C.border} />
-                <Text style={{ color: C.muted, fontSize: 15, fontWeight: '700', textAlign: 'center' }}>
+                <Ionicons name="hardware-chip-outline" size={52} color={C.muteDark} />
+                <Text style={{ color: C.muted, fontSize: 15, fontWeight: '600', textAlign: 'center', letterSpacing: -0.3 }}>
                   Ask InlineIQ anything
                 </Text>
-                <Text style={{ color: C.border, fontSize: 13, textAlign: 'center', lineHeight: 20 }}>
+                <Text style={{ color: C.muteDark, fontSize: 13, textAlign: 'center', lineHeight: 20 }}>
                   "Which jobs are most at risk this week?"{'\n'}
                   "What materials need ordering?"{'\n'}
                   "How many hours did Production log yesterday?"
@@ -1178,9 +1175,9 @@ Keep answers short and actionable. If you don't have enough data, say so.`;
                     { borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10 },
                     isUser
                       ? { backgroundColor: C.accent, borderBottomRightRadius: 4 }
-                      : { backgroundColor: C.surface, borderBottomLeftRadius: 4, borderWidth: 1, borderColor: C.border },
+                      : { backgroundColor: C.input, borderBottomLeftRadius: 4, borderWidth: 1, borderColor: C.border },
                   ]}>
-                    <Text style={{ fontSize: 14, lineHeight: 20, color: isUser ? '#000' : C.text }}>
+                    <Text style={{ fontSize: 14, lineHeight: 20, color: isUser ? '#001917' : C.text }}>
                       {msg.content}
                     </Text>
                   </View>
@@ -1391,16 +1388,16 @@ Keep answers short and actionable. If you don't have enough data, say so.`;
               {insights.length > 0 ? `${insights.length} insights` : 'Based on your shop data'}
             </Text>
             <TouchableOpacity
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: C.accent, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 7 }}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: C.accent, borderRadius: 999, paddingHorizontal: 14, paddingVertical: 8, shadowColor: C.accent, shadowOpacity: 0.35, shadowRadius: 14, shadowOffset: { width: 0, height: 4 } }}
               onPress={generateInsights}
               disabled={insightsLoading}
               activeOpacity={0.8}
             >
               {insightsLoading
-                ? <ActivityIndicator size="small" color="#000" />
-                : <Ionicons name="refresh" size={14} color="#000" />
+                ? <ActivityIndicator size="small" color="#001917" />
+                : <Ionicons name="refresh" size={14} color="#001917" />
               }
-              <Text style={{ color: '#000', fontWeight: '700', fontSize: 12 }}>
+              <Text style={{ color: '#001917', fontWeight: '700', fontSize: 12 }}>
                 {insightsLoading ? 'Analyzing…' : insights.length > 0 ? 'Refresh' : 'Generate Insights'}
               </Text>
             </TouchableOpacity>
@@ -1681,6 +1678,37 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
     await supabase.from('messages').delete().eq('id', id);
   }, []);
 
+  const deleteThread = useCallback((thread) => {
+    Alert.alert(
+      'Delete thread',
+      `Delete all messages with ${thread.name}? This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete', style: 'destructive',
+          onPress: async () => {
+            setMessages((prev) =>
+              prev.filter((m) =>
+                m.sender_name !== thread.name &&
+                !(m.sender_name === 'Supervisor' && m.dept === thread.dept)
+              )
+            );
+            setActiveThread(null);
+            await supabase.from('messages').delete()
+              .eq('tenant_id', tenantIdRef.current)
+              .eq('sender_name', thread.name);
+            if (thread.dept) {
+              await supabase.from('messages').delete()
+                .eq('tenant_id', tenantIdRef.current)
+                .eq('sender_name', 'Supervisor')
+                .eq('dept', thread.dept);
+            }
+          },
+        },
+      ]
+    );
+  }, []);
+
   const dismissMessage = useCallback((id) => {
     setDismissedMsgIds((prev) => {
       const next = [...prev, id];
@@ -1771,6 +1799,7 @@ export default function SupervisorApp({ route, userName: userNameProp }) {
                 sendMessage={sendMessage}
                 listRef={msgListRef}
                 onDeleteMsg={deleteMessage}
+                onDeleteThread={deleteThread}
               />
             )}
             {activeTab === 'needs' && (
@@ -1856,50 +1885,54 @@ const styles = StyleSheet.create({
     paddingTop: 16, paddingBottom: 16,
     borderBottomWidth: 1, borderBottomColor: C.border, marginBottom: 16,
   },
-  overviewTitle: { fontSize: 20, fontWeight: '800', color: C.text, letterSpacing: -0.3 },
-  overviewName:  { fontSize: 13, color: C.muted, marginTop: 2 },
+  overviewTitle: { fontSize: 19, fontWeight: '700', color: C.text, letterSpacing: -0.5 },
+  overviewName:  { fontSize: 12, color: C.muted, marginTop: 2, letterSpacing: 0.2 },
   overviewHeaderRight: { alignItems: 'flex-end', gap: 8 },
   liveRow:       { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  liveDot:       { width: 7, height: 7, borderRadius: 4, backgroundColor: C.success },
-  liveText:      { fontSize: 11, color: C.success, fontWeight: '600' },
+  liveDot:       { width: 6, height: 6, borderRadius: 3, backgroundColor: C.success },
+  liveText:      { fontSize: 10, color: C.success, fontWeight: '600', letterSpacing: 0.5 },
   gearBtn:       { padding: 2, minWidth: 44, minHeight: 44, justifyContent: 'center', alignItems: 'center' },
-  signOutText:   { fontSize: 13, color: '#ef4444', fontWeight: '700', paddingHorizontal: 4, paddingVertical: 2 },
+  signOutText:   { fontSize: 12, color: C.error, fontWeight: '600', paddingHorizontal: 4, paddingVertical: 2 },
 
-  // Stat cards
-  statRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
+  // KPI stat cards
+  statRow: { flexDirection: 'row', gap: 8, marginBottom: 20 },
   statCard: {
-    flex: 1, backgroundColor: C.surface, borderRadius: 12, padding: 14,
-    borderTopWidth: 3, alignItems: 'flex-start',
+    flex: 1, backgroundColor: C.surface, borderRadius: 10, padding: 12,
+    borderWidth: 1, borderColor: C.border, overflow: 'hidden',
   },
-  statValue: { fontSize: 32, fontWeight: '700', marginBottom: 4 },
-  statLabel: { fontSize: 11, color: C.muted, fontWeight: '600', lineHeight: 15 },
+  statAccent: {
+    position: 'absolute', left: 0, top: 0, bottom: 0, width: 2,
+  },
+  statLabel: { fontSize: 8, color: C.muteDark, fontWeight: '600', letterSpacing: 0.9, textTransform: 'uppercase', marginBottom: 5 },
+  statValue: { fontSize: 26, fontWeight: '600', letterSpacing: -0.8, color: C.text },
+  statSub:   { fontSize: 10, color: C.accentDim, fontWeight: '500', marginLeft: 3 },
 
   // Dept rows
   sectionLabel: {
-    fontSize: 10, fontWeight: '700', color: C.muted,
-    letterSpacing: 0.9, textTransform: 'uppercase', marginBottom: 10,
+    fontSize: 9, fontWeight: '600', color: C.muteDark,
+    letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 10,
   },
   deptRow: {
-    flexDirection: 'row', alignItems: 'center', marginBottom: 10, gap: 10,
+    flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 10,
   },
-  deptRowName:   { width: 80, fontSize: 12, fontWeight: '600' },
-  deptBarTrack:  { flex: 1, height: 4, backgroundColor: C.surface, borderRadius: 2, overflow: 'hidden' },
-  deptBarFill:   { height: '100%', borderRadius: 2 },
-  deptRowBadges: { flexDirection: 'row', gap: 4, minWidth: 70, justifyContent: 'flex-end' },
+  deptRowName:   { width: 82, fontSize: 12, fontWeight: '500', color: C.text },
+  deptBarTrack:  { flex: 1, height: 5, backgroundColor: 'rgba(94,234,212,0.06)', borderRadius: 3, overflow: 'hidden' },
+  deptBarFill:   { height: '100%', borderRadius: 3 },
+  deptRowBadges: { flexDirection: 'row', gap: 4, minWidth: 72, justifyContent: 'flex-end' },
   miniPill: {
     paddingHorizontal: 6, paddingVertical: 2, borderRadius: 99, borderWidth: 1,
   },
-  miniPillText: { fontSize: 10, fontWeight: '700' },
+  miniPillText: { fontSize: 9, fontWeight: '700' },
   deptOkText:   { fontSize: 10, color: C.success, fontWeight: '600' },
 
   // Activity
   activityRow:   { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 10 },
-  activityDot:   { width: 7, height: 7, borderRadius: 4, marginTop: 5 },
+  activityDot:   { width: 6, height: 6, borderRadius: 3, marginTop: 5 },
   activityBody:  { flex: 1 },
-  activitySender:{ fontSize: 12, fontWeight: '700', color: C.text, marginBottom: 1 },
+  activitySender:{ fontSize: 12, fontWeight: '600', color: C.text, marginBottom: 1 },
   activityDept:  { fontWeight: '400', color: C.muted },
   activityMsg:   { fontSize: 12, color: C.muted },
-  activityTime:  { fontSize: 11, color: C.muted, flexShrink: 0 },
+  activityTime:  { fontSize: 11, color: C.muteDark, flexShrink: 0 },
 
   // Tab header (inside each section)
   tabHeader: {
@@ -1907,20 +1940,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12,
     borderBottomWidth: 1, borderBottomColor: C.border,
   },
-  tabHeaderTitle: { fontSize: 20, fontWeight: '800', color: C.text, letterSpacing: -0.3 },
-  tabHeaderSub:   { fontSize: 13, color: C.muted },
+  tabHeaderTitle: { fontSize: 19, fontWeight: '700', color: C.text, letterSpacing: -0.4 },
+  tabHeaderSub:   { fontSize: 12, color: C.muted },
 
   // Filter chips
   filterRow:        { paddingLeft: 16, marginBottom: 4, marginTop: 8, flexGrow: 0 },
   filterRowContent: { gap: 8, paddingRight: 16 },
   filterChip: {
     paddingHorizontal: 14, paddingVertical: 7,
-    borderRadius: 20, backgroundColor: C.surface,
-    borderWidth: 1.5, borderColor: C.border,
+    borderRadius: 999, backgroundColor: C.surface,
+    borderWidth: 1, borderColor: C.border,
   },
-  filterChipActive:     { backgroundColor: C.accent, borderColor: C.accent },
-  filterChipText:       { fontSize: 13, fontWeight: '600', color: C.muted },
-  filterChipTextActive: { color: '#000' },
+  filterChipActive:     { backgroundColor: 'rgba(45,225,201,0.12)', borderColor: C.accentDim },
+  filterChipText:       { fontSize: 13, fontWeight: '500', color: C.muted },
+  filterChipTextActive: { color: C.accent },
 
   // Dept counters (Needs tab)
   deptCounterRow:    { paddingLeft: 16, marginBottom: 4, marginTop: 8, flexGrow: 0 },
@@ -1931,8 +1964,8 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: C.border,
     alignItems: 'center', minWidth: 52,
   },
-  deptCounterNum:   { fontSize: 18, fontWeight: '700', marginBottom: 2 },
-  deptCounterLabel: { fontSize: 9,  fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.4 },
+  deptCounterNum:   { fontSize: 18, fontWeight: '600', marginBottom: 2 },
+  deptCounterLabel: { fontSize: 9, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
 
   // Lists
   listContent:       { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 24 },
@@ -1943,27 +1976,29 @@ const styles = StyleSheet.create({
   // Threads
   threadCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    backgroundColor: C.surface, borderRadius: 16,
-    borderWidth: 1, borderColor: '#222',
-    paddingHorizontal: 14, paddingVertical: 14, marginBottom: 10,
+    backgroundColor: C.surface, borderRadius: 14,
+    borderWidth: 1, borderColor: C.border,
+    paddingHorizontal: 14, paddingVertical: 13, marginBottom: 8,
   },
   threadAvatar: {
-    width: 42, height: 42, borderRadius: 21,
-    backgroundColor: C.accent + '33',
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(94,234,212,0.1)',
+    borderWidth: 1, borderColor: 'rgba(94,234,212,0.2)',
     justifyContent: 'center', alignItems: 'center',
   },
-  threadAvatarLetter: { fontSize: 17, fontWeight: '700', color: C.accent },
+  threadAvatarLetter: { fontSize: 16, fontWeight: '700', color: C.accentDim },
   threadMain:         { flex: 1 },
   threadTopRow:       { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
-  threadName:         { fontSize: 15, fontWeight: '700', color: C.text },
+  threadName:         { fontSize: 14, fontWeight: '600', color: C.text },
   threadPreview:      { fontSize: 13, color: C.muted },
   threadRight:        { alignItems: 'flex-end' },
-  threadTime:         { fontSize: 11, color: C.muted },
+  threadTime:         { fontSize: 11, color: C.muteDark },
   deptPill: {
-    backgroundColor: C.surface, borderRadius: 99, paddingHorizontal: 8, paddingVertical: 2,
+    backgroundColor: 'rgba(94,234,212,0.06)', borderRadius: 999,
+    paddingHorizontal: 8, paddingVertical: 2,
     borderWidth: 1, borderColor: C.border,
   },
-  deptPillText: { fontSize: 10, color: C.muted, fontWeight: '600' },
+  deptPillText: { fontSize: 9, color: C.muted, fontWeight: '600', letterSpacing: 0.3 },
 
   // Thread conversation
   threadHeader: {
@@ -1972,7 +2007,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: C.border,
     backgroundColor: C.bg,
   },
-  threadHeaderName: { fontSize: 15, fontWeight: '700', color: C.text },
+  threadHeaderName: { fontSize: 14, fontWeight: '600', color: C.text },
   threadHeaderDept: { fontSize: 12, color: C.muted, marginTop: 1 },
 
   // Message bubbles
@@ -1982,14 +2017,14 @@ const styles = StyleSheet.create({
   bubbleRow:     { marginBottom: 12, maxWidth: '78%' },
   bubbleRowOut:  { alignSelf: 'flex-end', alignItems: 'flex-end' },
   bubbleRowIn:   { alignSelf: 'flex-start', alignItems: 'flex-start' },
-  bubbleSender:  { fontSize: 11, color: C.muted, fontWeight: '600', marginBottom: 3, marginLeft: 2 },
+  bubbleSender:  { fontSize: 10, color: C.muted, fontWeight: '600', marginBottom: 3, marginLeft: 2, letterSpacing: 0.2 },
   bubble:        { borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10 },
-  bubbleOut:     { backgroundColor: '#00C5CC', borderBottomRightRadius: 4 },
-  bubbleIn:      { backgroundColor: '#1e1e1e', borderBottomLeftRadius: 4 },
+  bubbleOut:     { backgroundColor: C.accent, borderBottomRightRadius: 4 },
+  bubbleIn:      { backgroundColor: C.surface, borderBottomLeftRadius: 4, borderWidth: 1, borderColor: C.border },
   bubbleText:    { fontSize: 15, lineHeight: 21 },
-  bubbleTextOut: { color: '#000' },
+  bubbleTextOut: { color: '#001917' },
   bubbleTextIn:  { color: C.text },
-  bubbleTime:    { fontSize: 10, color: C.muted, marginTop: 3 },
+  bubbleTime:    { fontSize: 10, color: C.muteDark, marginTop: 3 },
   bubbleTimeRight: { marginRight: 2 },
   bubbleTimeLeft:  { marginLeft: 2 },
 
@@ -2000,29 +2035,30 @@ const styles = StyleSheet.create({
     borderTopWidth: 1, borderTopColor: C.border, backgroundColor: C.bg,
   },
   composeInput: {
-    flex: 1, backgroundColor: C.input, borderRadius: 24,
-    borderWidth: 1.5, borderColor: C.border, color: C.text,
-    fontSize: 16, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10,
+    flex: 1, backgroundColor: C.surface, borderRadius: 22,
+    borderWidth: 1, borderColor: C.border, color: C.text,
+    fontSize: 15, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10,
     maxHeight: 120,
   },
   sendBtn: {
-    width: 42, height: 42, borderRadius: 21,
+    width: 40, height: 40, borderRadius: 20,
     backgroundColor: C.accent, justifyContent: 'center', alignItems: 'center',
+    shadowColor: C.accent, shadowOpacity: 0.4, shadowRadius: 12, shadowOffset: { width: 0, height: 4 },
   },
-  sendBtnDisabled: { backgroundColor: C.border },
+  sendBtnDisabled: { backgroundColor: C.surface, shadowOpacity: 0 },
 
   // Data cards (Needs / Damage)
   dataCard: {
-    backgroundColor: C.surface, borderRadius: 16,
-    borderWidth: 1, borderColor: '#222',
-    borderLeftWidth: 4, padding: 14, marginBottom: 10,
+    backgroundColor: C.surface, borderRadius: 14,
+    borderWidth: 1, borderColor: C.border,
+    borderLeftWidth: 3, padding: 14, marginBottom: 8,
   },
   cardTopRow:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   cardMainBlock: { flex: 1, marginRight: 12 },
-  cardTitle:     { fontSize: 15, fontWeight: '700', color: C.text, marginBottom: 4 },
+  cardTitle:     { fontSize: 14, fontWeight: '600', color: C.text, marginBottom: 4 },
   cardMeta:      { fontSize: 12, color: C.muted, marginBottom: 2 },
   cardNotes:     { fontSize: 12, color: C.text, fontStyle: 'italic', opacity: 0.7, marginTop: 2, marginBottom: 2 },
-  cardDate:      { fontSize: 11, color: C.muted, marginTop: 2 },
+  cardDate:      { fontSize: 11, color: C.muteDark, marginTop: 2 },
   cardActionRow: {
     flexDirection: 'row', flexWrap: 'wrap', gap: 8,
     marginTop: 12, paddingTop: 12,
@@ -2030,42 +2066,42 @@ const styles = StyleSheet.create({
   },
   actionBtn: {
     paddingHorizontal: 14, paddingVertical: 6,
-    borderRadius: 20, backgroundColor: C.input,
-    borderWidth: 1.5, borderColor: C.border,
+    borderRadius: 999, backgroundColor: 'transparent',
+    borderWidth: 1, borderColor: C.border,
   },
-  actionBtnText: { fontSize: 12, fontWeight: '700' },
+  actionBtnText: { fontSize: 12, fontWeight: '600' },
 
   // Status pill
   pill: {
-    paddingHorizontal: 8, paddingVertical: 4,
-    borderRadius: 20, borderWidth: 1, alignSelf: 'flex-start',
+    paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 999, borderWidth: 1, alignSelf: 'flex-start',
   },
-  pillText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
+  pillText: { fontSize: 9, fontWeight: '700', letterSpacing: 0.6 },
 
   // Bottom tab bar
   tabBar: {
     flexDirection: 'row',
-    backgroundColor: '#111111',
+    backgroundColor: C.surface,
     borderTopWidth: 1, borderTopColor: C.border,
-    paddingBottom: 6, paddingTop: 4, height: 62,
+    paddingBottom: 6, paddingTop: 6, height: 64,
   },
   tabItem: {
     flex: 1, alignItems: 'center', justifyContent: 'center',
     position: 'relative', overflow: 'visible',
   },
   tabAccent: {
-    position: 'absolute', top: 0, left: 10, right: 10,
-    height: 2.5, backgroundColor: '#00C5CC',
-    borderBottomLeftRadius: 2, borderBottomRightRadius: 2,
+    position: 'absolute', top: 0, left: 14, right: 14,
+    height: 2, backgroundColor: C.accent, borderRadius: 1,
+    shadowColor: C.accent, shadowOpacity: 0.7, shadowRadius: 6, shadowOffset: { width: 0, height: 0 },
   },
-  tabLabel:       { fontSize: 10, fontWeight: '600', color: C.muted, marginTop: 3 },
-  tabLabelActive: { color: C.accent },
+  tabLabel:       { fontSize: 10, fontWeight: '500', color: C.muteDark, marginTop: 3 },
+  tabLabelActive: { color: C.accent, fontWeight: '600' },
   tabBadge: {
     position: 'absolute', top: -4, right: -6,
-    backgroundColor: '#ef4444', borderRadius: 8,
-    minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 3,
+    backgroundColor: C.error, borderRadius: 8,
+    minWidth: 15, height: 15, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 3,
   },
-  tabBadgeText: { color: '#fff', fontSize: 9, fontWeight: '700' },
+  tabBadgeText: { color: '#fff', fontSize: 8, fontWeight: '700' },
 
   // AI Control Center
   aiScroll: { paddingHorizontal: 16, paddingBottom: 32, paddingTop: 16 },
@@ -2074,28 +2110,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, paddingTop: 14, paddingBottom: 12,
     borderBottomWidth: 1, borderBottomColor: C.border,
   },
-  aiHeaderTitle: { fontSize: 16, fontWeight: '800', color: C.text },
+  aiHeaderTitle: { fontSize: 15, fontWeight: '700', color: C.text, letterSpacing: -0.3 },
   aiHeaderSub:   { fontSize: 12, color: C.muted, marginTop: 2 },
   aiPanelBtn: {
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20,
-    backgroundColor: C.input, borderWidth: 1, borderColor: C.border,
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999,
+    backgroundColor: 'transparent', borderWidth: 1, borderColor: C.border,
   },
-  aiPanelBtnActive:     { backgroundColor: C.accent, borderColor: C.accent },
-  aiPanelBtnText:       { fontSize: 12, fontWeight: '600', color: C.muted },
-  aiPanelBtnTextActive: { color: '#000' },
+  aiPanelBtnActive:     { backgroundColor: 'rgba(45,225,201,0.1)', borderColor: C.accentDim },
+  aiPanelBtnText:       { fontSize: 12, fontWeight: '500', color: C.muted },
+  aiPanelBtnTextActive: { color: C.accent, fontWeight: '600' },
   aiHeader: {
     flexDirection: 'row', alignItems: 'center',
     marginBottom: 20, paddingBottom: 16,
     borderBottomWidth: 1, borderBottomColor: C.border,
   },
   aiCard: {
-    backgroundColor: C.surface, borderRadius: 16,
-    borderWidth: 1, borderColor: '#222', padding: 16, marginBottom: 8,
+    backgroundColor: C.surface, borderRadius: 14,
+    borderWidth: 1, borderColor: C.border, padding: 16, marginBottom: 8,
   },
   modeCard: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: C.surface, borderRadius: 14,
-    borderWidth: 1.5, borderColor: '#222',
+    backgroundColor: C.surface, borderRadius: 12,
+    borderWidth: 1, borderColor: C.border,
     padding: 14, marginBottom: 8,
   },
   modeRadio: {
@@ -2103,8 +2139,8 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderColor: C.muted,
     justifyContent: 'center', alignItems: 'center',
   },
-  modeRadioInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#000' },
-  modeLabel: { fontSize: 14, fontWeight: '700', color: C.text, marginBottom: 2 },
+  modeRadioInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#001917' },
+  modeLabel: { fontSize: 14, fontWeight: '600', color: C.text, marginBottom: 2 },
   modeDesc:  { fontSize: 12, color: C.muted },
   toggleRow: {
     flexDirection: 'row', alignItems: 'center', paddingVertical: 10,
@@ -2113,15 +2149,15 @@ const styles = StyleSheet.create({
   toggleLabel: { fontSize: 13, fontWeight: '600', color: C.text },
   bottleneckGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
   bChip: {
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20,
-    backgroundColor: C.input, borderWidth: 1.5, borderColor: C.border,
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999,
+    backgroundColor: 'transparent', borderWidth: 1, borderColor: C.border,
   },
-  bChipActive:     { backgroundColor: C.accent + '22', borderColor: C.accent },
-  bChipText:       { fontSize: 12, fontWeight: '600', color: C.muted },
-  bChipTextActive: { color: C.accent },
+  bChipActive:     { backgroundColor: 'rgba(94,234,212,0.08)', borderColor: C.accentDim },
+  bChipText:       { fontSize: 12, fontWeight: '500', color: C.muted },
+  bChipTextActive: { color: C.accentDim },
   aiInput: {
     backgroundColor: C.input, borderRadius: 12,
-    borderWidth: 1.5, borderColor: C.border,
+    borderWidth: 1, borderColor: C.border,
     color: C.text, fontSize: 14,
     paddingHorizontal: 14, paddingVertical: 10,
     marginTop: 8, minHeight: 48,
@@ -2129,20 +2165,21 @@ const styles = StyleSheet.create({
   ratingRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
   ratingBtn: { padding: 4 },
   aiSubmitBtn: {
-    backgroundColor: C.accent, borderRadius: 14,
+    backgroundColor: C.accent, borderRadius: 999,
     paddingVertical: 14, alignItems: 'center', marginTop: 16,
+    shadowColor: C.accent, shadowOpacity: 0.35, shadowRadius: 20, shadowOffset: { width: 0, height: 6 },
   },
-  aiSubmitBtnText: { color: '#000', fontSize: 15, fontWeight: '700' },
+  aiSubmitBtnText: { color: '#001917', fontSize: 15, fontWeight: '700' },
   statLineRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   statLineLabel: { fontSize: 13, color: C.muted },
-  statLineValue: { fontSize: 14, fontWeight: '700', color: C.text },
+  statLineValue: { fontSize: 14, fontWeight: '600', color: C.text },
   aiInfoBox: {
     flexDirection: 'row', gap: 8, alignItems: 'flex-start',
     backgroundColor: C.blueBg, borderRadius: 10,
     borderWidth: 1, borderColor: C.blueBorder,
     padding: 10,
   },
-  aiInfoText: { flex: 1, fontSize: 11, color: '#93c5fd', lineHeight: 16 },
+  aiInfoText: { flex: 1, fontSize: 11, color: C.violet, lineHeight: 16 },
 
   // Swipeable delete
   swipeDeleteBg: {
@@ -2155,44 +2192,44 @@ const styles = StyleSheet.create({
 
   // Parts In Progress
   partJobGroup: { marginBottom: 10 },
-  partJobLabel: { fontSize: 10, fontWeight: '700', color: C.muted, letterSpacing: 0.9, textTransform: 'uppercase', marginBottom: 5 },
+  partJobLabel: { fontSize: 9, fontWeight: '600', color: C.muteDark, letterSpacing: 1.0, textTransform: 'uppercase', marginBottom: 5 },
   partScanRow: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 10,
     paddingVertical: 8, paddingHorizontal: 12,
-    borderRadius: 10, borderWidth: 1, borderColor: '#222',
-    borderLeftWidth: 3, marginBottom: 5,
+    borderRadius: 10, borderWidth: 1, borderColor: C.border,
+    borderLeftWidth: 2, marginBottom: 5,
   },
-  partScanNum:    { fontSize: 13, fontWeight: '700', color: C.text, marginBottom: 2 },
+  partScanNum:    { fontSize: 13, fontWeight: '600', color: C.text, marginBottom: 2 },
   partScanMeta:   { fontSize: 11, color: C.muted },
   partScanNotes:  { fontSize: 11, color: C.muted, fontStyle: 'italic', marginTop: 2 },
   partStatusPill: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 99, borderWidth: 1, backgroundColor: 'transparent' },
-  partStatusText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.4 },
-  partScanTime:   { fontSize: 10, color: C.muted },
+  partStatusText: { fontSize: 9, fontWeight: '700', letterSpacing: 0.5 },
+  partScanTime:   { fontSize: 10, color: C.muteDark },
 
   // Big sign-out button (Overview tab, pinned above tab bar)
   signOutBigBtn: {
-    backgroundColor: '#ef4444',
-    minHeight: 60,
+    backgroundColor: 'rgba(248,113,113,0.12)',
+    minHeight: 52,
     justifyContent: 'center',
     alignItems: 'center',
     borderTopWidth: 1,
-    borderTopColor: '#b91c1c',
+    borderTopColor: C.errorBorder,
   },
   signOutBigBtnText: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '800',
-    letterSpacing: 1.5,
+    color: C.error,
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 1.2,
   },
 
   // Notification banner (Overview tab)
   notifBanner: {
     flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10,
-    backgroundColor: '#1a0a0a', borderRadius: 10,
+    backgroundColor: 'rgba(248,113,113,0.05)', borderRadius: 10,
     borderWidth: 1, borderColor: C.errorBorder,
     paddingHorizontal: 12, paddingVertical: 10, marginBottom: 14,
   },
-  notifItem: { fontSize: 12, fontWeight: '700' },
+  notifItem: { fontSize: 12, fontWeight: '600' },
 
   // Clock crew rows (Overview tab)
   clockNoneText: { fontSize: 12, color: C.muted, marginBottom: 12 },
@@ -2200,13 +2237,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingVertical: 8, paddingHorizontal: 12,
     backgroundColor: C.surface, borderRadius: 10,
-    borderWidth: 1, borderColor: '#222',
-    borderLeftWidth: 3, borderLeftColor: '#22c55e',
+    borderWidth: 1, borderColor: C.border,
+    borderLeftWidth: 2, borderLeftColor: C.success,
     marginBottom: 6,
   },
-  clockCrewDot:     { width: 7, height: 7, borderRadius: 4, backgroundColor: '#22c55e' },
+  clockCrewDot:     { width: 6, height: 6, borderRadius: 3, backgroundColor: C.success },
   clockCrewInfo:    { flex: 1 },
-  clockCrewName:    { fontSize: 13, fontWeight: '700', color: C.text },
+  clockCrewName:    { fontSize: 13, fontWeight: '600', color: C.text },
   clockCrewDept:    { fontSize: 11, color: C.muted, marginTop: 1 },
-  clockCrewElapsed: { fontSize: 13, color: '#22c55e', fontWeight: '600' },
+  clockCrewElapsed: { fontSize: 13, color: C.success, fontWeight: '600' },
 });
