@@ -45,7 +45,25 @@ type DamageReport = {
   created_at: string;
 };
 
-type Tab = 'overview' | 'messages' | 'needs' | 'damage';
+type JobDrawing = {
+  id: string;
+  job_number: string | null;
+  label: string | null;
+  file_url: string | null;
+  file_name: string | null;
+  uploaded_by: string | null;
+  created_at: string;
+};
+
+type SopItem = {
+  id: string;
+  title: string;
+  dept: string | null;
+  pdf_url: string | null;
+  created_at: string;
+};
+
+type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -139,6 +157,23 @@ function ActionBtn({ label, color, onClick, disabled }: { label: string; color: 
   );
 }
 
+function fileTypeBadge(fileName: string | null): { label: string; color: string; bg: string } | null {
+  if (!fileName) return null;
+  const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
+  const map: Record<string, { label: string; color: string; bg: string }> = {
+    pdf:  { label: 'PDF',  color: '#F87171', bg: 'rgba(248,113,113,0.1)' },
+    csv:  { label: 'CSV',  color: '#34D399', bg: 'rgba(52,211,153,0.1)'  },
+    xlsx: { label: 'XLS',  color: '#34D399', bg: 'rgba(52,211,153,0.1)'  },
+    xls:  { label: 'XLS',  color: '#34D399', bg: 'rgba(52,211,153,0.1)'  },
+    dwg:  { label: 'DWG',  color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)'  },
+    png:  { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
+    jpg:  { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
+    jpeg: { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
+  };
+  const t = map[ext];
+  return t ?? { label: ext.toUpperCase() || 'FILE', color: '#5F6F6C', bg: 'rgba(95,111,108,0.1)' };
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function SupervisorPage() {
@@ -148,7 +183,21 @@ export default function SupervisorPage() {
   const [activeCrew,  setActiveCrew]  = useState<CrewRow[]>([]);
   const [messages,    setMessages]    = useState<Message[]>([]);
   const [needs,       setNeeds]       = useState<InventoryNeed[]>([]);
-  const [damage,      setDamage]      = useState<DamageReport[]>([]);
+  const [damage,       setDamage]       = useState<DamageReport[]>([]);
+  const [plans,        setPlans]        = useState<JobDrawing[]>([]);
+  const [sops,         setSops]         = useState<SopItem[]>([]);
+
+  // Plans upload
+  const [planFile,      setPlanFile]      = useState<File | null>(null);
+  const [planJobNum,    setPlanJobNum]    = useState('');
+  const [planLabel,     setPlanLabel]     = useState('');
+  const [planUploading, setPlanUploading] = useState(false);
+
+  // SOPs upload
+  const [sopFile,       setSopFile]       = useState<File | null>(null);
+  const [sopTitle,      setSopTitle]      = useState('');
+  const [sopDept,       setSopDept]       = useState('');
+  const [sopUploading,  setSopUploading]  = useState(false);
   const [dataLoading, setDataLoading] = useState(true);
 
   // Per-row action loading — track by id
@@ -187,6 +236,14 @@ export default function SupervisorPage() {
       if (msgRes.data)    setMessages(msgRes.data as Message[]);
       if (needsRes.data)  setNeeds(needsRes.data as InventoryNeed[]);
       if (damageRes.data) setDamage(damageRes.data as DamageReport[]);
+    } catch (_) {}
+    try {
+      const [plansRes, sopsRes] = await Promise.all([
+        supabase.from('job_drawings').select('id, job_number, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
+        supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
+      ]);
+      if (plansRes.data) setPlans(plansRes.data as JobDrawing[]);
+      if (sopsRes.data)  setSops(sopsRes.data as SopItem[]);
     } catch (_) {}
     setDataLoading(false);
   }, [tenant]);
@@ -367,6 +424,99 @@ export default function SupervisorPage() {
     }
   }
 
+  // ── Plans ───────────────────────────────────────────────────────────────────
+
+  async function handlePlanUpload() {
+    if (!planFile || !planJobNum.trim() || planUploading) return;
+    setPlanUploading(true);
+    try {
+      const ext = planFile.name.split('.').pop() ?? 'bin';
+      const path = `${tenant!.id}/${Date.now()}.${ext}`;
+      const { error: uploadErr } = await supabase.storage.from('job-plans').upload(path, planFile, { upsert: true });
+      if (uploadErr) throw uploadErr;
+      const { data: { publicUrl } } = supabase.storage.from('job-plans').getPublicUrl(path);
+      const { error: dbErr } = await supabase.from('job_drawings').insert({
+        tenant_id: tenant!.id,
+        job_number: planJobNum.trim(),
+        label: planLabel.trim() || null,
+        file_url: publicUrl,
+        file_name: planFile.name,
+        uploaded_by: 'Supervisor',
+      });
+      if (dbErr) throw dbErr;
+      setPlanFile(null);
+      setPlanJobNum('');
+      setPlanLabel('');
+      showToast('Plan uploaded ✓');
+      const { data } = await supabase.from('job_drawings').select('id, job_number, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
+      if (data) setPlans(data as JobDrawing[]);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Upload failed';
+      showToast(msg, true);
+    } finally {
+      setPlanUploading(false);
+    }
+  }
+
+  async function handlePlanDelete(id: string) {
+    setPlans((prev) => prev.filter((p) => p.id !== id));
+    try {
+      const { error } = await supabase.from('job_drawings').delete().eq('id', id);
+      if (error) throw error;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Delete failed';
+      showToast(msg, true);
+      const { data } = await supabase.from('job_drawings').select('id, job_number, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
+      if (data) setPlans(data as JobDrawing[]);
+    }
+  }
+
+  // ── SOPs ────────────────────────────────────────────────────────────────────
+
+  async function handleSopUpload() {
+    if (!sopFile || !sopTitle.trim() || sopUploading) return;
+    setSopUploading(true);
+    try {
+      const path = `${tenant!.id}/${Date.now()}.pdf`;
+      const { error: uploadErr } = await supabase.storage.from('sop-files').upload(path, sopFile, { upsert: true });
+      if (uploadErr) throw uploadErr;
+      const { data: { publicUrl } } = supabase.storage.from('sop-files').getPublicUrl(path);
+      const { error: dbErr } = await supabase.from('sops').insert({
+        tenant_id: tenant!.id,
+        title: sopTitle.trim(),
+        dept: sopDept || null,
+        pdf_url: publicUrl,
+        created_by: 'Supervisor',
+        steps: [],
+      });
+      if (dbErr) throw dbErr;
+      setSopFile(null);
+      setSopTitle('');
+      setSopDept('');
+      showToast('SOP uploaded ✓');
+      const { data } = await supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
+      if (data) setSops(data as SopItem[]);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Upload failed';
+      showToast(msg, true);
+    } finally {
+      setSopUploading(false);
+    }
+  }
+
+  async function handleSopDelete(id: string) {
+    setSops((prev) => prev.filter((s) => s.id !== id));
+    try {
+      const { error } = await supabase.from('sops').delete().eq('id', id);
+      if (error) throw error;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Delete failed';
+      showToast(msg, true);
+      const { data } = await supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
+      if (data) setSops(data as SopItem[]);
+    }
+  }
+
   // ── Sign out ────────────────────────────────────────────────────────────────
 
   const handleSignOut = async () => {
@@ -387,6 +537,8 @@ export default function SupervisorPage() {
     { key: 'messages',  label: 'Messages',  count: messages.length },
     { key: 'needs',     label: 'Inventory', count: openNeeds.length },
     { key: 'damage',    label: 'Damage',    count: openDamage.length },
+    { key: 'plans',     label: 'Plans',     count: plans.length > 0 ? plans.length : undefined },
+    { key: 'sops',      label: 'SOPs',      count: sops.length > 0 ? sops.length : undefined },
   ];
 
   // ── Thread computation for Messages tab ────────────────────────────────────
@@ -811,6 +963,167 @@ export default function SupervisorPage() {
               )}
             </div>
           )}
+          {/* ── Plans tab ────────────────────────────────────────────────────── */}
+          {tab === 'plans' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              <div className="portal-card">
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Upload Plan</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Job Number *</label>
+                    <input className="form-input" placeholder="e.g. P-26-1001" value={planJobNum} onChange={(e) => setPlanJobNum(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Description</label>
+                    <input className="form-input" placeholder="e.g. Cabinet layout, CNC file…" value={planLabel} onChange={(e) => setPlanLabel(e.target.value)} />
+                  </div>
+                </div>
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>File (PDF, CSV, DWG…) *</label>
+                  <input
+                    type="file"
+                    accept=".pdf,.csv,.xlsx,.xls,.dwg,.png,.jpg,.jpeg"
+                    onChange={(e) => setPlanFile(e.target.files?.[0] ?? null)}
+                    style={{ fontSize: 13, color: 'var(--ink-dim)', width: '100%' }}
+                  />
+                </div>
+                <button
+                  className="btn btn-primary"
+                  style={{ opacity: (!planFile || !planJobNum.trim() || planUploading) ? 0.5 : 1, padding: '10px 24px' }}
+                  onClick={handlePlanUpload}
+                  disabled={!planFile || !planJobNum.trim() || planUploading}
+                >
+                  {planUploading ? 'Uploading…' : 'Upload Plan'}
+                </button>
+              </div>
+
+              {dataLoading ? (
+                <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
+              ) : plans.length === 0 ? (
+                <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No plans uploaded yet.</div>
+              ) : (
+                <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
+                  {(() => {
+                    const groups: Record<string, JobDrawing[]> = {};
+                    plans.forEach((p) => {
+                      const k = p.job_number || 'No Job Number';
+                      if (!groups[k]) groups[k] = [];
+                      groups[k].push(p);
+                    });
+                    return Object.entries(groups).map(([jobKey, items]) => (
+                      <div key={jobKey}>
+                        <div style={{ padding: '10px 20px', background: 'rgba(167,139,250,0.05)', borderBottom: '1px solid var(--line)', fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#A78BFA' }}>
+                          {jobKey}
+                        </div>
+                        {items.map((p) => {
+                          const badge = fileTypeBadge(p.file_name);
+                          return (
+                            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px', borderBottom: '1px solid var(--line)' }}>
+                              {badge && (
+                                <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 7px', borderRadius: 5, background: badge.bg, color: badge.color, flexShrink: 0 }}>{badge.label}</span>
+                              )}
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.label || p.file_name || 'Untitled'}</div>
+                                <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 2 }}>{formatDate(p.created_at)}</div>
+                              </div>
+                              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                                {p.file_url && (
+                                  <a href={p.file_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.1)', padding: '5px 12px', borderRadius: 8, textDecoration: 'none' }}>View</a>
+                                )}
+                                <ActionBtn label="Delete" color="#F87171" onClick={() => handlePlanDelete(p.id)} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ));
+                  })()}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── SOPs tab ─────────────────────────────────────────────────────── */}
+          {tab === 'sops' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              <div className="portal-card">
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Upload SOP</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Title *</label>
+                    <input className="form-input" placeholder="e.g. Finishing Safety Protocol" value={sopTitle} onChange={(e) => setSopTitle(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Department</label>
+                    <select className="form-input" value={sopDept} onChange={(e) => setSopDept(e.target.value)} style={{ cursor: 'pointer' }}>
+                      <option value="">All Departments</option>
+                      <option value="Production">Production</option>
+                      <option value="Assembly">Assembly</option>
+                      <option value="Finishing">Finishing</option>
+                      <option value="Craftsman">Craftsman</option>
+                    </select>
+                  </div>
+                </div>
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>PDF File *</label>
+                  <input
+                    type="file"
+                    accept=".pdf"
+                    onChange={(e) => setSopFile(e.target.files?.[0] ?? null)}
+                    style={{ fontSize: 13, color: 'var(--ink-dim)', width: '100%' }}
+                  />
+                </div>
+                <button
+                  className="btn btn-primary"
+                  style={{ opacity: (!sopFile || !sopTitle.trim() || sopUploading) ? 0.5 : 1, padding: '10px 24px' }}
+                  onClick={handleSopUpload}
+                  disabled={!sopFile || !sopTitle.trim() || sopUploading}
+                >
+                  {sopUploading ? 'Uploading…' : 'Upload SOP'}
+                </button>
+              </div>
+
+              {dataLoading ? (
+                <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
+              ) : sops.length === 0 ? (
+                <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No SOPs uploaded yet.</div>
+              ) : (
+                <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
+                  {(() => {
+                    const groups: Record<string, SopItem[]> = {};
+                    sops.forEach((s) => {
+                      const k = s.dept || 'All Departments';
+                      if (!groups[k]) groups[k] = [];
+                      groups[k].push(s);
+                    });
+                    return Object.entries(groups).map(([deptKey, items]) => (
+                      <div key={deptKey}>
+                        <div style={{ padding: '10px 20px', background: 'rgba(94,234,212,0.05)', borderBottom: '1px solid var(--line)', fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--teal)' }}>
+                          {deptKey}
+                        </div>
+                        {items.map((s) => (
+                          <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px', borderBottom: '1px solid var(--line)' }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 7px', borderRadius: 5, background: 'rgba(248,113,113,0.1)', color: '#F87171', flexShrink: 0 }}>PDF</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</div>
+                              <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 2 }}>{formatDate(s.created_at)}</div>
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                              {s.pdf_url && (
+                                <a href={s.pdf_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, fontWeight: 700, color: 'var(--teal)', background: 'rgba(94,234,212,0.1)', padding: '5px 12px', borderRadius: 8, textDecoration: 'none' }}>View</a>
+                              )}
+                              <ActionBtn label="Delete" color="#F87171" onClick={() => handleSopDelete(s.id)} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ));
+                  })()}
+                </div>
+              )}
+            </div>
+          )}
+
         </main>
       </div>
 

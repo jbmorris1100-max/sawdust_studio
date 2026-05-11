@@ -33,11 +33,20 @@ type Drawing = {
   label: string | null;
   file_url: string | null;
   external_url: string | null;
+  file_name: string | null;
   uploaded_by: string | null;
   created_at: string;
 };
 
-type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'message' | 'switchDept' | 'editName' | null;
+type SopItem = {
+  id: string;
+  title: string;
+  dept: string | null;
+  pdf_url: string | null;
+  created_at: string;
+};
+
+type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'message' | 'switchDept' | 'editName' | null;
 type ClockStep = 'lookup' | 'clockin' | 'clockout';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -47,6 +56,23 @@ function formatTime(iso: string) {
 }
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function fileTypeBadge(fileName: string | null): { label: string; color: string; bg: string } | null {
+  if (!fileName) return null;
+  const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
+  const map: Record<string, { label: string; color: string; bg: string }> = {
+    pdf:  { label: 'PDF',  color: '#F87171', bg: 'rgba(248,113,113,0.1)' },
+    csv:  { label: 'CSV',  color: '#34D399', bg: 'rgba(52,211,153,0.1)'  },
+    xlsx: { label: 'XLS',  color: '#34D399', bg: 'rgba(52,211,153,0.1)'  },
+    xls:  { label: 'XLS',  color: '#34D399', bg: 'rgba(52,211,153,0.1)'  },
+    dwg:  { label: 'DWG',  color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)'  },
+    png:  { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
+    jpg:  { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
+    jpeg: { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
+  };
+  const t = map[ext];
+  return t ?? { label: ext.toUpperCase() || 'FILE', color: '#5F6F6C', bg: 'rgba(95,111,108,0.1)' };
 }
 
 // ── Small UI pieces ────────────────────────────────────────────────────────────
@@ -184,6 +210,10 @@ export default function CrewPage() {
   // Plans modal
   const [drawings,     setDrawings]     = useState<Drawing[]>([]);
   const [plansLoading, setPlansLoading] = useState(false);
+
+  // SOPs modal
+  const [sops,        setSops]        = useState<SopItem[]>([]);
+  const [sopsLoading, setSopsLoading] = useState(false);
 
   // Message modal
   const [msgDept, setMsgDept] = useState('');
@@ -408,12 +438,29 @@ export default function CrewPage() {
     try {
       const { data } = await supabase
         .from('job_drawings')
-        .select('id, job_number, job_id, plan_name, label, file_url, external_url, uploaded_by, created_at')
+        .select('id, job_number, job_id, plan_name, label, file_url, external_url, file_name, uploaded_by, created_at')
         .eq('tenant_id', tenant!.id)
         .order('created_at', { ascending: false });
       if (data) setDrawings(data as Drawing[]);
     } catch (_) {}
     setPlansLoading(false);
+  }
+
+  async function openSOPs() {
+    setSops([]);
+    setModal('sops');
+    setSopsLoading(true);
+    try {
+      const { data } = await supabase
+        .from('sops')
+        .select('id, title, dept, pdf_url, created_at')
+        .eq('tenant_id', tenant!.id)
+        .order('created_at', { ascending: false });
+      if (data) {
+        setSops((data as SopItem[]).filter((s) => s.dept === null || s.dept === crewDept));
+      }
+    } catch (_) {}
+    setSopsLoading(false);
   }
 
   function closeModal() {
@@ -696,6 +743,12 @@ export default function CrewPage() {
       color: '#A78BFA', bg: 'rgba(167,139,250,0.08)',
       onClick: openPlans,
       icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>,
+    },
+    {
+      label: 'View SOPs',
+      color: '#5EEAD4', bg: 'rgba(94,234,212,0.08)',
+      onClick: openSOPs,
+      icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>,
     },
     {
       label: 'Message Supervisor',
@@ -1153,9 +1206,13 @@ export default function CrewPage() {
                   {items.map((d) => {
                     const url = d.file_url || d.external_url;
                     const name = d.plan_name || d.label || 'Untitled';
+                    const badge = fileTypeBadge(d.file_name);
                     return (
-                      <div key={d.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
-                        <div>
+                      <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
+                        {badge && (
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 5, background: badge.bg, color: badge.color, flexShrink: 0 }}>{badge.label}</span>
+                        )}
+                        <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{name}</div>
                           <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 2 }}>{d.uploaded_by ? `${d.uploaded_by} · ` : ''}{formatDate(d.created_at)}</div>
                         </div>
@@ -1167,6 +1224,42 @@ export default function CrewPage() {
                       </div>
                     );
                   })}
+                </div>
+              ))}
+            </div>
+          )}
+        </ModalOverlay>
+      )}
+
+      {/* ── SOPs Modal ──────────────────────────────────────────────────────── */}
+      {modal === 'sops' && (
+        <ModalOverlay onClose={closeModal} title="SOPs">
+          {sopsLoading ? (
+            <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--ink-mute)', fontSize: 13 }}>Loading SOPs…</div>
+          ) : sops.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--ink-mute)', fontSize: 13 }}>
+              No SOPs available{crewDept ? ` for ${crewDept}` : ''}.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {sops.map((s) => (
+                <div key={s.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid var(--line)', gap: 12 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{s.title}</div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 4, alignItems: 'center' }}>
+                      {s.dept ? (
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 5, background: 'rgba(167,139,250,0.12)', color: '#A78BFA' }}>{s.dept}</span>
+                      ) : (
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 5, background: 'rgba(94,234,212,0.1)', color: 'var(--teal)' }}>All Depts</span>
+                      )}
+                      <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{formatDate(s.created_at)}</span>
+                    </div>
+                  </div>
+                  {s.pdf_url ? (
+                    <a href={s.pdf_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, fontWeight: 700, color: 'var(--teal)', background: 'rgba(94,234,212,0.1)', padding: '5px 12px', borderRadius: 8, textDecoration: 'none', flexShrink: 0 }}>Open</a>
+                  ) : (
+                    <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>No file</span>
+                  )}
                 </div>
               ))}
             </div>
