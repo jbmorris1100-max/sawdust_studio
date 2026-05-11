@@ -73,6 +73,19 @@ type CraftsmanBuild = {
   total_hours: number | null;
 };
 
+type PartLog = {
+  id: string;
+  tenant_id: string;
+  worker_name: string | null;
+  job_number: string | null;
+  part_name: string;
+  dept: string | null;
+  status: string;
+  next_dept: string | null;
+  notes: string | null;
+  created_at: string;
+};
+
 type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai';
 
 type AiMode = 'learn' | 'assist' | 'autonomous';
@@ -245,6 +258,7 @@ export default function SupervisorPage() {
   const [sops,           setSops]           = useState<SopItem[]>([]);
   const [craftsmanBuilds, setCraftsmanBuilds] = useState<CraftsmanBuild[]>([]);
   const [craftsTick,     setCraftsTick]     = useState(0);
+  const [parts,          setParts]          = useState<PartLog[]>([]);
 
   // Plans upload
   const [planFile,      setPlanFile]      = useState<File | null>(null);
@@ -321,14 +335,16 @@ export default function SupervisorPage() {
       if (damageRes.data) setDamage(damageRes.data as DamageReport[]);
     } catch (_) {}
     try {
-      const [plansRes, sopsRes, buildsRes] = await Promise.all([
+      const [plansRes, sopsRes, buildsRes, partsRes] = await Promise.all([
         supabase.from('job_drawings').select('id, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('time_clock').select('id, worker_name, clock_in, clock_out, notes, job_number, total_hours').eq('tenant_id', tenant.id).eq('status', 'craftsman_build').order('clock_in', { ascending: false }).limit(50),
+        supabase.from('parts_log').select('*').eq('tenant_id', tenant.id).not('status', 'in', '("Passed QC")').order('created_at', { ascending: false }).limit(100),
       ]);
       if (plansRes.data)  setPlans(plansRes.data as JobDrawing[]);
       if (sopsRes.data)   setSops(sopsRes.data as SopItem[]);
       if (buildsRes.data) setCraftsmanBuilds(buildsRes.data as CraftsmanBuild[]);
+      if (partsRes.data)  setParts(partsRes.data as PartLog[]);
     } catch (_) {}
     try {
       const today        = new Date().toISOString().split('T')[0];
@@ -525,11 +541,33 @@ export default function SupervisorPage() {
       })
       .subscribe();
 
+    const partsCh = supabase
+      .channel('rt-parts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parts_log', filter: `tenant_id=eq.${tenantId}` }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          const row = payload.new as PartLog;
+          if (row.status !== 'Passed QC') {
+            setParts((prev) => prev.some((p) => p.id === row.id) ? prev : [row, ...prev]);
+          }
+        } else if (payload.eventType === 'UPDATE') {
+          const row = payload.new as PartLog;
+          if (row.status === 'Passed QC') {
+            setParts((prev) => prev.filter((p) => p.id !== row.id));
+          } else {
+            setParts((prev) => prev.map((p) => p.id === row.id ? row : p));
+          }
+        } else if (payload.eventType === 'DELETE') {
+          setParts((prev) => prev.filter((p) => p.id !== payload.old.id));
+        }
+      })
+      .subscribe();
+
     return () => {
       supabase.removeChannel(clockCh);
       supabase.removeChannel(msgCh);
       supabase.removeChannel(needsCh);
       supabase.removeChannel(damageCh);
+      supabase.removeChannel(partsCh);
     };
   }, [tenant]);
 
@@ -1031,6 +1069,65 @@ export default function SupervisorPage() {
                   )}
                 </div>
               )}
+
+              {/* Parts & QC */}
+              {parts.length > 0 && (() => {
+                const STATUS_META: Record<string, { color: string; bg: string; order: number }> = {
+                  'QC Check':             { color: '#FBBF24', bg: 'rgba(251,191,36,0.1)',    order: 0 },
+                  'Failed QC / Rework':   { color: '#F87171', bg: 'rgba(248,113,113,0.1)',   order: 1 },
+                  'In Progress':          { color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)',    order: 2 },
+                  'Moving to Next Stage': { color: '#60A5FA', bg: 'rgba(96,165,250,0.1)',    order: 3 },
+                };
+                const grouped: Record<string, PartLog[]> = {};
+                parts.forEach((p) => {
+                  const k = p.status;
+                  if (!grouped[k]) grouped[k] = [];
+                  grouped[k].push(p);
+                });
+                const sortedStatuses = Object.keys(grouped).sort(
+                  (a, b) => (STATUS_META[a]?.order ?? 9) - (STATUS_META[b]?.order ?? 9)
+                );
+                const qcCount = (grouped['QC Check'] ?? []).length;
+                return (
+                  <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
+                    <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#60A5FA' }}>Parts & QC</span>
+                      {qcCount > 0 && (
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: 'rgba(251,191,36,0.15)', color: '#FBBF24' }}>
+                          {qcCount} need QC
+                        </span>
+                      )}
+                    </div>
+                    {sortedStatuses.map((status) => {
+                      const meta = STATUS_META[status] ?? { color: '#5F6F6C', bg: 'rgba(95,111,108,0.1)', order: 9 };
+                      return (
+                        <div key={status}>
+                          <div style={{ padding: '8px 20px 4px', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: meta.color }}>
+                            {status}
+                          </div>
+                          {grouped[status].map((p) => (
+                            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '11px 20px', borderBottom: '1px solid var(--line)' }}>
+                              <div style={{ width: 8, height: 8, borderRadius: '50%', background: meta.color, flexShrink: 0 }} />
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>{p.part_name}</div>
+                                <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>
+                                  {p.job_number ? `Job ${p.job_number} · ` : ''}
+                                  {p.dept ?? '—'}
+                                  {p.next_dept ? ` → ${p.next_dept}` : ''}
+                                </div>
+                              </div>
+                              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>{p.worker_name ?? 'Unknown'}</div>
+                                <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>{formatTime(p.created_at)}</div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           )}
 

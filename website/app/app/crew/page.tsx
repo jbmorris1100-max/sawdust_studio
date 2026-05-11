@@ -46,7 +46,20 @@ type SopItem = {
   created_at: string;
 };
 
-type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'message' | 'switchDept' | 'editName' | 'buildTimer' | null;
+type PartLog = {
+  id: string;
+  tenant_id: string;
+  worker_name: string | null;
+  job_number: string | null;
+  part_name: string;
+  dept: string | null;
+  status: string;
+  next_dept: string | null;
+  notes: string | null;
+  created_at: string;
+};
+
+type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'message' | 'switchDept' | 'editName' | 'buildTimer' | 'parts' | null;
 type ClockStep = 'lookup' | 'clockin' | 'clockout';
 type BuildTimerStep = 'form' | 'summary';
 
@@ -242,6 +255,18 @@ export default function CrewPage() {
   const [bmUnit,     setBmUnit]     = useState('Board Feet');
   const [bmJobNum,   setBmJobNum]   = useState('');
 
+
+  // Parts / QC modal
+  const [partsMode,    setPartsMode]    = useState<'log' | 'qc'>('log');
+  const [partName,     setPartName]     = useState('');
+  const [partJobNum,   setPartJobNum]   = useState('');
+  const [partDept,     setPartDept]     = useState('');
+  const [partStatus,   setPartStatus]   = useState('In Progress');
+  const [partNextDept, setPartNextDept] = useState('');
+  const [partNotes,    setPartNotes]    = useState('');
+  const [partsQcList,  setPartsQcList]  = useState<PartLog[]>([]);
+  const [qcLoading,    setQcLoading]    = useState(false);
+  const [qcActioning,  setQcActioning]  = useState<Record<string, boolean>>({});
 
   // Message modal
   const [msgDept, setMsgDept] = useState('');
@@ -491,6 +516,31 @@ export default function CrewPage() {
       if (data) setDrawings(data as Drawing[]);
     } catch (_) {}
     setPlansLoading(false);
+  }
+
+  async function openParts() {
+    setPartsMode('log');
+    setPartName('');
+    setPartJobNum('');
+    setPartDept(crewDept);
+    setPartStatus('In Progress');
+    setPartNextDept('');
+    setPartNotes('');
+    setModal('parts');
+    if (crewDept && tenant) {
+      setQcLoading(true);
+      try {
+        const { data } = await supabase
+          .from('parts_log')
+          .select('*')
+          .eq('tenant_id', tenant.id)
+          .eq('dept', crewDept)
+          .eq('status', 'QC Check')
+          .order('created_at', { ascending: false });
+        if (data) setPartsQcList(data as PartLog[]);
+      } catch (_) {}
+      setQcLoading(false);
+    }
   }
 
   async function openSOPs() {
@@ -832,6 +882,51 @@ export default function CrewPage() {
     }
   }
 
+  // ── Parts / QC handlers ────────────────────────────────────────────────────
+
+  async function handlePartSubmit() {
+    const name = partName.trim();
+    if (!name || !partDept || saving) return;
+    setSaving(true);
+    try {
+      const { error } = await supabase.from('parts_log').insert({
+        part_name:   name,
+        job_number:  partJobNum.trim() || null,
+        dept:        partDept,
+        status:      partStatus,
+        next_dept:   partStatus === 'Moving to Next Stage' ? (partNextDept || null) : null,
+        notes:       partNotes.trim() || null,
+        worker_name: crewName || null,
+        tenant_id:   tenant!.id,
+      });
+      if (error) throw error;
+      closeModal();
+      showToast('Part logged ✓');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Insert failed', true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleQcAction(id: string, newStatus: 'Passed QC' | 'Failed QC / Rework') {
+    setQcActioning((prev) => ({ ...prev, [id]: true }));
+    setPartsQcList((prev) => prev.filter((p) => p.id !== id));
+    try {
+      const { error } = await supabase.from('parts_log').update({ status: newStatus }).eq('id', id);
+      if (error) throw error;
+      showToast(newStatus === 'Passed QC' ? 'Part approved ✓' : 'Marked for rework ✓');
+    } catch (err: unknown) {
+      try {
+        const { data } = await supabase.from('parts_log').select('*').eq('id', id).single();
+        if (data) setPartsQcList((prev) => [data as PartLog, ...prev]);
+      } catch (_) {}
+      showToast(err instanceof Error ? err.message : 'Update failed', true);
+    } finally {
+      setQcActioning((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    }
+  }
+
   // ── Sign out ────────────────────────────────────────────────────────────────
 
   const handleSignOut = async () => {
@@ -920,6 +1015,12 @@ export default function CrewPage() {
       color: '#FBBF24', bg: 'rgba(251,191,36,0.08)',
       onClick: openMessage,
       icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
+    },
+    {
+      label: 'Log Part / QC',
+      color: '#60A5FA', bg: 'rgba(96,165,250,0.08)',
+      onClick: openParts,
+      icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-4 0v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>,
     },
     ...(crewDept === 'Craftsman' ? ([
       {
@@ -1664,6 +1765,157 @@ export default function CrewPage() {
               <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }} onClick={closeModal}>Done</button>
             </>
           ) : null}
+        </ModalOverlay>
+      )}
+
+      {/* ── Parts / QC Modal ─────────────────────────────────────────────────── */}
+      {modal === 'parts' && (
+        <ModalOverlay onClose={closeModal} title="Parts & QC">
+
+          {/* Mode tabs */}
+          <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 24 }}>
+            {(['log', 'qc'] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setPartsMode(m)}
+                style={{
+                  padding: '8px 18px', fontSize: 13, fontWeight: 600,
+                  color: partsMode === m ? '#60A5FA' : 'var(--ink-mute)',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  borderBottom: partsMode === m ? '2px solid #60A5FA' : '2px solid transparent',
+                  marginBottom: -1, fontFamily: 'inherit', transition: 'color 0.15s',
+                }}
+              >
+                {m === 'log' ? 'Log Part' : `QC Check${partsQcList.length > 0 ? ` (${partsQcList.length})` : ''}`}
+              </button>
+            ))}
+          </div>
+
+          {/* ── LOG PART mode ── */}
+          {partsMode === 'log' && (
+            <>
+              <Field label="Part name / description *">
+                <input
+                  className="form-input"
+                  placeholder="e.g. Cabinet face frame, drawer box…"
+                  value={partName}
+                  onChange={(e) => setPartName(e.target.value)}
+                  autoFocus
+                />
+              </Field>
+              <Field label="Job number">
+                <input
+                  className="form-input"
+                  placeholder="e.g. P-26-1001"
+                  value={partJobNum}
+                  onChange={(e) => setPartJobNum(e.target.value)}
+                />
+              </Field>
+              <Field label="Department *">
+                <select className="form-input" value={partDept} onChange={(e) => setPartDept(e.target.value)} style={{ cursor: 'pointer' }}>
+                  <option value="">Select department…</option>
+                  <option value="Production">Production</option>
+                  <option value="Assembly">Assembly</option>
+                  <option value="Finishing">Finishing</option>
+                  <option value="Craftsman">Craftsman</option>
+                </select>
+              </Field>
+              <Field label="Status">
+                <select className="form-input" value={partStatus} onChange={(e) => setPartStatus(e.target.value)} style={{ cursor: 'pointer' }}>
+                  <option value="In Progress">In Progress</option>
+                  <option value="QC Check">QC Check</option>
+                  <option value="Passed QC">Passed QC</option>
+                  <option value="Failed QC / Rework">Failed QC / Rework</option>
+                  <option value="Moving to Next Stage">Moving to Next Stage</option>
+                </select>
+              </Field>
+              {partStatus === 'Moving to Next Stage' && (
+                <Field label="Next department">
+                  <select className="form-input" value={partNextDept} onChange={(e) => setPartNextDept(e.target.value)} style={{ cursor: 'pointer' }}>
+                    <option value="">Select next dept…</option>
+                    <option value="Production">Production</option>
+                    <option value="Assembly">Assembly</option>
+                    <option value="Finishing">Finishing</option>
+                    <option value="Craftsman">Craftsman</option>
+                  </select>
+                </Field>
+              )}
+              <Field label="Notes (optional)">
+                <textarea
+                  className="form-input"
+                  placeholder="Any additional details…"
+                  value={partNotes}
+                  onChange={(e) => setPartNotes(e.target.value)}
+                  rows={3}
+                  style={{ resize: 'vertical' }}
+                />
+              </Field>
+              <button
+                className="btn btn-primary"
+                style={{ width: '100%', justifyContent: 'center', marginTop: 4, background: '#60A5FA', boxShadow: 'none', opacity: (!partName.trim() || !partDept || saving) ? 0.5 : 1 }}
+                onClick={handlePartSubmit}
+                disabled={!partName.trim() || !partDept || saving}
+              >
+                {saving ? 'Logging…' : 'Log Part'}
+              </button>
+            </>
+          )}
+
+          {/* ── QC CHECK mode ── */}
+          {partsMode === 'qc' && (
+            <>
+              {qcLoading ? (
+                <div style={{ textAlign: 'center', padding: '32px 0', fontSize: 13, color: 'var(--ink-mute)' }}>Loading parts…</div>
+              ) : partsQcList.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '32px 0' }}>
+                  <div style={{ fontSize: 32, marginBottom: 12 }}>✓</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: '#34D399', marginBottom: 6 }}>All clear</div>
+                  <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>
+                    No parts awaiting QC{crewDept ? ` in ${crewDept}` : ''}.
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {partsQcList.map((p) => (
+                    <div
+                      key={p.id}
+                      style={{ padding: '14px 16px', borderRadius: 10, background: 'rgba(251,191,36,0.05)', border: '1px solid rgba(251,191,36,0.2)' }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{p.part_name}</div>
+                          <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 3 }}>
+                            {p.job_number ? `Job ${p.job_number} · ` : ''}
+                            {p.worker_name ? `${p.worker_name} · ` : ''}
+                            {formatTime(p.created_at)}
+                          </div>
+                        </div>
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: 'rgba(251,191,36,0.15)', color: '#FBBF24', flexShrink: 0 }}>
+                          QC Check
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button
+                          onClick={() => handleQcAction(p.id, 'Passed QC')}
+                          disabled={!!qcActioning[p.id]}
+                          style={{ flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 700, borderRadius: 8, border: '1px solid rgba(52,211,153,0.4)', background: 'rgba(52,211,153,0.08)', color: '#34D399', cursor: qcActioning[p.id] ? 'not-allowed' : 'pointer', opacity: qcActioning[p.id] ? 0.5 : 1, fontFamily: 'inherit' }}
+                        >
+                          ✓ Approve
+                        </button>
+                        <button
+                          onClick={() => handleQcAction(p.id, 'Failed QC / Rework')}
+                          disabled={!!qcActioning[p.id]}
+                          style={{ flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 700, borderRadius: 8, border: '1px solid rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.08)', color: '#F87171', cursor: qcActioning[p.id] ? 'not-allowed' : 'pointer', opacity: qcActioning[p.id] ? 0.5 : 1, fontFamily: 'inherit' }}
+                        >
+                          ✗ Rework
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </ModalOverlay>
       )}
 
