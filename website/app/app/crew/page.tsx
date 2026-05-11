@@ -48,9 +48,6 @@ function formatTime(iso: string) {
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
-}
 
 // ── Small UI pieces ────────────────────────────────────────────────────────────
 
@@ -69,6 +66,32 @@ function TrialBanner({ days }: { days: number }) {
       <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinecap="round"><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
       <span style={{ fontSize: 13, color: '#FBBF24' }}><b>{days} day{days !== 1 ? 's' : ''}</b> left in trial —</span>
       <Link href="/pricing" style={{ fontSize: 13, fontWeight: 700, color: '#FBBF24', textDecoration: 'underline' }}>Upgrade</Link>
+    </div>
+  );
+}
+
+function NewMsgBanner({ preview, onDismiss }: { preview: string; onDismiss: () => void }) {
+  return (
+    <div style={{
+      position: 'sticky', top: 64, zIndex: 49,
+      background: 'rgba(94,234,212,0.07)',
+      borderBottom: '1px solid rgba(94,234,212,0.22)',
+      padding: '10px 24px',
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+        <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#5EEAD4" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0 }}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <span style={{ fontSize: 13, color: 'var(--teal)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <b>New message from Supervisor</b> — {preview}
+        </span>
+      </div>
+      <button
+        onClick={onDismiss}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex', flexShrink: 0 }}
+        aria-label="Dismiss"
+      >
+        <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
     </div>
   );
 }
@@ -128,6 +151,13 @@ export default function CrewPage() {
   // Crew identity (persisted in localStorage)
   const [crewName, setCrewName] = useState('');
   const [crewDept, setCrewDept] = useState('');
+  // Ref so realtime closure always reads current dept without re-subscribing
+  const crewDeptRef = useRef('');
+  useEffect(() => { crewDeptRef.current = crewDept; }, [crewDept]);
+
+  // New-message notification banner
+  const [msgNotification, setMsgNotification] = useState<string | null>(null);
+  const notifTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Modal state
   const [modal,     setModal]     = useState<ModalType>(null);
@@ -152,8 +182,8 @@ export default function CrewPage() {
   const [dmgDept, setDmgDept] = useState('');
 
   // Plans modal
-  const [drawings,      setDrawings]      = useState<Drawing[]>([]);
-  const [plansLoading,  setPlansLoading]  = useState(false);
+  const [drawings,     setDrawings]     = useState<Drawing[]>([]);
+  const [plansLoading, setPlansLoading] = useState(false);
 
   // Message modal
   const [msgDept, setMsgDept] = useState('');
@@ -168,14 +198,24 @@ export default function CrewPage() {
     setCrewDept(d);
   }, []);
 
-  // Load page data
+  // Load page data — fetch all tenant messages and filter client-side by dept
   useEffect(() => {
     if (!tenant) return;
     async function load() {
       try {
         const [clockRes, msgRes] = await Promise.all([
-          supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, status').eq('tenant_id', tenant!.id).order('clock_in', { ascending: false }).limit(8),
-          supabase.from('messages').select('id, sender_name, dept, body, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(6),
+          supabase
+            .from('time_clock')
+            .select('id, worker_name, dept, clock_in, clock_out, status')
+            .eq('tenant_id', tenant!.id)
+            .order('clock_in', { ascending: false })
+            .limit(8),
+          supabase
+            .from('messages')
+            .select('id, sender_name, dept, body, created_at')
+            .eq('tenant_id', tenant!.id)
+            .order('created_at', { ascending: false })
+            .limit(50),
         ]);
         if (clockRes.data) setClockEntries(clockRes.data as TimeEntry[]);
         if (msgRes.data)   setMessages(msgRes.data as Message[]);
@@ -183,6 +223,39 @@ export default function CrewPage() {
       setDataLoading(false);
     }
     load();
+  }, [tenant]);
+
+  // Realtime subscription for messages
+  useEffect(() => {
+    if (!tenant) return;
+    const tenantId = tenant.id;
+
+    const msgCh = supabase
+      .channel('rt-crew-messages')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'messages', filter: `tenant_id=eq.${tenantId}` },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const msg = payload.new as Message;
+            setMessages((prev) => prev.some((m) => m.id === msg.id) ? prev : [msg, ...prev]);
+            // Notify crew of supervisor messages directed at their dept or broadcast
+            const currentDept = crewDeptRef.current;
+            const isRelevant = msg.dept === null || msg.dept === currentDept;
+            if (msg.sender_name === 'Supervisor' && isRelevant) {
+              const preview = msg.body.length > 70 ? msg.body.slice(0, 67) + '…' : msg.body;
+              setMsgNotification(preview);
+              if (notifTimer.current) clearTimeout(notifTimer.current);
+              notifTimer.current = setTimeout(() => setMsgNotification(null), 7000);
+            }
+          } else if (payload.eventType === 'DELETE') {
+            setMessages((prev) => prev.filter((m) => m.id !== payload.old.id));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(msgCh); };
   }, [tenant]);
 
   const showToast = useCallback((msg: string, error = false) => {
@@ -194,7 +267,12 @@ export default function CrewPage() {
   const reloadClock = useCallback(async () => {
     if (!tenant) return;
     try {
-      const { data } = await supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, status').eq('tenant_id', tenant.id).order('clock_in', { ascending: false }).limit(8);
+      const { data } = await supabase
+        .from('time_clock')
+        .select('id, worker_name, dept, clock_in, clock_out, status')
+        .eq('tenant_id', tenant.id)
+        .order('clock_in', { ascending: false })
+        .limit(8);
       if (data) setClockEntries(data as TimeEntry[]);
     } catch (_) {}
   }, [tenant]);
@@ -241,7 +319,11 @@ export default function CrewPage() {
     setModal('plans');
     setPlansLoading(true);
     try {
-      const { data } = await supabase.from('job_drawings').select('id, job_number, job_id, plan_name, label, file_url, external_url, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false });
+      const { data } = await supabase
+        .from('job_drawings')
+        .select('id, job_number, job_id, plan_name, label, file_url, external_url, uploaded_by, created_at')
+        .eq('tenant_id', tenant!.id)
+        .order('created_at', { ascending: false });
       if (data) setDrawings(data as Drawing[]);
     } catch (_) {}
     setPlansLoading(false);
@@ -259,7 +341,15 @@ export default function CrewPage() {
     if (!name) return;
     setChecking(true);
     try {
-      const { data } = await supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, status').eq('tenant_id', tenant!.id).eq('worker_name', name).is('clock_out', null).order('clock_in', { ascending: false }).limit(1).maybeSingle();
+      const { data } = await supabase
+        .from('time_clock')
+        .select('id, worker_name, dept, clock_in, clock_out, status')
+        .eq('tenant_id', tenant!.id)
+        .eq('worker_name', name)
+        .is('clock_out', null)
+        .order('clock_in', { ascending: false })
+        .limit(1)
+        .maybeSingle();
       if (data) {
         setOpenEntry(data as TimeEntry);
         setClockStep('clockout');
@@ -275,7 +365,7 @@ export default function CrewPage() {
   async function handleClockIn() {
     const name = clockName.trim();
     const dept = clockDept;
-    if (!name || !dept || saving) return; // dept is empty string when unselected
+    if (!name || !dept || saving) return;
     setSaving(true);
     try {
       const now  = new Date().toISOString();
@@ -420,6 +510,11 @@ export default function CrewPage() {
   const days = trialDaysLeft(tenant?.trial_ends_at ?? null);
   const activeCrew = clockEntries.filter((e) => !e.clock_out || e.status === 'active');
 
+  // Messages visible to this crew member: their dept + broadcast (null dept)
+  const visibleMessages = messages.filter(
+    (m) => m.dept === null || m.dept === crewDept
+  );
+
   // Group drawings by job number for plans modal
   const drawingGroups: Record<string, Drawing[]> = {};
   drawings.forEach((d) => {
@@ -428,7 +523,7 @@ export default function CrewPage() {
     drawingGroups[key].push(d);
   });
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   const quickActions = [
     {
@@ -488,6 +583,7 @@ export default function CrewPage() {
         </div>
 
         {isTrial && <TrialBanner days={days} />}
+        {msgNotification && <NewMsgBanner preview={msgNotification} onDismiss={() => { setMsgNotification(null); if (notifTimer.current) clearTimeout(notifTimer.current); }} />}
 
         <main style={{ flex: 1, padding: '40px 24px', maxWidth: 900, margin: '0 auto', width: '100%' }}>
 
@@ -504,7 +600,7 @@ export default function CrewPage() {
           {/* Quick actions */}
           <div style={{ marginBottom: 40 }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Quick Actions</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
               {quickActions.map(({ label, color, bg, onClick, icon }) => (
                 <button
                   key={label}
@@ -527,12 +623,72 @@ export default function CrewPage() {
             </div>
           </div>
 
-          {/* Data panels */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+          {/* ── Messages from Supervisor ───────────────────────────────────────── */}
+          <div style={{ marginBottom: 32 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
+                Messages
+                {crewDept && <span style={{ marginLeft: 8, fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>— {crewDept} + broadcasts</span>}
+              </div>
+              {visibleMessages.length > 0 && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: 'rgba(94,234,212,0.1)', color: 'var(--teal)' }}>
+                  {visibleMessages.length}
+                </span>
+              )}
+            </div>
 
-            {/* Clock activity */}
+            {dataLoading ? (
+              <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
+            ) : visibleMessages.length === 0 ? (
+              <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>
+                {crewDept
+                  ? `No messages for ${crewDept} yet. Broadcasts and messages to your department will appear here.`
+                  : 'No messages yet. Clock in or set your department to see department messages.'}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {visibleMessages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    style={{
+                      padding: '14px 16px', borderRadius: 12,
+                      background: msg.sender_name === 'Supervisor'
+                        ? 'rgba(94,234,212,0.04)'
+                        : 'rgba(255,255,255,0.02)',
+                      border: msg.sender_name === 'Supervisor'
+                        ? '1px solid rgba(94,234,212,0.15)'
+                        : '1px solid var(--line)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{
+                          fontSize: 12, fontWeight: 700,
+                          color: msg.sender_name === 'Supervisor' ? 'var(--teal)' : 'var(--ink)',
+                        }}>
+                          {msg.sender_name}
+                        </span>
+                        {msg.dept === null && (
+                          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-mute)', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: 4 }}>
+                            All Depts
+                          </span>
+                        )}
+                      </div>
+                      <span style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0 }}>
+                        {formatDate(msg.created_at)} · {formatTime(msg.created_at)}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: 14, color: 'var(--ink-dim)', margin: 0, lineHeight: 1.55 }}>{msg.body}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ── Recent Clock Activity ──────────────────────────────────────────── */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Recent Clock Activity</div>
             <div className="portal-card">
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 16 }}>Recent Clock Activity</div>
               {dataLoading ? (
                 <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
               ) : clockEntries.length === 0 ? (
@@ -558,30 +714,8 @@ export default function CrewPage() {
                 </div>
               )}
             </div>
-
-            {/* Messages */}
-            <div className="portal-card">
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 16 }}>Recent Messages</div>
-              {dataLoading ? (
-                <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
-              ) : messages.length === 0 ? (
-                <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No messages yet.</div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {messages.map((msg) => (
-                    <div key={msg.id} style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(94,234,212,0.03)', border: '1px solid var(--line)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--teal)' }}>{msg.sender_name}</span>
-                        <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{formatDate(msg.created_at)}</span>
-                      </div>
-                      {msg.dept && <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginBottom: 4, display: 'block' }}>{msg.dept}</span>}
-                      <p style={{ fontSize: 13, color: 'var(--ink-dim)', margin: 0, lineHeight: 1.5, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const }}>{msg.body}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
           </div>
+
         </main>
       </div>
 
@@ -622,7 +756,7 @@ export default function CrewPage() {
                 <button className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setClockStep('lookup')}>Back</button>
                 <button
                   className="btn btn-primary"
-                  style={{ flex: 2, justifyContent: 'center', opacity: (!clockDept.trim() || saving) ? 0.5 : 1 }}
+                  style={{ flex: 2, justifyContent: 'center', opacity: (!clockDept || saving) ? 0.5 : 1 }}
                   onClick={handleClockIn}
                   disabled={!clockDept || saving}
                 >
