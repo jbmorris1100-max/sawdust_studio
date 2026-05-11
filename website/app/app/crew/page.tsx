@@ -529,27 +529,36 @@ export default function CrewPage() {
     if (!mat || saving) return;
     setSaving(true);
     try {
-      const now  = new Date().toISOString();
-      const date = new Date().toISOString().split('T')[0];
-      const payload = {
+      const now   = new Date().toISOString();
+      const date  = new Date().toISOString().split('T')[0];
+      const notes = `[${bmMatType}] ${mat}${bmQty.trim() ? ` — ${bmQty.trim()} ${bmUnit}` : ''}`;
+      // Insert only the columns guaranteed to exist; notes/job_number added by migration
+      const basePayload = {
         worker_name: crewName || 'Craftsman',
         dept:        'Craftsman',
         clock_in:    now,
         date,
         status:      'craftsman_build',
-        notes:       `[${bmMatType}] ${mat}${bmQty.trim() ? ` — ${bmQty.trim()} ${bmUnit}` : ''}`,
-        job_number:  bmJobNum.trim() || null,
         tenant_id:   tenant!.id,
       };
-      console.log('[BuildTimer] inserting payload:', payload);
+      console.log('[BuildTimer] inserting payload:', { ...basePayload, notes, job_number: bmJobNum.trim() || null });
       const { data, error } = await supabase
         .from('time_clock')
-        .insert(payload)
+        .insert(basePayload)
         .select('id')
         .single();
       if (error) {
         console.error('[BuildTimer] insert error:', error);
         throw error;
+      }
+      // Patch notes + job_number if columns exist (craftsman_features.sql migration)
+      try {
+        await supabase.from('time_clock').update({
+          notes,
+          job_number: bmJobNum.trim() || null,
+        }).eq('id', data.id);
+      } catch {
+        console.warn('[BuildTimer] notes/job_number columns not yet migrated — timer started without them');
       }
       localStorage.setItem('craftsman_build_id',       data.id);
       localStorage.setItem('craftsman_build_start',    now);
@@ -565,6 +574,7 @@ export default function CrewPage() {
       showToast('Build timer started ✓');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Start failed';
+      console.error('[BuildTimer] fatal error:', err);
       showToast(msg, true);
     } finally {
       setSaving(false);
