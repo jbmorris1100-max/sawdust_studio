@@ -229,7 +229,7 @@ export default function CrewPage() {
             .select('id, sender_name, dept, body, created_at')
             .eq('tenant_id', tenant!.id)
             .order('created_at', { ascending: false })
-            .limit(50),
+            .limit(200),
         ]);
         if (clockRes.data) setClockEntries(clockRes.data as TimeEntry[]);
         if (msgRes.data)   setMessages(msgRes.data as Message[]);
@@ -294,6 +294,19 @@ export default function CrewPage() {
     } catch (_) {}
   }, [tenant]);
 
+  const reloadMessages = useCallback(async () => {
+    if (!tenant) return;
+    try {
+      const { data } = await supabase
+        .from('messages')
+        .select('id, sender_name, dept, body, created_at')
+        .eq('tenant_id', tenant.id)
+        .order('created_at', { ascending: false })
+        .limit(200);
+      if (data) setMessages(data as Message[]);
+    } catch (_) {}
+  }, [tenant]);
+
   function saveIdentity(name: string, dept: string) {
     localStorage.setItem('crew_name', name);
     localStorage.setItem('crew_dept', dept);
@@ -338,9 +351,17 @@ export default function CrewPage() {
 
   async function handleSwitchDept() {
     const newDept = switchDeptVal;
+    console.log('[switchDept] fired, newDept=', newDept, 'current=', crewDept);
     if (!newDept) return;
+    // 1. Persist and update React state immediately
     saveIdentity(crewName, newDept);
-    // Best-effort: update device_tokens row (no tenant_id on that table)
+    // 2. Reset any open message thread so the inbox re-renders for new dept
+    setOpenThread(null);
+    setReplyBody('');
+    // 3. Re-fetch messages — the initial load was capped at 50 rows across all
+    //    departments, so messages for the newly selected dept may not be loaded yet
+    await reloadMessages();
+    // 4. Best-effort: sync device_tokens push token row
     try {
       await supabase.from('device_tokens').update({ dept: newDept }).eq('name', crewName);
     } catch (_) {}
