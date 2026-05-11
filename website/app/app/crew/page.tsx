@@ -767,17 +767,28 @@ export default function CrewPage() {
     const dept = msgDept;
     if (!body || !dept || saving) return;
     setSaving(true);
+    const optimisticId = `opt-${Date.now()}`;
+    const optimistic: Message = {
+      id: optimisticId,
+      sender_name: crewName || 'Crew',
+      dept,
+      body,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [optimistic, ...prev]);
+    setMsgSent(true);
     try {
-      const { error } = await supabase.from('messages').insert({
-        sender_name: crewName || 'Crew',
-        dept,
-        body,
-        tenant_id: tenant!.id,
-      });
+      const { data, error } = await supabase
+        .from('messages')
+        .insert({ sender_name: crewName || 'Crew', dept, body, tenant_id: tenant!.id })
+        .select('id, sender_name, dept, body, created_at')
+        .single();
       if (error) throw error;
-      setMsgSent(true);
+      setMessages((prev) => prev.map((m) => m.id === optimisticId ? (data as Message) : m));
       setTimeout(() => { closeModal(); setMsgSent(false); }, 1800);
     } catch (err: unknown) {
+      setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+      setMsgSent(false);
       const msg = err instanceof Error ? err.message : 'Send failed';
       showToast(msg, true);
     } finally {
@@ -840,9 +851,9 @@ export default function CrewPage() {
     (m) => m.dept === null || m.dept === crewDept
   );
 
-  // Thread A — "Supervisor": messages FROM supervisor in the relevant set
-  const supervisorMsgs = relevantMsgs
-    .filter((m) => m.sender_name === 'Supervisor')
+  // Thread A — "Supervisor": full two-way conversation (crew outgoing + supervisor replies)
+  // All messages where dept = crewDept OR dept IS NULL, regardless of sender
+  const supervisorMsgs = [...relevantMsgs]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const supervisorLastMsg = supervisorMsgs[0] ?? null;
 
