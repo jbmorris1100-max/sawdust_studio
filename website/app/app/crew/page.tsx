@@ -1216,7 +1216,7 @@ export default function CrewPage() {
                 <div style={{ borderTop: '1px solid var(--line)', paddingTop: 14 }}>
                   <textarea
                     className="form-input"
-                    placeholder={`Reply to ${openThreadLabel}…`}
+                    placeholder="Reply to Supervisor…"
                     value={replyBody}
                     onChange={(e) => setReplyBody(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleCrewReply(); }}

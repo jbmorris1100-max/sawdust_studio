@@ -593,6 +593,29 @@ export default function SupervisorPage() {
     }
   }
 
+  async function handleDeleteThread(deptKey: string, label: string) {
+    if (!window.confirm(`Delete all ${label} messages? This cannot be undone.`)) return;
+    const backup = messages.filter((m) => (m.dept ?? '__broadcast__') === deptKey);
+    setMessages((prev) => prev.filter((m) => (m.dept ?? '__broadcast__') !== deptKey));
+    setOpenThread(null);
+    try {
+      let query = supabase.from('messages').delete().eq('tenant_id', tenant!.id);
+      if (deptKey === '__broadcast__') {
+        query = query.is('dept', null);
+      } else {
+        query = query.eq('dept', deptKey);
+      }
+      const { error } = await query;
+      if (error) throw error;
+    } catch (err: unknown) {
+      setMessages((prev) =>
+        [...backup, ...prev].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      );
+      const msg = err instanceof Error ? err.message : 'Delete failed';
+      showToast(msg, true);
+    }
+  }
+
   // ── Inventory status update ─────────────────────────────────────────────────
 
   async function handleNeedStatus(id: string, status: string) {
@@ -1062,39 +1085,62 @@ export default function SupervisorPage() {
               ) : (
                 <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
                   {msgThreads.map(({ deptKey, label, count, lastMsg }, i) => (
-                    <button
+                    <div
                       key={deptKey}
-                      onClick={() => { setOpenThread(deptKey); setMsgBody(''); }}
                       style={{
-                        width: '100%', display: 'flex', alignItems: 'center', gap: 14, padding: '16px 20px',
-                        background: 'none', border: 'none',
+                        display: 'flex', alignItems: 'center',
                         borderBottom: i < msgThreads.length - 1 ? '1px solid var(--line)' : 'none',
-                        cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
-                        transition: 'background 0.1s',
                       }}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(94,234,212,0.03)'; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
                     >
-                      <div style={{ width: 40, height: 40, borderRadius: 12, background: 'rgba(94,234,212,0.08)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{label}</span>
-                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 10, background: 'rgba(94,234,212,0.1)', color: 'var(--teal)' }}>
-                            {count}
-                          </span>
+                      {/* Clickable row area */}
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => { setOpenThread(deptKey); setMsgBody(''); }}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { setOpenThread(deptKey); setMsgBody(''); } }}
+                        style={{
+                          flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 14, padding: '16px 20px',
+                          cursor: 'pointer',
+                          transition: 'background 0.1s',
+                        }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'rgba(94,234,212,0.03)'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'none'; }}
+                      >
+                        <div style={{ width: 40, height: 40, borderRadius: 12, background: 'rgba(94,234,212,0.08)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                         </div>
-                        <div style={{ fontSize: 13, color: 'var(--ink-mute)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          <span style={{ color: lastMsg.sender_name === 'Supervisor' ? 'var(--teal)' : 'var(--ink-dim)', fontWeight: 600 }}>{lastMsg.sender_name}:</span>{' '}
-                          {lastMsg.body.length > 80 ? lastMsg.body.slice(0, 77) + '…' : lastMsg.body}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{label}</span>
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 10, background: 'rgba(94,234,212,0.1)', color: 'var(--teal)' }}>
+                              {count}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 13, color: 'var(--ink-mute)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <span style={{ color: lastMsg.sender_name === 'Supervisor' ? 'var(--teal)' : 'var(--ink-dim)', fontWeight: 600 }}>{lastMsg.sender_name}:</span>{' '}
+                            {lastMsg.body.length > 80 ? lastMsg.body.slice(0, 77) + '…' : lastMsg.body}
+                          </div>
                         </div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0, marginRight: 4 }}>
+                          {formatDate(lastMsg.created_at)}
+                        </div>
+                        <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: 'var(--ink-mute)', flexShrink: 0 }}><polyline points="9 18 15 12 9 6"/></svg>
                       </div>
-                      <div style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0, marginRight: 4 }}>
-                        {formatDate(lastMsg.created_at)}
-                      </div>
-                      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: 'var(--ink-mute)', flexShrink: 0 }}><polyline points="9 18 15 12 9 6"/></svg>
-                    </button>
+                      {/* Thread delete button */}
+                      <button
+                        onClick={() => handleDeleteThread(deptKey, label)}
+                        title={`Delete all ${label} messages`}
+                        style={{
+                          flexShrink: 0, marginRight: 16, background: 'none', border: '1px solid rgba(248,113,113,0.3)',
+                          borderRadius: 6, padding: '4px 8px', cursor: 'pointer', color: '#F87171', fontSize: 11,
+                          fontFamily: 'inherit', transition: 'background 0.1s, border-color 0.1s',
+                        }}
+                        onMouseEnter={(e) => { const b = e.currentTarget; b.style.background = 'rgba(248,113,113,0.08)'; b.style.borderColor = '#F87171'; }}
+                        onMouseLeave={(e) => { const b = e.currentTarget; b.style.background = 'none'; b.style.borderColor = 'rgba(248,113,113,0.3)'; }}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -1149,11 +1195,6 @@ export default function SupervisorPage() {
                           </span>
                         </div>
                         <p style={{ fontSize: 14, color: 'var(--ink-dim)', margin: 0, lineHeight: 1.55 }}>{msg.body}</p>
-                        {!msg.id.startsWith('opt-') && (
-                          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                            <ActionBtn label="Delete" color="#F87171" onClick={() => handleDeleteMessage(msg.id)} />
-                          </div>
-                        )}
                       </div>
                     );
                   })
