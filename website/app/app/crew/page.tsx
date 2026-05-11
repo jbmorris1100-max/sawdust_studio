@@ -11,10 +11,10 @@ import { trialDaysLeft } from '@/lib/auth';
 type TimeEntry = {
   id: string;
   employee_name: string;
-  dept: string;
+  department: string;
   clock_in: string;
   clock_out: string | null;
-  job_name: string | null;
+  job_number: string | null;
 };
 
 type Message = {
@@ -170,7 +170,7 @@ export default function CrewPage() {
     async function load() {
       try {
         const [clockRes, msgRes] = await Promise.all([
-          supabase.from('time_clock').select('id, employee_name, dept, clock_in, clock_out, job_name').eq('tenant_id', tenant!.id).order('clock_in', { ascending: false }).limit(8),
+          supabase.from('time_clock').select('id, employee_name, department, clock_in, clock_out, job_number').eq('tenant_id', tenant!.id).order('clock_in', { ascending: false }).limit(8),
           supabase.from('messages').select('id, sender_name, dept, body, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(6),
         ]);
         if (clockRes.data) setClockEntries(clockRes.data as TimeEntry[]);
@@ -190,7 +190,7 @@ export default function CrewPage() {
   const reloadClock = useCallback(async () => {
     if (!tenant) return;
     try {
-      const { data } = await supabase.from('time_clock').select('id, employee_name, dept, clock_in, clock_out, job_name').eq('tenant_id', tenant.id).order('clock_in', { ascending: false }).limit(8);
+      const { data } = await supabase.from('time_clock').select('id, employee_name, department, clock_in, clock_out, job_number').eq('tenant_id', tenant.id).order('clock_in', { ascending: false }).limit(8);
       if (data) setClockEntries(data as TimeEntry[]);
     } catch (_) {}
   }, [tenant]);
@@ -249,7 +249,7 @@ export default function CrewPage() {
     if (!name) return;
     setChecking(true);
     try {
-      const { data } = await supabase.from('time_clock').select('id, employee_name, dept, clock_in, clock_out, job_name').eq('tenant_id', tenant!.id).eq('employee_name', name).is('clock_out', null).order('clock_in', { ascending: false }).limit(1).maybeSingle();
+      const { data } = await supabase.from('time_clock').select('id, employee_name, department, clock_in, clock_out, job_number').eq('tenant_id', tenant!.id).eq('employee_name', name).is('clock_out', null).order('clock_in', { ascending: false }).limit(1).maybeSingle();
       if (data) {
         setOpenEntry(data as TimeEntry);
         setClockStep('clockout');
@@ -264,28 +264,34 @@ export default function CrewPage() {
 
   async function handleClockIn() {
     const name = clockName.trim();
-    const dept = clockDept.trim();
-    if (!name || !dept || saving) return;
+    const dept = clockDept;
+    if (!name || !dept || saving) return; // dept is empty string when unselected
     setSaving(true);
     try {
-      const now = new Date().toISOString();
-      const { error } = await supabase.from('time_clock').insert({
+      const now  = new Date().toISOString();
+      const date = new Date().toISOString().split('T')[0];
+      const payload = {
         employee_name: name,
-        worker_name:   name,
-        dept,
-        job_name:      clockJob.trim() || null,
+        department:    dept,
+        job_number:    clockJob.trim() || null,
         clock_in:      now,
-        date:          todayStr(),
-        sync_status:   'pending',
+        clock_out:     null,
+        date,
         tenant_id:     tenant!.id,
-      });
-      if (error) throw error;
+      };
+      console.log('[clock-in] inserting:', payload);
+      const { error } = await supabase.from('time_clock').insert(payload);
+      if (error) {
+        console.error('[clock-in] error:', error);
+        throw error;
+      }
       saveIdentity(name, dept);
       await reloadClock();
       closeModal();
       showToast(`${name} clocked in ✓`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Insert failed';
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[clock-in] caught:', err);
       showToast(msg, true);
     } finally {
       setSaving(false);
@@ -297,8 +303,7 @@ export default function CrewPage() {
     setSaving(true);
     try {
       const now = new Date().toISOString();
-      const minutes = Math.round((Date.now() - new Date(openEntry.clock_in).getTime()) / 60000);
-      const { error } = await supabase.from('time_clock').update({ clock_out: now, minutes_logged: minutes }).eq('id', openEntry.id);
+      const { error } = await supabase.from('time_clock').update({ clock_out: now }).eq('id', openEntry.id);
       if (error) throw error;
       await reloadClock();
       closeModal();
@@ -497,7 +502,7 @@ export default function CrewPage() {
                     <div key={entry.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderRadius: 10, background: 'rgba(94,234,212,0.03)', border: '1px solid var(--line)' }}>
                       <div>
                         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{entry.employee_name}</div>
-                        <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{entry.dept}{entry.job_name ? ` · ${entry.job_name}` : ''}</div>
+                        <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{entry.department}{entry.job_number ? ` · ${entry.job_number}` : ''}</div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
                         {entry.clock_out ? (
@@ -564,7 +569,13 @@ export default function CrewPage() {
                 No open shift found for <b style={{ color: 'var(--ink)' }}>{clockName}</b>. Fill in the details to clock in.
               </p>
               <Field label="Department">
-                <input className="form-input" placeholder="e.g. Finish, Trim, Install…" value={clockDept} onChange={(e) => setClockDept(e.target.value)} autoFocus />
+                <select className="form-input" value={clockDept} onChange={(e) => setClockDept(e.target.value)} autoFocus style={{ cursor: 'pointer' }}>
+                  <option value="">Select department…</option>
+                  <option value="Production">Production</option>
+                  <option value="Assembly">Assembly</option>
+                  <option value="Finishing">Finishing</option>
+                  <option value="Craftsman">Craftsman</option>
+                </select>
               </Field>
               <Field label="Job (optional)">
                 <input className="form-input" placeholder="e.g. P-26-1001" value={clockJob} onChange={(e) => setClockJob(e.target.value)} />
@@ -575,7 +586,7 @@ export default function CrewPage() {
                   className="btn btn-primary"
                   style={{ flex: 2, justifyContent: 'center', opacity: (!clockDept.trim() || saving) ? 0.5 : 1 }}
                   onClick={handleClockIn}
-                  disabled={!clockDept.trim() || saving}
+                  disabled={!clockDept || saving}
                 >
                   {saving ? 'Clocking In…' : 'Clock In'}
                 </button>
@@ -587,7 +598,7 @@ export default function CrewPage() {
             <>
               <div style={{ padding: '16px', borderRadius: 12, background: 'rgba(45,225,201,0.05)', border: '1px solid rgba(45,225,201,0.15)', marginBottom: 24 }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{openEntry.employee_name}</div>
-                <div style={{ fontSize: 13, color: 'var(--ink-dim)', marginTop: 4 }}>{openEntry.dept}{openEntry.job_name ? ` · ${openEntry.job_name}` : ''}</div>
+                <div style={{ fontSize: 13, color: 'var(--ink-dim)', marginTop: 4 }}>{openEntry.department}{openEntry.job_number ? ` · ${openEntry.job_number}` : ''}</div>
                 <div style={{ fontSize: 13, color: '#2DE1C9', marginTop: 6 }}>Clocked in since {formatTime(openEntry.clock_in)} · {formatDate(openEntry.clock_in)}</div>
               </div>
               <div style={{ display: 'flex', gap: 10 }}>
