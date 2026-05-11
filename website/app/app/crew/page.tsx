@@ -46,7 +46,7 @@ type SopItem = {
   created_at: string;
 };
 
-type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'message' | 'switchDept' | 'editName' | 'buildTimer' | 'materialLog' | null;
+type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'message' | 'switchDept' | 'editName' | 'buildTimer' | null;
 type ClockStep = 'lookup' | 'clockin' | 'clockout';
 type BuildTimerStep = 'form' | 'summary';
 
@@ -238,15 +238,10 @@ export default function CrewPage() {
   // Build timer modal form fields
   const [bmMaterial, setBmMaterial] = useState('');
   const [bmMatType,  setBmMatType]  = useState('Raw Lumber');
+  const [bmQty,      setBmQty]      = useState('');
+  const [bmUnit,     setBmUnit]     = useState('Board Feet');
   const [bmJobNum,   setBmJobNum]   = useState('');
 
-  // Material log modal fields
-  const [mlMaterial, setMlMaterial] = useState('');
-  const [mlMatType,  setMlMatType]  = useState('Raw Lumber');
-  const [mlQty,      setMlQty]      = useState('');
-  const [mlUnit,     setMlUnit]     = useState('board feet');
-  const [mlJobNum,   setMlJobNum]   = useState('');
-  const [mlNotes,    setMlNotes]    = useState('');
 
   // Message modal
   const [msgDept, setMsgDept] = useState('');
@@ -520,6 +515,8 @@ export default function CrewPage() {
   function openBuildTimerModal() {
     setBmMaterial('');
     setBmMatType('Raw Lumber');
+    setBmQty('');
+    setBmUnit('Board Feet');
     setBmJobNum('');
     setBuildTimerStep('form');
     setBuildSummary(null);
@@ -528,26 +525,32 @@ export default function CrewPage() {
 
   async function handleStartTimer() {
     const mat = bmMaterial.trim();
+    console.log('[BuildTimer] handleStartTimer called', { mat, saving, crewName, tenantId: tenant?.id });
     if (!mat || saving) return;
     setSaving(true);
     try {
       const now  = new Date().toISOString();
       const date = new Date().toISOString().split('T')[0];
+      const payload = {
+        worker_name: crewName || 'Craftsman',
+        dept:        'Craftsman',
+        clock_in:    now,
+        date,
+        status:      'craftsman_build',
+        notes:       `[${bmMatType}] ${mat}${bmQty.trim() ? ` — ${bmQty.trim()} ${bmUnit}` : ''}`,
+        job_number:  bmJobNum.trim() || null,
+        tenant_id:   tenant!.id,
+      };
+      console.log('[BuildTimer] inserting payload:', payload);
       const { data, error } = await supabase
         .from('time_clock')
-        .insert({
-          worker_name: crewName || 'Craftsman',
-          dept:        'Craftsman',
-          clock_in:    now,
-          date,
-          status:      'craftsman_build',
-          notes:       mat,
-          job_number:  bmJobNum.trim() || null,
-          tenant_id:   tenant!.id,
-        })
+        .insert(payload)
         .select('id')
         .single();
-      if (error) throw error;
+      if (error) {
+        console.error('[BuildTimer] insert error:', error);
+        throw error;
+      }
       localStorage.setItem('craftsman_build_id',       data.id);
       localStorage.setItem('craftsman_build_start',    now);
       localStorage.setItem('craftsman_build_material', mat);
@@ -601,44 +604,6 @@ export default function CrewPage() {
       showToast(msg, true);
     } finally {
       setTimerStopping(false);
-    }
-  }
-
-  // ── Craftsman material log ─────────────────────────────────────────────────
-
-  function openMaterialLog() {
-    setMlMaterial('');
-    setMlMatType('Raw Lumber');
-    setMlQty('');
-    setMlUnit('board feet');
-    setMlJobNum('');
-    setMlNotes('');
-    setModal('materialLog');
-  }
-
-  async function handleMaterialLog() {
-    const mat = mlMaterial.trim();
-    if (!mat || saving) return;
-    setSaving(true);
-    try {
-      const qty = parseInt(mlQty) || 1;
-      const { error } = await supabase.from('inventory_needs').insert({
-        item:       `[${mlMatType}] ${mat}`,
-        dept:       'Craftsman',
-        qty,
-        job_number: mlJobNum.trim() || null,
-        notes:      mlNotes.trim() || null,
-        status:     'craftsman_material',
-        tenant_id:  tenant!.id,
-      });
-      if (error) throw error;
-      closeModal();
-      showToast('Material logged ✓');
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Log failed';
-      showToast(msg, true);
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -944,12 +909,6 @@ export default function CrewPage() {
         icon: buildStart
           ? <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
           : <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
-      },
-      {
-        label: 'Log Material',
-        color: '#FBBF24', bg: 'rgba(251,191,36,0.08)',
-        onClick: openMaterialLog,
-        icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="m8 21 4-4 4 4"/><path d="M12 17v4"/></svg>,
       },
     ] as { label: string; color: string; bg: string; onClick: () => void; icon: React.ReactNode }[]) : []),
   ];
@@ -1633,6 +1592,18 @@ export default function CrewPage() {
                   <option value="Other">Other</option>
                 </select>
               </Field>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <Field label="Quantity">
+                  <input className="form-input" type="number" min="1" placeholder="e.g. 20" value={bmQty} onChange={(e) => setBmQty(e.target.value)} />
+                </Field>
+                <Field label="Unit">
+                  <select className="form-input" value={bmUnit} onChange={(e) => setBmUnit(e.target.value)} style={{ cursor: 'pointer' }}>
+                    <option value="Board Feet">Board Feet</option>
+                    <option value="Sheets">Sheets</option>
+                    <option value="Pieces">Pieces</option>
+                  </select>
+                </Field>
+              </div>
               <Field label="Job Number (optional)">
                 <input className="form-input" placeholder="e.g. P-26-1001" value={bmJobNum} onChange={(e) => setBmJobNum(e.target.value)} />
               </Field>
@@ -1672,55 +1643,6 @@ export default function CrewPage() {
               <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }} onClick={closeModal}>Done</button>
             </>
           ) : null}
-        </ModalOverlay>
-      )}
-
-      {/* ── Material Log Modal ──────────────────────────────────────────────── */}
-      {modal === 'materialLog' && (
-        <ModalOverlay onClose={closeModal} title="Log Material">
-          <Field label="Material Description *">
-            <input
-              className="form-input"
-              placeholder="e.g. White oak boards, 8/4 thickness"
-              value={mlMaterial}
-              onChange={(e) => setMlMaterial(e.target.value)}
-              autoFocus
-            />
-          </Field>
-          <Field label="Material Type">
-            <select className="form-input" value={mlMatType} onChange={(e) => setMlMatType(e.target.value)} style={{ cursor: 'pointer' }}>
-              <option value="Raw Lumber">Raw Lumber</option>
-              <option value="Custom Millwork">Custom Millwork</option>
-              <option value="Other">Other</option>
-            </select>
-          </Field>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <Field label="Quantity">
-              <input className="form-input" type="number" min="1" placeholder="1" value={mlQty} onChange={(e) => setMlQty(e.target.value)} />
-            </Field>
-            <Field label="Unit">
-              <select className="form-input" value={mlUnit} onChange={(e) => setMlUnit(e.target.value)} style={{ cursor: 'pointer' }}>
-                <option value="board feet">Board Feet</option>
-                <option value="sheets">Sheets</option>
-                <option value="pieces">Pieces</option>
-                <option value="linear feet">Linear Feet</option>
-              </select>
-            </Field>
-          </div>
-          <Field label="Job Number (optional)">
-            <input className="form-input" placeholder="e.g. P-26-1001" value={mlJobNum} onChange={(e) => setMlJobNum(e.target.value)} />
-          </Field>
-          <Field label="Notes (optional)">
-            <textarea className="form-input" placeholder="Additional details…" value={mlNotes} onChange={(e) => setMlNotes(e.target.value)} rows={2} style={{ resize: 'none' }} />
-          </Field>
-          <button
-            className="btn btn-primary"
-            style={{ width: '100%', justifyContent: 'center', marginTop: 4, opacity: (!mlMaterial.trim() || saving) ? 0.5 : 1 }}
-            onClick={handleMaterialLog}
-            disabled={!mlMaterial.trim() || saving}
-          >
-            {saving ? 'Logging…' : 'Log Material'}
-          </button>
         </ModalOverlay>
       )}
 
