@@ -250,8 +250,8 @@ export default function CrewPage() {
             const currentDept = crewDeptRef.current;
             const isRelevant = msg.dept === null || msg.dept === currentDept;
             if (msg.sender_name === 'Supervisor' && isRelevant) {
-              const threadKey = msg.dept ?? '__broadcast__';
-              if (openThreadRef.current !== threadKey) {
+              // Only show banner when crew is NOT already viewing the Supervisor thread
+              if (openThreadRef.current !== 'supervisor') {
                 const preview = msg.body.length > 70 ? msg.body.slice(0, 67) + '…' : msg.body;
                 setMsgNotification(preview);
                 if (notifTimer.current) clearTimeout(notifTimer.current);
@@ -513,7 +513,8 @@ export default function CrewPage() {
     const body = replyBody.trim();
     if (!body || !openThread || replySaving) return;
     setReplySaving(true);
-    const dept = openThread === '__broadcast__' ? null : openThread;
+    // Replies always go to crew's own dept so supervisor sees them in the correct thread
+    const dept = crewDept || null;
     const optimisticId = `opt-${Date.now()}`;
     const optimistic: Message = {
       id: optimisticId,
@@ -555,29 +556,34 @@ export default function CrewPage() {
   const days = trialDaysLeft(tenant?.trial_ends_at ?? null);
   const activeCrew = clockEntries.filter((e) => !e.clock_out || e.status === 'active');
 
-  // Messages visible to this crew member: their dept + broadcast (null dept)
-  const visibleMessages = messages.filter(
+  // Strict dept isolation: only crew's own dept + broadcasts (dept = null)
+  // NEVER include messages from other departments
+  const relevantMsgs = messages.filter(
     (m) => m.dept === null || m.dept === crewDept
   );
 
-  // Thread computation from visible messages
-  const threadMap: Record<string, Message[]> = {};
-  visibleMessages.forEach((msg) => {
-    const key = msg.dept ?? '__broadcast__';
-    if (!threadMap[key]) threadMap[key] = [];
-    threadMap[key].push(msg);
-  });
-  const msgThreads = Object.entries(threadMap)
-    .map(([deptKey, msgs]) => ({
-      deptKey,
-      label: deptKey === '__broadcast__' ? 'All Departments' : deptKey,
-      lastMsg: msgs.reduce((l, m) => new Date(m.created_at) > new Date(l.created_at) ? m : l),
-    }))
-    .sort((a, b) => new Date(b.lastMsg.created_at).getTime() - new Date(a.lastMsg.created_at).getTime());
-  const openThreadMsgs = openThread
-    ? (threadMap[openThread] ?? []).slice().sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+  // Thread A — "Supervisor": messages FROM supervisor in the relevant set
+  const supervisorMsgs = relevantMsgs
+    .filter((m) => m.sender_name === 'Supervisor')
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const supervisorLastMsg = supervisorMsgs[0] ?? null;
+
+  // Thread B — "My Department": ALL messages scoped to crew's dept (not broadcasts)
+  const deptMsgs = crewDept
+    ? relevantMsgs
+        .filter((m) => m.dept === crewDept)
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     : [];
-  const openThreadLabel = openThread === '__broadcast__' ? 'All Departments' : (openThread ?? '');
+  const deptLastMsg = deptMsgs[0] ?? null;
+
+  // Conversation messages sorted oldest-first for display
+  const openThreadMsgs =
+    openThread === 'supervisor'
+      ? [...supervisorMsgs].reverse()
+      : openThread !== null && openThread === crewDept
+      ? [...deptMsgs].reverse()
+      : [];
+  const openThreadLabel = openThread === 'supervisor' ? 'Supervisor' : (openThread ?? '');
 
   // Group drawings by job number for plans modal
   const drawingGroups: Record<string, Drawing[]> = {};
@@ -689,80 +695,127 @@ export default function CrewPage() {
 
           {/* ── Messages ──────────────────────────────────────────────────────── */}
           <div style={{ marginBottom: 32 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                {openThread !== null && (
-                  <button
-                    onClick={() => { setOpenThread(null); setReplyBody(''); }}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: '2px 4px', display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'inherit', fontSize: 13 }}
-                  >
-                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
-                    Inbox
-                  </button>
-                )}
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
-                  {openThread !== null
-                    ? openThreadLabel
-                    : <>Messages{crewDept && <span style={{ marginLeft: 8, fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>— {crewDept} + broadcasts</span>}</>
-                  }
-                </div>
-              </div>
-              {openThread === null && visibleMessages.length > 0 && (
-                <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: 'rgba(94,234,212,0.1)', color: 'var(--teal)' }}>
-                  {visibleMessages.length}
-                </span>
+
+            {/* Section header */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+              {openThread !== null && (
+                <button
+                  onClick={() => { setOpenThread(null); setReplyBody(''); }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: '2px 4px', display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'inherit', fontSize: 13, transition: 'color 0.1s' }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--ink)'; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--ink-mute)'; }}
+                >
+                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+                  Inbox
+                </button>
               )}
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
+                {openThread !== null ? openThreadLabel : 'Messages'}
+              </div>
             </div>
 
+            {/* Content */}
             {dataLoading ? (
               <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
             ) : openThread === null ? (
-              msgThreads.length === 0 ? (
-                <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>
-                  {crewDept
-                    ? `No messages for ${crewDept} yet. Broadcasts and messages to your department will appear here.`
-                    : 'No messages yet. Clock in or set your department to see department messages.'}
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {msgThreads.map(({ deptKey, label, lastMsg }) => (
-                    <button
-                      key={deptKey}
-                      onClick={() => setOpenThread(deptKey)}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 14,
-                        padding: '14px 16px', borderRadius: 12,
-                        background: 'var(--bg-1)', border: '1px solid var(--line)',
-                        cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', width: '100%',
-                        transition: 'border-color 0.15s',
-                      }}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line-strong)'; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line)'; }}
-                    >
-                      <div style={{ width: 38, height: 38, borderRadius: 10, background: 'rgba(94,234,212,0.08)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+
+              /* ── Inbox: exactly 2 thread rows ── */
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+                {/* Thread A: Supervisor */}
+                <button
+                  onClick={() => setOpenThread('supervisor')}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 14, padding: '16px',
+                    borderRadius: 12, background: 'var(--bg-1)',
+                    border: '1px solid var(--line)',
+                    cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', width: '100%',
+                    transition: 'border-color 0.15s',
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(94,234,212,0.35)'; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line)'; }}
+                >
+                  <div style={{ width: 42, height: 42, borderRadius: 12, background: 'rgba(94,234,212,0.1)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>Supervisor</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                        {supervisorMsgs.length > 0 && (
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: 'rgba(94,234,212,0.12)', color: 'var(--teal)' }}>
+                            {supervisorMsgs.length}
+                          </span>
+                        )}
+                        {supervisorLastMsg && (
+                          <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{formatDate(supervisorLastMsg.created_at)}</span>
+                        )}
                       </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
-                          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{label}</span>
-                          <span style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0 }}>{formatDate(lastMsg.created_at)}</span>
-                        </div>
-                        <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          <span style={{ fontWeight: 600 }}>{lastMsg.sender_name}:</span>{' '}
-                          {lastMsg.body.length > 80 ? lastMsg.body.slice(0, 77) + '…' : lastMsg.body}
+                    </div>
+                    <div style={{ fontSize: 13, color: 'var(--ink-mute)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {supervisorLastMsg
+                        ? (supervisorLastMsg.body.length > 65 ? supervisorLastMsg.body.slice(0, 62) + '…' : supervisorLastMsg.body)
+                        : 'No messages yet'
+                      }
+                    </div>
+                  </div>
+                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, marginLeft: 4 }}><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+
+                {/* Thread B: My Department */}
+                {crewDept ? (
+                  <button
+                    onClick={() => setOpenThread(crewDept)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 14, padding: '16px',
+                      borderRadius: 12, background: 'var(--bg-1)',
+                      border: '1px solid var(--line)',
+                      cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', width: '100%',
+                      transition: 'border-color 0.15s',
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(167,139,250,0.35)'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line)'; }}
+                  >
+                    <div style={{ width: 42, height: 42, borderRadius: 12, background: 'rgba(167,139,250,0.1)', color: '#A78BFA', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{crewDept}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                          {deptMsgs.length > 0 && (
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: 'rgba(167,139,250,0.12)', color: '#A78BFA' }}>
+                              {deptMsgs.length}
+                            </span>
+                          )}
+                          {deptLastMsg && (
+                            <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{formatDate(deptLastMsg.created_at)}</span>
+                          )}
                         </div>
                       </div>
-                      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0 }}><polyline points="9 18 15 12 9 6"/></svg>
-                    </button>
-                  ))}
-                </div>
-              )
+                      <div style={{ fontSize: 13, color: 'var(--ink-mute)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {deptLastMsg
+                          ? <><span style={{ fontWeight: 600, color: 'var(--ink-dim)' }}>{deptLastMsg.sender_name}:</span>{' '}{deptLastMsg.body.length > 55 ? deptLastMsg.body.slice(0, 52) + '…' : deptLastMsg.body}</>
+                          : 'No messages yet'
+                        }
+                      </div>
+                    </div>
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, marginLeft: 4 }}><polyline points="9 18 15 12 9 6"/></svg>
+                  </button>
+                ) : (
+                  <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>
+                    Clock in to see department messages.
+                  </div>
+                )}
+              </div>
+
             ) : (
-              // Conversation view
+
+              /* ── Conversation view ── */
               <div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
                   {openThreadMsgs.length === 0 ? (
-                    <div style={{ fontSize: 13, color: 'var(--ink-mute)', padding: 16 }}>No messages yet.</div>
+                    <div style={{ fontSize: 13, color: 'var(--ink-mute)', padding: '12px 0' }}>No messages yet.</div>
                   ) : (
                     openThreadMsgs.map((msg) => {
                       const isSelf = msg.sender_name !== 'Supervisor';
@@ -774,7 +827,7 @@ export default function CrewPage() {
                             background: isSelf ? 'rgba(255,255,255,0.02)' : 'rgba(94,234,212,0.04)',
                             border: isSelf ? '1px solid var(--line)' : '1px solid rgba(94,234,212,0.15)',
                             alignSelf: isSelf ? 'flex-end' : 'flex-start',
-                            maxWidth: '80%',
+                            maxWidth: '82%',
                           }}
                         >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 5, gap: 12 }}>

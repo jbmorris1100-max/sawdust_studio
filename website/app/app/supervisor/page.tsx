@@ -390,6 +390,7 @@ export default function SupervisorPage() {
   ];
 
   // ── Thread computation for Messages tab ────────────────────────────────────
+  // Groups messages by dept; null dept = broadcast (__broadcast__ key)
   const threadMap: Record<string, Message[]> = {};
   messages.forEach((msg) => {
     const key = msg.dept ?? '__broadcast__';
@@ -399,7 +400,8 @@ export default function SupervisorPage() {
   const msgThreads = Object.entries(threadMap)
     .map(([deptKey, msgs]) => ({
       deptKey,
-      label: deptKey === '__broadcast__' ? 'All Departments' : deptKey,
+      label: deptKey === '__broadcast__' ? 'All Departments (Broadcast)' : deptKey,
+      count: msgs.length,
       lastMsg: msgs.reduce((l, m) => new Date(m.created_at) > new Date(l.created_at) ? m : l),
     }))
     .sort((a, b) => new Date(b.lastMsg.created_at).getTime() - new Date(a.lastMsg.created_at).getTime());
@@ -570,10 +572,10 @@ export default function SupervisorPage() {
               {dataLoading ? (
                 <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
               ) : msgThreads.length === 0 ? (
-                <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No messages yet.</div>
+                <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No messages yet. Send the first message above.</div>
               ) : (
                 <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
-                  {msgThreads.map(({ deptKey, label, lastMsg }, i) => (
+                  {msgThreads.map(({ deptKey, label, count, lastMsg }, i) => (
                     <button
                       key={deptKey}
                       onClick={() => { setOpenThread(deptKey); setMsgBody(''); }}
@@ -591,10 +593,15 @@ export default function SupervisorPage() {
                         <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)', marginBottom: 3 }}>{label}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{label}</span>
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 10, background: 'rgba(94,234,212,0.1)', color: 'var(--teal)' }}>
+                            {count}
+                          </span>
+                        </div>
                         <div style={{ fontSize: 13, color: 'var(--ink-mute)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           <span style={{ color: lastMsg.sender_name === 'Supervisor' ? 'var(--teal)' : 'var(--ink-dim)', fontWeight: 600 }}>{lastMsg.sender_name}:</span>{' '}
-                          {lastMsg.body}
+                          {lastMsg.body.length > 80 ? lastMsg.body.slice(0, 77) + '…' : lastMsg.body}
                         </div>
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0, marginRight: 4 }}>
