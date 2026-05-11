@@ -685,11 +685,7 @@ export default function SupervisorPage() {
     window.location.replace('/');
   };
 
-  if (sessionLoading) return <Spinner />;
-
-  const isTrial = tenant?.subscription_status === 'trial';
-  const days = trialDaysLeft(tenant?.trial_ends_at ?? null);
-
+  // These must be above the early return so useMemo is never called conditionally
   const openNeeds  = needs.filter((n)  => !['resolved', 'closed', 'received', 'cancelled'].includes((n.status  ?? 'open').toLowerCase()));
   const openDamage = damage.filter((d) => !['resolved', 'closed'].includes((d.status ?? 'open').toLowerCase()));
 
@@ -735,6 +731,11 @@ export default function SupervisorPage() {
     });
     return flags;
   }, [activeCrew, openNeeds, openDamage]);
+
+  if (sessionLoading) return <Spinner />;
+
+  const isTrial = tenant?.subscription_status === 'trial';
+  const days = trialDaysLeft(tenant?.trial_ends_at ?? null);
 
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: 'overview',  label: 'Overview' },
