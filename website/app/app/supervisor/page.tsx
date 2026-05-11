@@ -619,75 +619,83 @@ export default function SupervisorPage() {
           {tab === 'messages' && openThread !== null && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-              {/* Back + thread header */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {/* Back + thread header — same style as crew page */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <button
                   onClick={() => { setOpenThread(null); setMsgBody(''); }}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', fontSize: 13, fontFamily: 'inherit', padding: '6px 0', transition: 'color 0.1s' }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: '2px 4px', display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'inherit', fontSize: 13, transition: 'color 0.1s' }}
                   onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--ink)'; }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--ink-mute)'; }}
                 >
                   <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
-                  Back to Inbox
+                  Inbox
                 </button>
-                <span style={{ color: 'var(--line-strong)' }}>|</span>
-                <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{openThreadLabel}</span>
+                <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
+                  {openThreadLabel}
+                </span>
               </div>
 
-              {/* Message history */}
-              <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
+              {/* Bubble conversation — same structure as crew page */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {openThreadMsgs.length === 0 ? (
-                  <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>No messages in this thread.</div>
+                  <div style={{ fontSize: 13, color: 'var(--ink-mute)', padding: '12px 0' }}>No messages in this thread.</div>
                 ) : (
-                  openThreadMsgs.map((msg) => (
-                    <div
-                      key={msg.id}
-                      style={{
-                        padding: '14px 20px', borderBottom: '1px solid var(--line)',
-                        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12,
-                        opacity: msg.id.startsWith('opt-') ? 0.6 : 1,
-                      }}
-                    >
-                      <div style={{ flex: 1 }}>
-                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: 13, fontWeight: 700, color: msg.sender_name === 'Supervisor' ? 'var(--teal)' : 'var(--ink)' }}>{msg.sender_name}</span>
-                          <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{formatDate(msg.created_at)} · {formatTime(msg.created_at)}</span>
+                  openThreadMsgs.map((msg) => {
+                    const isSelf = msg.sender_name === 'Supervisor';
+                    return (
+                      <div
+                        key={msg.id}
+                        style={{
+                          padding: '12px 14px', borderRadius: 12,
+                          background: isSelf ? 'rgba(94,234,212,0.04)' : 'rgba(255,255,255,0.02)',
+                          border: isSelf ? '1px solid rgba(94,234,212,0.15)' : '1px solid var(--line)',
+                          alignSelf: isSelf ? 'flex-start' : 'flex-end',
+                          maxWidth: '82%',
+                          opacity: msg.id.startsWith('opt-') ? 0.6 : 1,
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 5, gap: 12 }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: isSelf ? 'var(--teal)' : 'var(--ink)' }}>
+                            {msg.sender_name}
+                          </span>
+                          <span style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0 }}>
+                            {formatTime(msg.created_at)}
+                          </span>
                         </div>
                         <p style={{ fontSize: 14, color: 'var(--ink-dim)', margin: 0, lineHeight: 1.55 }}>{msg.body}</p>
+                        {!msg.id.startsWith('opt-') && (
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                            <ActionBtn label="Delete" color="#F87171" onClick={() => handleDeleteMessage(msg.id)} />
+                          </div>
+                        )}
                       </div>
-                      {!msg.id.startsWith('opt-') && (
-                        <ActionBtn label="Delete" color="#F87171" onClick={() => handleDeleteMessage(msg.id)} />
-                      )}
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
 
-              {/* Reply box */}
-              <div className="portal-card">
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>
-                  Reply to {openThreadLabel}
-                </div>
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <textarea
-                    className="form-input"
-                    placeholder={`Message to ${openThreadLabel}…`}
-                    value={msgBody}
-                    onChange={(e) => setMsgBody(e.target.value)}
-                    rows={2}
-                    style={{ flex: 1, resize: 'vertical', minHeight: 64 }}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSendMessage(); }}
-                  />
+              {/* Reply box — same structure as crew page */}
+              <div style={{ borderTop: '1px solid var(--line)', paddingTop: 14 }}>
+                <textarea
+                  className="form-input"
+                  placeholder={`Reply to ${openThreadLabel}…`}
+                  value={msgBody}
+                  onChange={(e) => setMsgBody(e.target.value)}
+                  rows={3}
+                  style={{ resize: 'none', marginBottom: 10, width: '100%' }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSendMessage(); }}
+                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>⌘↵ to send</span>
                   <button
                     className="btn btn-primary"
-                    style={{ alignSelf: 'flex-end', padding: '12px 20px', opacity: (!msgBody.trim() || sending) ? 0.5 : 1 }}
+                    style={{ opacity: (!msgBody.trim() || sending) ? 0.5 : 1, padding: '8px 20px' }}
                     onClick={handleSendMessage}
                     disabled={!msgBody.trim() || sending}
                   >
                     {sending ? 'Sending…' : 'Reply'}
                   </button>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 8 }}>⌘↵ or Ctrl+Enter to reply</div>
               </div>
             </div>
           )}
