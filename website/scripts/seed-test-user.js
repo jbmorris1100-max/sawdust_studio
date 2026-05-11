@@ -98,7 +98,9 @@ async function seed() {
     .from('tenants')
     .upsert(
       {
-        company_name:        SHOP_NAME,
+        shop_name:           SHOP_NAME,
+        slug:                'inlineiq-demo-shop',
+        erp_type:            'none',
         owner_email:         TEST_EMAIL,
         owner_user_id:       userId,
         subscription_status: 'trial',

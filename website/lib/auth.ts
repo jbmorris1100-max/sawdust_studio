@@ -1,8 +1,8 @@
 export type Tenant = {
   id: string;
-  company_name: string;
-  owner_email: string;
-  owner_user_id: string;
+  shop_name: string;
+  owner_email: string | null;
+  owner_user_id: string | null;
   subscription_status: 'trial' | 'active' | 'cancelled' | 'expired';
   trial_ends_at: string | null;
   created_at: string;

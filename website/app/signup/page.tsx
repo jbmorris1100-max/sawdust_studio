@@ -56,8 +56,11 @@ export default function SignupPage() {
       //    Done before redirect so /app can always find the tenant
       if (userId) {
         const trialEndsAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+        const slug = shop.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
         await supabase.from('tenants').insert({
-          company_name:        shop,
+          shop_name:           shop,
+          slug,
+          erp_type:            'none',
           owner_email:         email,
           owner_user_id:       userId,
           subscription_status: 'trial',

@@ -127,7 +127,7 @@ export default function AppPage() {
 
             <h2 style={{ marginTop: 24, fontSize: 32 }}>
               Welcome to{' '}
-              <span style={{ color: 'var(--teal)' }}>{tenant?.company_name}</span>
+              <span style={{ color: 'var(--teal)' }}>{tenant?.shop_name}</span>
             </h2>
             <p style={{ marginTop: 12, fontSize: 16 }}>
               {isTrial
