@@ -190,6 +190,13 @@ export default function CrewPage() {
   const [msgBody, setMsgBody] = useState('');
   const [msgSent, setMsgSent] = useState(false);
 
+  // Thread view state
+  const [openThread,  setOpenThread]  = useState<string | null>(null);
+  const openThreadRef = useRef<string | null>(null);
+  useEffect(() => { openThreadRef.current = openThread; }, [openThread]);
+  const [replyBody,   setReplyBody]   = useState('');
+  const [replySaving, setReplySaving] = useState(false);
+
   // Load localStorage identity
   useEffect(() => {
     const n = localStorage.getItem('crew_name') ?? '';
@@ -243,10 +250,13 @@ export default function CrewPage() {
             const currentDept = crewDeptRef.current;
             const isRelevant = msg.dept === null || msg.dept === currentDept;
             if (msg.sender_name === 'Supervisor' && isRelevant) {
-              const preview = msg.body.length > 70 ? msg.body.slice(0, 67) + '…' : msg.body;
-              setMsgNotification(preview);
-              if (notifTimer.current) clearTimeout(notifTimer.current);
-              notifTimer.current = setTimeout(() => setMsgNotification(null), 7000);
+              const threadKey = msg.dept ?? '__broadcast__';
+              if (openThreadRef.current !== threadKey) {
+                const preview = msg.body.length > 70 ? msg.body.slice(0, 67) + '…' : msg.body;
+                setMsgNotification(preview);
+                if (notifTimer.current) clearTimeout(notifTimer.current);
+                notifTimer.current = setTimeout(() => setMsgNotification(null), 7000);
+              }
             }
           } else if (payload.eventType === 'DELETE') {
             setMessages((prev) => prev.filter((m) => m.id !== payload.old.id));
@@ -497,6 +507,41 @@ export default function CrewPage() {
     }
   }
 
+  // ── Crew reply inside a thread ──────────────────────────────────────────────
+
+  async function handleCrewReply() {
+    const body = replyBody.trim();
+    if (!body || !openThread || replySaving) return;
+    setReplySaving(true);
+    const dept = openThread === '__broadcast__' ? null : openThread;
+    const optimisticId = `opt-${Date.now()}`;
+    const optimistic: Message = {
+      id: optimisticId,
+      sender_name: crewName || 'Crew',
+      dept,
+      body,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [optimistic, ...prev]);
+    setReplyBody('');
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .insert({ sender_name: crewName || 'Crew', dept, body, tenant_id: tenant!.id })
+        .select('id, sender_name, dept, body, created_at')
+        .single();
+      if (error) throw error;
+      setMessages((prev) => prev.map((m) => m.id === optimisticId ? (data as Message) : m));
+    } catch (err: unknown) {
+      setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+      const msg = err instanceof Error ? err.message : 'Send failed';
+      showToast(msg, true);
+      setReplyBody(body);
+    } finally {
+      setReplySaving(false);
+    }
+  }
+
   // ── Sign out ────────────────────────────────────────────────────────────────
 
   const handleSignOut = async () => {
@@ -514,6 +559,25 @@ export default function CrewPage() {
   const visibleMessages = messages.filter(
     (m) => m.dept === null || m.dept === crewDept
   );
+
+  // Thread computation from visible messages
+  const threadMap: Record<string, Message[]> = {};
+  visibleMessages.forEach((msg) => {
+    const key = msg.dept ?? '__broadcast__';
+    if (!threadMap[key]) threadMap[key] = [];
+    threadMap[key].push(msg);
+  });
+  const msgThreads = Object.entries(threadMap)
+    .map(([deptKey, msgs]) => ({
+      deptKey,
+      label: deptKey === '__broadcast__' ? 'All Departments' : deptKey,
+      lastMsg: msgs.reduce((l, m) => new Date(m.created_at) > new Date(l.created_at) ? m : l),
+    }))
+    .sort((a, b) => new Date(b.lastMsg.created_at).getTime() - new Date(a.lastMsg.created_at).getTime());
+  const openThreadMsgs = openThread
+    ? (threadMap[openThread] ?? []).slice().sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    : [];
+  const openThreadLabel = openThread === '__broadcast__' ? 'All Departments' : (openThread ?? '');
 
   // Group drawings by job number for plans modal
   const drawingGroups: Record<string, Drawing[]> = {};
@@ -623,14 +687,27 @@ export default function CrewPage() {
             </div>
           </div>
 
-          {/* ── Messages from Supervisor ───────────────────────────────────────── */}
+          {/* ── Messages ──────────────────────────────────────────────────────── */}
           <div style={{ marginBottom: 32 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
-                Messages
-                {crewDept && <span style={{ marginLeft: 8, fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>— {crewDept} + broadcasts</span>}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {openThread !== null && (
+                  <button
+                    onClick={() => { setOpenThread(null); setReplyBody(''); }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: '2px 4px', display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'inherit', fontSize: 13 }}
+                  >
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+                    Inbox
+                  </button>
+                )}
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
+                  {openThread !== null
+                    ? openThreadLabel
+                    : <>Messages{crewDept && <span style={{ marginLeft: 8, fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>— {crewDept} + broadcasts</span>}</>
+                  }
+                </div>
               </div>
-              {visibleMessages.length > 0 && (
+              {openThread === null && visibleMessages.length > 0 && (
                 <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: 'rgba(94,234,212,0.1)', color: 'var(--teal)' }}>
                   {visibleMessages.length}
                 </span>
@@ -639,48 +716,103 @@ export default function CrewPage() {
 
             {dataLoading ? (
               <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
-            ) : visibleMessages.length === 0 ? (
-              <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>
-                {crewDept
-                  ? `No messages for ${crewDept} yet. Broadcasts and messages to your department will appear here.`
-                  : 'No messages yet. Clock in or set your department to see department messages.'}
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {visibleMessages.map((msg) => (
-                  <div
-                    key={msg.id}
-                    style={{
-                      padding: '14px 16px', borderRadius: 12,
-                      background: msg.sender_name === 'Supervisor'
-                        ? 'rgba(94,234,212,0.04)'
-                        : 'rgba(255,255,255,0.02)',
-                      border: msg.sender_name === 'Supervisor'
-                        ? '1px solid rgba(94,234,212,0.15)'
-                        : '1px solid var(--line)',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{
-                          fontSize: 12, fontWeight: 700,
-                          color: msg.sender_name === 'Supervisor' ? 'var(--teal)' : 'var(--ink)',
-                        }}>
-                          {msg.sender_name}
-                        </span>
-                        {msg.dept === null && (
-                          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-mute)', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: 4 }}>
-                            All Depts
-                          </span>
-                        )}
+            ) : openThread === null ? (
+              msgThreads.length === 0 ? (
+                <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>
+                  {crewDept
+                    ? `No messages for ${crewDept} yet. Broadcasts and messages to your department will appear here.`
+                    : 'No messages yet. Clock in or set your department to see department messages.'}
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {msgThreads.map(({ deptKey, label, lastMsg }) => (
+                    <button
+                      key={deptKey}
+                      onClick={() => setOpenThread(deptKey)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 14,
+                        padding: '14px 16px', borderRadius: 12,
+                        background: 'var(--bg-1)', border: '1px solid var(--line)',
+                        cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', width: '100%',
+                        transition: 'border-color 0.15s',
+                      }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line-strong)'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line)'; }}
+                    >
+                      <div style={{ width: 38, height: 38, borderRadius: 10, background: 'rgba(94,234,212,0.08)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                       </div>
-                      <span style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0 }}>
-                        {formatDate(msg.created_at)} · {formatTime(msg.created_at)}
-                      </span>
-                    </div>
-                    <p style={{ fontSize: 14, color: 'var(--ink-dim)', margin: 0, lineHeight: 1.55 }}>{msg.body}</p>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{label}</span>
+                          <span style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0 }}>{formatDate(lastMsg.created_at)}</span>
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <span style={{ fontWeight: 600 }}>{lastMsg.sender_name}:</span>{' '}
+                          {lastMsg.body.length > 80 ? lastMsg.body.slice(0, 77) + '…' : lastMsg.body}
+                        </div>
+                      </div>
+                      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0 }}><polyline points="9 18 15 12 9 6"/></svg>
+                    </button>
+                  ))}
+                </div>
+              )
+            ) : (
+              // Conversation view
+              <div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
+                  {openThreadMsgs.length === 0 ? (
+                    <div style={{ fontSize: 13, color: 'var(--ink-mute)', padding: 16 }}>No messages yet.</div>
+                  ) : (
+                    openThreadMsgs.map((msg) => {
+                      const isSelf = msg.sender_name !== 'Supervisor';
+                      return (
+                        <div
+                          key={msg.id}
+                          style={{
+                            padding: '12px 14px', borderRadius: 12,
+                            background: isSelf ? 'rgba(255,255,255,0.02)' : 'rgba(94,234,212,0.04)',
+                            border: isSelf ? '1px solid var(--line)' : '1px solid rgba(94,234,212,0.15)',
+                            alignSelf: isSelf ? 'flex-end' : 'flex-start',
+                            maxWidth: '80%',
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 5, gap: 12 }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: isSelf ? 'var(--ink)' : 'var(--teal)' }}>
+                              {msg.sender_name}
+                            </span>
+                            <span style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0 }}>
+                              {formatTime(msg.created_at)}
+                            </span>
+                          </div>
+                          <p style={{ fontSize: 14, color: 'var(--ink-dim)', margin: 0, lineHeight: 1.55 }}>{msg.body}</p>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+                <div style={{ borderTop: '1px solid var(--line)', paddingTop: 14 }}>
+                  <textarea
+                    className="form-input"
+                    placeholder={`Reply to ${openThreadLabel}…`}
+                    value={replyBody}
+                    onChange={(e) => setReplyBody(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleCrewReply(); }}
+                    rows={3}
+                    style={{ resize: 'none', marginBottom: 10 }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>⌘↵ to send</span>
+                    <button
+                      className="btn btn-primary"
+                      style={{ opacity: (!replyBody.trim() || replySaving) ? 0.5 : 1, padding: '8px 20px' }}
+                      onClick={handleCrewReply}
+                      disabled={!replyBody.trim() || replySaving}
+                    >
+                      {replySaving ? 'Sending…' : 'Send'}
+                    </button>
                   </div>
-                ))}
+                </div>
               </div>
             )}
           </div>
