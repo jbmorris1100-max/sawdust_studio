@@ -43,6 +43,11 @@ type DamageReport = {
   photo_url: string | null;
   status: string | null;
   created_at: string;
+  resolution_type: string | null;
+  resolution_notes: string | null;
+  resolved_by: string | null;
+  resolution_cost: number | null;
+  resolved_at: string | null;
 };
 
 type JobDrawing = {
@@ -307,6 +312,14 @@ export default function SupervisorPage() {
   const [briefLoading, setBriefLoading] = useState(false);
   const [briefError,   setBriefError]   = useState<string | null>(null);
   const briefAutoRun   = useRef(false);
+
+  // Resolution modal
+  const [resolvingId,   setResolvingId]   = useState<string | null>(null);
+  const [resType,       setResType]       = useState('Repaired in shop');
+  const [resNotes,      setResNotes]      = useState('');
+  const [resBy,         setResBy]         = useState('Supervisor');
+  const [resCost,       setResCost]       = useState('');
+  const [resSubmitting, setResSubmitting] = useState(false);
 
   // Toast
   const [toast,     setToast]     = useState<{ msg: string; error?: boolean } | null>(null);
@@ -674,6 +687,48 @@ export default function SupervisorPage() {
   }
 
   // ── Damage status update ────────────────────────────────────────────────────
+
+  function openResolutionModal(id: string) {
+    setResolvingId(id);
+    setResType('Repaired in shop');
+    setResNotes('');
+    setResBy('Supervisor');
+    setResCost('');
+  }
+
+  async function handleResolutionConfirm() {
+    if (!resolvingId || !resNotes.trim() || resSubmitting) return;
+    const id = resolvingId;
+    setResSubmitting(true);
+    const prev = damage.find((d) => d.id === id);
+    setDamage((ds) => ds.map((d) => d.id === id ? { ...d, status: 'resolved' } : d));
+    setResolvingId(null);
+    try {
+      const { error } = await supabase.from('damage_reports').update({
+        status:           'resolved',
+        resolution_type:  resType,
+        resolution_notes: resNotes.trim(),
+        resolved_by:      resBy.trim() || 'Supervisor',
+        resolution_cost:  resCost ? parseFloat(resCost) : null,
+        resolved_at:      new Date().toISOString(),
+      }).eq('id', id);
+      if (error) throw error;
+      showToast('Damage report resolved ✓');
+    } catch (_) {
+      // Columns may not exist yet — fall back to status-only update
+      try {
+        const { error: fallbackErr } = await supabase
+          .from('damage_reports').update({ status: 'resolved' }).eq('id', id);
+        if (fallbackErr) throw fallbackErr;
+        showToast('Resolved ✓ — run damage_resolution.sql to save full details');
+      } catch (err2: unknown) {
+        if (prev) setDamage((ds) => ds.map((d) => d.id === id ? prev : d));
+        showToast(err2 instanceof Error ? err2.message : 'Update failed', true);
+      }
+    } finally {
+      setResSubmitting(false);
+    }
+  }
 
   async function handleDamageStatus(id: string, status: string) {
     setActioning((prev) => ({ ...prev, [id]: true }));
@@ -1418,7 +1473,7 @@ export default function SupervisorPage() {
                           {s !== 'reviewed' && (
                             <ActionBtn label="Mark Reviewed" color="#A78BFA" onClick={() => handleDamageStatus(d.id, 'reviewed')} disabled={busy} />
                           )}
-                          <ActionBtn label="Resolve" color="#34D399" onClick={() => handleDamageStatus(d.id, 'resolved')} disabled={busy} />
+                          <ActionBtn label="Resolve" color="#34D399" onClick={() => openResolutionModal(d.id)} disabled={busy} />
                           <ActionBtn label="Close" color="#5F6F6C" onClick={() => handleDamageStatus(d.id, 'closed')} disabled={busy} />
                         </div>
                       )}
@@ -2090,6 +2145,119 @@ export default function SupervisorPage() {
 
         </main>
       </div>
+
+      {/* ── Damage Resolution Modal ── */}
+      {resolvingId && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60,
+        }}>
+          <div style={{
+            background: '#1E2A2A', borderRadius: 14, padding: '28px 32px',
+            width: '100%', maxWidth: 460, display: 'flex', flexDirection: 'column', gap: 16,
+          }}>
+            <h3 style={{ margin: 0, color: '#E2E8E8', fontSize: 17, fontWeight: 700 }}>
+              Resolve Damage Report
+            </h3>
+
+            {/* Resolution type */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={{ color: '#9CA3AF', fontSize: 13 }}>Resolution Type</label>
+              <select
+                value={resType}
+                onChange={(e) => setResType(e.target.value)}
+                style={{
+                  background: '#111A1A', color: '#E2E8E8', border: '1px solid #2D3F3F',
+                  borderRadius: 8, padding: '8px 12px', fontSize: 14,
+                }}
+              >
+                <option value="Repaired in shop">Repaired in shop</option>
+                <option value="Replaced part">Replaced part</option>
+                <option value="Client accepted as-is">Client accepted as-is</option>
+                <option value="Warranty claim filed">Warranty claim filed</option>
+                <option value="Written off">Written off</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+
+            {/* Resolution notes */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={{ color: '#9CA3AF', fontSize: 13 }}>
+                Notes <span style={{ color: '#EF4444' }}>*</span>
+              </label>
+              <textarea
+                rows={3}
+                value={resNotes}
+                onChange={(e) => setResNotes(e.target.value)}
+                placeholder="Describe how the damage was resolved…"
+                style={{
+                  background: '#111A1A', color: '#E2E8E8', border: '1px solid #2D3F3F',
+                  borderRadius: 8, padding: '8px 12px', fontSize: 14, resize: 'vertical',
+                  fontFamily: 'inherit',
+                }}
+              />
+            </div>
+
+            {/* Resolved by + cost row */}
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ color: '#9CA3AF', fontSize: 13 }}>Resolved By</label>
+                <input
+                  type="text"
+                  value={resBy}
+                  onChange={(e) => setResBy(e.target.value)}
+                  placeholder="Supervisor"
+                  style={{
+                    background: '#111A1A', color: '#E2E8E8', border: '1px solid #2D3F3F',
+                    borderRadius: 8, padding: '8px 12px', fontSize: 14,
+                  }}
+                />
+              </div>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ color: '#9CA3AF', fontSize: 13 }}>Cost (optional)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={resCost}
+                  onChange={(e) => setResCost(e.target.value)}
+                  placeholder="0.00"
+                  style={{
+                    background: '#111A1A', color: '#E2E8E8', border: '1px solid #2D3F3F',
+                    borderRadius: 8, padding: '8px 12px', fontSize: 14,
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Buttons */}
+            <div style={{ display: 'flex', gap: 10, marginTop: 4, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setResolvingId(null)}
+                disabled={resSubmitting}
+                style={{
+                  background: '#2D3F3F', color: '#9CA3AF', border: 'none',
+                  borderRadius: 8, padding: '9px 20px', fontSize: 14, cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleResolutionConfirm}
+                disabled={resSubmitting || !resNotes.trim()}
+                style={{
+                  background: resSubmitting || !resNotes.trim() ? '#2D4A3E' : '#34D399',
+                  color: resSubmitting || !resNotes.trim() ? '#5F8F7A' : '#051A12',
+                  border: 'none', borderRadius: 8, padding: '9px 20px',
+                  fontSize: 14, fontWeight: 600, cursor: resSubmitting || !resNotes.trim() ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {resSubmitting ? 'Saving…' : 'Confirm Resolution'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {toast && <Toast msg={toast.msg} error={toast.error} />}
     </>
