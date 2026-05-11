@@ -63,6 +63,16 @@ type SopItem = {
   created_at: string;
 };
 
+type CraftsmanBuild = {
+  id: string;
+  worker_name: string;
+  clock_in: string;
+  clock_out: string | null;
+  notes: string | null;
+  job_number: string | null;
+  total_hours: number | null;
+};
+
 type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -184,8 +194,10 @@ export default function SupervisorPage() {
   const [messages,    setMessages]    = useState<Message[]>([]);
   const [needs,       setNeeds]       = useState<InventoryNeed[]>([]);
   const [damage,       setDamage]       = useState<DamageReport[]>([]);
-  const [plans,        setPlans]        = useState<JobDrawing[]>([]);
-  const [sops,         setSops]         = useState<SopItem[]>([]);
+  const [plans,          setPlans]          = useState<JobDrawing[]>([]);
+  const [sops,           setSops]           = useState<SopItem[]>([]);
+  const [craftsmanBuilds, setCraftsmanBuilds] = useState<CraftsmanBuild[]>([]);
+  const [craftsTick,     setCraftsTick]     = useState(0);
 
   // Plans upload
   const [planFile,      setPlanFile]      = useState<File | null>(null);
@@ -238,15 +250,23 @@ export default function SupervisorPage() {
       if (damageRes.data) setDamage(damageRes.data as DamageReport[]);
     } catch (_) {}
     try {
-      const [plansRes, sopsRes] = await Promise.all([
+      const [plansRes, sopsRes, buildsRes] = await Promise.all([
         supabase.from('job_drawings').select('id, job_number, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
+        supabase.from('time_clock').select('id, worker_name, clock_in, clock_out, notes, job_number, total_hours').eq('tenant_id', tenant.id).eq('status', 'craftsman_build').order('clock_in', { ascending: false }).limit(50),
       ]);
-      if (plansRes.data) setPlans(plansRes.data as JobDrawing[]);
-      if (sopsRes.data)  setSops(sopsRes.data as SopItem[]);
+      if (plansRes.data)  setPlans(plansRes.data as JobDrawing[]);
+      if (sopsRes.data)   setSops(sopsRes.data as SopItem[]);
+      if (buildsRes.data) setCraftsmanBuilds(buildsRes.data as CraftsmanBuild[]);
     } catch (_) {}
     setDataLoading(false);
   }, [tenant]);
+
+  // Tick every minute to refresh elapsed times in Craftsman Activity panel
+  useEffect(() => {
+    const iv = setInterval(() => setCraftsTick((t) => t + 1), 60000);
+    return () => clearInterval(iv);
+  }, []);
 
   useEffect(() => {
     loadAll();
@@ -262,19 +282,24 @@ export default function SupervisorPage() {
       .channel('rt-clock')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'time_clock', filter: `tenant_id=eq.${tenantId}` }, (payload) => {
         if (payload.eventType === 'INSERT') {
-          const row = payload.new as CrewRow & { clock_out: string | null };
-          if (!row.clock_out) {
+          const row = payload.new as CrewRow & { clock_out: string | null; status: string | null };
+          if (row.status === 'craftsman_build') {
+            setCraftsmanBuilds((prev) => prev.some((b) => b.id === row.id) ? prev : [row as unknown as CraftsmanBuild, ...prev]);
+          } else if (!row.clock_out) {
             setActiveCrew((prev) => prev.some((r) => r.id === row.id) ? prev : [...prev, row]);
           }
         } else if (payload.eventType === 'UPDATE') {
-          const row = payload.new as CrewRow & { clock_out: string | null };
-          if (row.clock_out) {
+          const row = payload.new as CrewRow & { clock_out: string | null; status: string | null };
+          if (row.status === 'craftsman_build') {
+            setCraftsmanBuilds((prev) => prev.map((b) => b.id === row.id ? row as unknown as CraftsmanBuild : b));
+          } else if (row.clock_out) {
             setActiveCrew((prev) => prev.filter((r) => r.id !== row.id));
           } else {
             setActiveCrew((prev) => prev.map((r) => r.id === row.id ? { ...r, ...row } : r));
           }
         } else if (payload.eventType === 'DELETE') {
           setActiveCrew((prev) => prev.filter((r) => r.id !== payload.old.id));
+          setCraftsmanBuilds((prev) => prev.filter((b) => b.id !== payload.old.id));
         }
       })
       .subscribe();
@@ -563,6 +588,10 @@ export default function SupervisorPage() {
     : [];
   const openThreadLabel = openThread === '__broadcast__' ? 'All Departments' : (openThread ?? '');
 
+  const todayStart      = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const activeBuilds    = craftsmanBuilds.filter((b) => !b.clock_out);
+  const completedBuilds = craftsmanBuilds.filter((b) => b.clock_out && new Date(b.clock_in) >= todayStart);
+
   const thStyle: React.CSSProperties = { padding: '10px 20px', textAlign: 'left', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-mute)' };
   const tdStyle: React.CSSProperties = { padding: '12px 20px', fontSize: 13, color: 'var(--ink-dim)' };
   const tdBold:  React.CSSProperties = { ...tdStyle, fontSize: 14, fontWeight: 600, color: 'var(--ink)' };
@@ -649,37 +678,108 @@ export default function SupervisorPage() {
 
           {/* ── Overview tab ──────────────────────────────────────────────────── */}
           {tab === 'overview' && (
-            <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
-              <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)', fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
-                Active Crew — Clocked In Now
-              </div>
-              {dataLoading ? (
-                <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
-              ) : activeCrew.length === 0 ? (
-                <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>No crew currently clocked in.</div>
-              ) : (
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                      {['Name', 'Department', 'Status', 'Clocked In', 'Duration'].map((h) => (
-                        <th key={h} style={thStyle}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeCrew.map((row) => (
-                      <tr key={row.id} style={{ borderBottom: '1px solid var(--line)' }}>
-                        <td style={tdBold}>{row.worker_name}</td>
-                        <td style={tdStyle}>{row.dept}</td>
-                        <td style={tdStyle}>{row.status ?? 'active'}</td>
-                        <td style={tdStyle}>{formatTime(row.clock_in)}</td>
-                        <td style={{ ...tdStyle }}>
-                          <span style={{ fontSize: 12, fontWeight: 700, color: '#2DE1C9', background: 'rgba(45,225,201,0.1)', padding: '3px 8px', borderRadius: 6 }}>{elapsed(row.clock_in)}</span>
-                        </td>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              <style>{`@keyframes craftsPulse{0%,100%{opacity:1}50%{opacity:0.3}}`}</style>
+
+              {/* Active crew clock-in table */}
+              <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
+                <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)', fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
+                  Active Crew — Clocked In Now
+                </div>
+                {dataLoading ? (
+                  <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
+                ) : activeCrew.length === 0 ? (
+                  <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>No crew currently clocked in.</div>
+                ) : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid var(--line)' }}>
+                        {['Name', 'Department', 'Status', 'Clocked In', 'Duration'].map((h) => (
+                          <th key={h} style={thStyle}>{h}</th>
+                        ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {activeCrew.map((row) => (
+                        <tr key={row.id} style={{ borderBottom: '1px solid var(--line)' }}>
+                          <td style={tdBold}>{row.worker_name}</td>
+                          <td style={tdStyle}>{row.dept}</td>
+                          <td style={tdStyle}>{row.status ?? 'active'}</td>
+                          <td style={tdStyle}>{formatTime(row.clock_in)}</td>
+                          <td style={{ ...tdStyle }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: '#2DE1C9', background: 'rgba(45,225,201,0.1)', padding: '3px 8px', borderRadius: 6 }}>{elapsed(row.clock_in)}</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {/* Craftsman Build Activity */}
+              {(activeBuilds.length > 0 || completedBuilds.length > 0 || !dataLoading) && (
+                <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
+                  <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#2DE1C9' }}>Craftsman Build Activity</span>
+                    {activeBuilds.length > 0 && (
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: 'rgba(45,225,201,0.12)', color: '#2DE1C9' }}>
+                        {activeBuilds.length} active
+                      </span>
+                    )}
+                    {/* craftsTick drives elapsed recalc every minute */}
+                    <span style={{ display: 'none' }}>{craftsTick}</span>
+                  </div>
+
+                  {dataLoading ? (
+                    <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
+                  ) : activeBuilds.length === 0 && completedBuilds.length === 0 ? (
+                    <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>No craftsman build activity today.</div>
+                  ) : (
+                    <>
+                      {activeBuilds.length > 0 && (
+                        <>
+                          <div style={{ padding: '8px 20px 4px', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Active</div>
+                          {activeBuilds.map((b) => (
+                            <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '13px 20px', borderBottom: '1px solid var(--line)' }}>
+                              <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#2DE1C9', flexShrink: 0, animation: 'craftsPulse 2s ease-in-out infinite' }} />
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>{b.worker_name}</div>
+                                <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {b.notes ?? 'Craftsman Build'}{b.job_number ? ` · Job ${b.job_number}` : ''}
+                                </div>
+                              </div>
+                              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                <div style={{ fontSize: 13, fontWeight: 700, color: '#2DE1C9', fontVariantNumeric: 'tabular-nums' }}>{elapsed(b.clock_in)}</div>
+                                <div style={{ fontSize: 10, color: 'var(--ink-mute)', marginTop: 2 }}>Craftsman Build</div>
+                              </div>
+                            </div>
+                          ))}
+                        </>
+                      )}
+                      {completedBuilds.length > 0 && (
+                        <>
+                          <div style={{ padding: '8px 20px 4px', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Completed Today</div>
+                          {completedBuilds.map((b) => (
+                            <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '13px 20px', borderBottom: '1px solid var(--line)' }}>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>{b.worker_name}</div>
+                                <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {b.notes ?? 'Craftsman Build'}{b.job_number ? ` · Job ${b.job_number}` : ''}
+                                </div>
+                              </div>
+                              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                <div style={{ fontSize: 13, fontWeight: 700, color: '#34D399' }}>
+                                  {b.total_hours != null ? `${b.total_hours.toFixed(2)}h` : elapsed(b.clock_in)}
+                                </div>
+                                <div style={{ fontSize: 10, color: 'var(--ink-mute)', marginTop: 2 }}>Craftsman Build</div>
+                              </div>
+                            </div>
+                          ))}
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
               )}
             </div>
           )}

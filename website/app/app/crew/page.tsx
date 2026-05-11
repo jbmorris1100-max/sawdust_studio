@@ -46,8 +46,9 @@ type SopItem = {
   created_at: string;
 };
 
-type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'message' | 'switchDept' | 'editName' | null;
+type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'message' | 'switchDept' | 'editName' | 'buildTimer' | 'materialLog' | null;
 type ClockStep = 'lookup' | 'clockin' | 'clockout';
+type BuildTimerStep = 'form' | 'summary';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -56,6 +57,14 @@ function formatTime(iso: string) {
 }
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function fmtElapsed(startIso: string): string {
+  const secs = Math.floor((Date.now() - new Date(startIso).getTime()) / 1000);
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 function fileTypeBadge(fileName: string | null): { label: string; color: string; bg: string } | null {
@@ -215,6 +224,30 @@ export default function CrewPage() {
   const [sops,        setSops]        = useState<SopItem[]>([]);
   const [sopsLoading, setSopsLoading] = useState(false);
 
+  // Craftsman build timer (persisted via localStorage)
+  const [buildId,        setBuildId]        = useState<string | null>(null);
+  const [buildStart,     setBuildStart]     = useState<string | null>(null);
+  const [buildMaterial,  setBuildMaterial]  = useState<string | null>(null);
+  const [buildMatType,   setBuildMatType]   = useState<string | null>(null);
+  const [buildJob,       setBuildJob]       = useState<string | null>(null);
+  const [timerTick,      setTimerTick]      = useState(0);
+  const [buildTimerStep, setBuildTimerStep] = useState<BuildTimerStep>('form');
+  const [buildSummary,   setBuildSummary]   = useState<{ material: string; duration: string; job: string | null } | null>(null);
+  const [timerStopping,  setTimerStopping]  = useState(false);
+
+  // Build timer modal form fields
+  const [bmMaterial, setBmMaterial] = useState('');
+  const [bmMatType,  setBmMatType]  = useState('Raw Lumber');
+  const [bmJobNum,   setBmJobNum]   = useState('');
+
+  // Material log modal fields
+  const [mlMaterial, setMlMaterial] = useState('');
+  const [mlMatType,  setMlMatType]  = useState('Raw Lumber');
+  const [mlQty,      setMlQty]      = useState('');
+  const [mlUnit,     setMlUnit]     = useState('board feet');
+  const [mlJobNum,   setMlJobNum]   = useState('');
+  const [mlNotes,    setMlNotes]    = useState('');
+
   // Message modal
   const [msgDept, setMsgDept] = useState('');
   const [msgBody, setMsgBody] = useState('');
@@ -234,13 +267,32 @@ export default function CrewPage() {
   const [replyBody,   setReplyBody]   = useState('');
   const [replySaving, setReplySaving] = useState(false);
 
-  // Load localStorage identity
+  // Load localStorage identity + restore any in-progress craftsman build timer
   useEffect(() => {
     const n = localStorage.getItem('crew_name') ?? '';
     const d = localStorage.getItem('crew_dept') ?? '';
     setCrewName(n);
     setCrewDept(d);
+    const id    = localStorage.getItem('craftsman_build_id');
+    const start = localStorage.getItem('craftsman_build_start');
+    const mat   = localStorage.getItem('craftsman_build_material');
+    const type  = localStorage.getItem('craftsman_build_mattype');
+    const job   = localStorage.getItem('craftsman_build_job');
+    if (id && start) {
+      setBuildId(id);
+      setBuildStart(start);
+      setBuildMaterial(mat);
+      setBuildMatType(type);
+      setBuildJob(job || null);
+    }
   }, []);
+
+  // Tick every second while a build timer is running
+  useEffect(() => {
+    if (!buildStart) return;
+    const iv = setInterval(() => setTimerTick((t) => t + 1), 1000);
+    return () => clearInterval(iv);
+  }, [buildStart]);
 
   // Load page data — fetch all tenant messages and filter client-side by dept
   useEffect(() => {
@@ -461,6 +513,133 @@ export default function CrewPage() {
       }
     } catch (_) {}
     setSopsLoading(false);
+  }
+
+  // ── Craftsman build timer ──────────────────────────────────────────────────
+
+  function openBuildTimerModal() {
+    setBmMaterial('');
+    setBmMatType('Raw Lumber');
+    setBmJobNum('');
+    setBuildTimerStep('form');
+    setBuildSummary(null);
+    setModal('buildTimer');
+  }
+
+  async function handleStartTimer() {
+    const mat = bmMaterial.trim();
+    if (!mat || saving) return;
+    setSaving(true);
+    try {
+      const now  = new Date().toISOString();
+      const date = new Date().toISOString().split('T')[0];
+      const { data, error } = await supabase
+        .from('time_clock')
+        .insert({
+          worker_name: crewName || 'Craftsman',
+          dept:        'Craftsman',
+          clock_in:    now,
+          date,
+          status:      'craftsman_build',
+          notes:       mat,
+          job_number:  bmJobNum.trim() || null,
+          tenant_id:   tenant!.id,
+        })
+        .select('id')
+        .single();
+      if (error) throw error;
+      localStorage.setItem('craftsman_build_id',       data.id);
+      localStorage.setItem('craftsman_build_start',    now);
+      localStorage.setItem('craftsman_build_material', mat);
+      localStorage.setItem('craftsman_build_mattype',  bmMatType);
+      localStorage.setItem('craftsman_build_job',      bmJobNum.trim());
+      setBuildId(data.id);
+      setBuildStart(now);
+      setBuildMaterial(mat);
+      setBuildMatType(bmMatType);
+      setBuildJob(bmJobNum.trim() || null);
+      closeModal();
+      showToast('Build timer started ✓');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Start failed';
+      showToast(msg, true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleStopTimer() {
+    if (!buildId || !buildStart || timerStopping) return;
+    setTimerStopping(true);
+    try {
+      const now        = new Date().toISOString();
+      const totalHours = (Date.now() - new Date(buildStart).getTime()) / 3600000;
+      const { error }  = await supabase
+        .from('time_clock')
+        .update({ clock_out: now, total_hours: Math.round(totalHours * 10000) / 10000 })
+        .eq('id', buildId);
+      if (error) throw error;
+      const duration = fmtElapsed(buildStart);
+      const mat      = buildMaterial ?? '';
+      const job      = buildJob;
+      localStorage.removeItem('craftsman_build_id');
+      localStorage.removeItem('craftsman_build_start');
+      localStorage.removeItem('craftsman_build_material');
+      localStorage.removeItem('craftsman_build_mattype');
+      localStorage.removeItem('craftsman_build_job');
+      setBuildId(null);
+      setBuildStart(null);
+      setBuildMaterial(null);
+      setBuildMatType(null);
+      setBuildJob(null);
+      setBuildSummary({ material: mat, duration, job });
+      setBuildTimerStep('summary');
+      setModal('buildTimer');
+      await reloadClock();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Stop failed';
+      showToast(msg, true);
+    } finally {
+      setTimerStopping(false);
+    }
+  }
+
+  // ── Craftsman material log ─────────────────────────────────────────────────
+
+  function openMaterialLog() {
+    setMlMaterial('');
+    setMlMatType('Raw Lumber');
+    setMlQty('');
+    setMlUnit('board feet');
+    setMlJobNum('');
+    setMlNotes('');
+    setModal('materialLog');
+  }
+
+  async function handleMaterialLog() {
+    const mat = mlMaterial.trim();
+    if (!mat || saving) return;
+    setSaving(true);
+    try {
+      const qty = parseInt(mlQty) || 1;
+      const { error } = await supabase.from('inventory_needs').insert({
+        item:       `[${mlMatType}] ${mat}`,
+        dept:       'Craftsman',
+        qty,
+        job_number: mlJobNum.trim() || null,
+        notes:      mlNotes.trim() || null,
+        status:     'craftsman_material',
+        tenant_id:  tenant!.id,
+      });
+      if (error) throw error;
+      closeModal();
+      showToast('Material logged ✓');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Log failed';
+      showToast(msg, true);
+    } finally {
+      setSaving(false);
+    }
   }
 
   function closeModal() {
@@ -756,6 +935,23 @@ export default function CrewPage() {
       onClick: openMessage,
       icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
     },
+    ...(crewDept === 'Craftsman' ? ([
+      {
+        label: buildStart ? 'Stop Build Timer' : 'Start Build Timer',
+        color: buildStart ? '#F87171' : '#2DE1C9',
+        bg:    buildStart ? 'rgba(248,113,113,0.08)' : 'rgba(45,225,201,0.08)',
+        onClick: buildStart ? () => { void handleStopTimer(); } : openBuildTimerModal,
+        icon: buildStart
+          ? <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+          : <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
+      },
+      {
+        label: 'Log Material',
+        color: '#FBBF24', bg: 'rgba(251,191,36,0.08)',
+        onClick: openMaterialLog,
+        icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="m8 21 4-4 4 4"/><path d="M12 17v4"/></svg>,
+      },
+    ] as { label: string; color: string; bg: string; onClick: () => void; icon: React.ReactNode }[]) : []),
   ];
 
   return (
@@ -858,6 +1054,33 @@ export default function CrewPage() {
               ))}
             </div>
           </div>
+
+          {/* ── Craftsman active build timer bar ───────────────────────────────── */}
+          {crewDept === 'Craftsman' && buildStart && (
+            <div style={{ marginBottom: 24, padding: '14px 18px', borderRadius: 12, background: 'rgba(45,225,201,0.06)', border: '1px solid rgba(45,225,201,0.22)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14 }}>
+              <style>{`@keyframes craftsPulse{0%,100%{opacity:1}50%{opacity:0.3}}`}</style>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#2DE1C9', flexShrink: 0, animation: 'craftsPulse 2s ease-in-out infinite' }} />
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: '#2DE1C9', fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
+                    {fmtElapsed(buildStart)}
+                    {/* timerTick drives re-renders */}
+                    <span style={{ display: 'none' }}>{timerTick}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 4 }}>
+                    {buildMaterial}{buildJob ? ` · Job ${buildJob}` : ''}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={handleStopTimer}
+                disabled={timerStopping}
+                style={{ fontSize: 12, fontWeight: 700, color: '#F87171', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 8, padding: '7px 16px', cursor: timerStopping ? 'not-allowed' : 'pointer', opacity: timerStopping ? 0.5 : 1, fontFamily: 'inherit' }}
+              >
+                {timerStopping ? 'Stopping…' : 'Stop Build'}
+              </button>
+            </div>
+          )}
 
           {/* ── Messages ──────────────────────────────────────────────────────── */}
           <div style={{ marginBottom: 32 }}>
@@ -1379,6 +1602,125 @@ export default function CrewPage() {
               {nameSaving ? 'Saving…' : 'Save'}
             </button>
           </div>
+        </ModalOverlay>
+      )}
+
+      {/* ── Build Timer Modal ───────────────────────────────────────────────── */}
+      {modal === 'buildTimer' && (
+        <ModalOverlay
+          onClose={closeModal}
+          title={buildTimerStep === 'summary' ? 'Build Complete' : 'Start Build Timer'}
+        >
+          {buildTimerStep === 'form' ? (
+            <>
+              <p style={{ fontSize: 13, color: 'var(--ink-dim)', marginBottom: 20 }}>
+                Track actual build time for custom work and raw lumber. Timer persists if you refresh.
+              </p>
+              <Field label="What are you building? *">
+                <input
+                  className="form-input"
+                  placeholder="e.g. Custom cabinet face frames"
+                  value={bmMaterial}
+                  onChange={(e) => setBmMaterial(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleStartTimer(); }}
+                  autoFocus
+                />
+              </Field>
+              <Field label="Material Type">
+                <select className="form-input" value={bmMatType} onChange={(e) => setBmMatType(e.target.value)} style={{ cursor: 'pointer' }}>
+                  <option value="Raw Lumber">Raw Lumber</option>
+                  <option value="Custom Millwork">Custom Millwork</option>
+                  <option value="Other">Other</option>
+                </select>
+              </Field>
+              <Field label="Job Number (optional)">
+                <input className="form-input" placeholder="e.g. P-26-1001" value={bmJobNum} onChange={(e) => setBmJobNum(e.target.value)} />
+              </Field>
+              <button
+                className="btn btn-primary"
+                style={{ width: '100%', justifyContent: 'center', marginTop: 4, opacity: (!bmMaterial.trim() || saving) ? 0.5 : 1 }}
+                onClick={handleStartTimer}
+                disabled={!bmMaterial.trim() || saving}
+              >
+                {saving ? 'Starting…' : 'Start Timer'}
+              </button>
+            </>
+          ) : buildSummary ? (
+            <>
+              <div style={{ textAlign: 'center', paddingBottom: 24 }}>
+                <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(45,225,201,0.12)', border: '2px solid #2DE1C9', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
+                  <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke="#2DE1C9" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                </div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: '#2DE1C9' }}>Build Complete</div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+                <div style={{ padding: '14px 16px', borderRadius: 10, background: 'rgba(45,225,201,0.05)', border: '1px solid rgba(45,225,201,0.15)' }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--ink-mute)', marginBottom: 5 }}>Material</div>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ink)' }}>{buildSummary.material}</div>
+                </div>
+                <div style={{ padding: '14px 16px', borderRadius: 10, background: 'rgba(45,225,201,0.05)', border: '1px solid rgba(45,225,201,0.15)' }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--ink-mute)', marginBottom: 5 }}>Total Build Time</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: '#2DE1C9', fontVariantNumeric: 'tabular-nums' }}>{buildSummary.duration}</div>
+                </div>
+                {buildSummary.job && (
+                  <div style={{ padding: '14px 16px', borderRadius: 10, background: 'rgba(45,225,201,0.05)', border: '1px solid rgba(45,225,201,0.15)' }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--ink-mute)', marginBottom: 5 }}>Job Number</div>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ink)' }}>{buildSummary.job}</div>
+                  </div>
+                )}
+              </div>
+              <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }} onClick={closeModal}>Done</button>
+            </>
+          ) : null}
+        </ModalOverlay>
+      )}
+
+      {/* ── Material Log Modal ──────────────────────────────────────────────── */}
+      {modal === 'materialLog' && (
+        <ModalOverlay onClose={closeModal} title="Log Material">
+          <Field label="Material Description *">
+            <input
+              className="form-input"
+              placeholder="e.g. White oak boards, 8/4 thickness"
+              value={mlMaterial}
+              onChange={(e) => setMlMaterial(e.target.value)}
+              autoFocus
+            />
+          </Field>
+          <Field label="Material Type">
+            <select className="form-input" value={mlMatType} onChange={(e) => setMlMatType(e.target.value)} style={{ cursor: 'pointer' }}>
+              <option value="Raw Lumber">Raw Lumber</option>
+              <option value="Custom Millwork">Custom Millwork</option>
+              <option value="Other">Other</option>
+            </select>
+          </Field>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <Field label="Quantity">
+              <input className="form-input" type="number" min="1" placeholder="1" value={mlQty} onChange={(e) => setMlQty(e.target.value)} />
+            </Field>
+            <Field label="Unit">
+              <select className="form-input" value={mlUnit} onChange={(e) => setMlUnit(e.target.value)} style={{ cursor: 'pointer' }}>
+                <option value="board feet">Board Feet</option>
+                <option value="sheets">Sheets</option>
+                <option value="pieces">Pieces</option>
+                <option value="linear feet">Linear Feet</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Job Number (optional)">
+            <input className="form-input" placeholder="e.g. P-26-1001" value={mlJobNum} onChange={(e) => setMlJobNum(e.target.value)} />
+          </Field>
+          <Field label="Notes (optional)">
+            <textarea className="form-input" placeholder="Additional details…" value={mlNotes} onChange={(e) => setMlNotes(e.target.value)} rows={2} style={{ resize: 'none' }} />
+          </Field>
+          <button
+            className="btn btn-primary"
+            style={{ width: '100%', justifyContent: 'center', marginTop: 4, opacity: (!mlMaterial.trim() || saving) ? 0.5 : 1 }}
+            onClick={handleMaterialLog}
+            disabled={!mlMaterial.trim() || saving}
+          >
+            {saving ? 'Logging…' : 'Log Material'}
+          </button>
         </ModalOverlay>
       )}
 
