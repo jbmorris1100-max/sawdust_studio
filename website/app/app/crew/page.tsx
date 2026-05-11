@@ -226,8 +226,10 @@ export default function CrewPage() {
   const [invJobNum, setInvJobNum] = useState('');
 
   // Damage modal
-  const [dmgWhat, setDmgWhat] = useState('');
-  const [dmgDept, setDmgDept] = useState('');
+  const [dmgWhat,         setDmgWhat]         = useState('');
+  const [dmgDept,         setDmgDept]         = useState('');
+  const [dmgPhoto,        setDmgPhoto]        = useState<File | null>(null);
+  const [dmgPhotoPreview, setDmgPhotoPreview] = useState<string | null>(null);
 
   // Plans modal
   const [drawings,     setDrawings]     = useState<Drawing[]>([]);
@@ -257,16 +259,18 @@ export default function CrewPage() {
 
 
   // Parts / QC modal
-  const [partsMode,    setPartsMode]    = useState<'log' | 'qc'>('log');
-  const [partName,     setPartName]     = useState('');
-  const [partJobNum,   setPartJobNum]   = useState('');
-  const [partDept,     setPartDept]     = useState('');
-  const [partStatus,   setPartStatus]   = useState('In Progress');
-  const [partNextDept, setPartNextDept] = useState('');
-  const [partNotes,    setPartNotes]    = useState('');
-  const [partsQcList,  setPartsQcList]  = useState<PartLog[]>([]);
-  const [qcLoading,    setQcLoading]    = useState(false);
-  const [qcActioning,  setQcActioning]  = useState<Record<string, boolean>>({});
+  const [partsMode,      setPartsMode]      = useState<'log' | 'qc'>('log');
+  const [partName,       setPartName]       = useState('');
+  const [partJobNum,     setPartJobNum]     = useState('');
+  const [partDept,       setPartDept]       = useState('');
+  const [partStatus,     setPartStatus]     = useState('In Progress');
+  const [partNextDept,   setPartNextDept]   = useState('');
+  const [partNotes,      setPartNotes]      = useState('');
+  const [partsQcList,    setPartsQcList]    = useState<PartLog[]>([]);
+  const [qcLoading,      setQcLoading]      = useState(false);
+  const [qcActioning,    setQcActioning]    = useState<Record<string, boolean>>({});
+  const [partPhoto,        setPartPhoto]        = useState<File | null>(null);
+  const [partPhotoPreview, setPartPhotoPreview] = useState<string | null>(null);
 
   // Message modal
   const [msgDept, setMsgDept] = useState('');
@@ -436,6 +440,8 @@ export default function CrewPage() {
   function openDamage() {
     setDmgWhat('');
     setDmgDept(crewDept);
+    setDmgPhoto(null);
+    setDmgPhotoPreview(null);
     setModal('damage');
   }
 
@@ -526,6 +532,8 @@ export default function CrewPage() {
     setPartStatus('In Progress');
     setPartNextDept('');
     setPartNotes('');
+    setPartPhoto(null);
+    setPartPhotoPreview(null);
     setModal('parts');
     if (crewDept && tenant) {
       setQcLoading(true);
@@ -782,6 +790,17 @@ export default function CrewPage() {
     }
   }
 
+  // ── Photo upload helper ──────────────────────────────────────────────────────
+
+  async function uploadPhoto(file: File, bucket: string): Promise<string | null> {
+    const ext  = file.name.split('.').pop() ?? 'jpg';
+    const path = `${tenant!.id}/${Date.now()}.${ext}`;
+    const { error } = await supabase.storage.from(bucket).upload(path, file, { upsert: false });
+    if (error) throw error;
+    const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+    return data.publicUrl;
+  }
+
   // ── Damage handler ──────────────────────────────────────────────────────────
 
   async function handleDamageSubmit() {
@@ -790,11 +809,16 @@ export default function CrewPage() {
     if (!what || !dept || saving) return;
     setSaving(true);
     try {
+      let photoUrl: string | null = null;
+      if (dmgPhoto) {
+        try { photoUrl = await uploadPhoto(dmgPhoto, 'damage-photos'); }
+        catch (_) { /* photo upload failed — continue without it */ }
+      }
       const { error } = await supabase.from('damage_reports').insert({
         part_name: what,
         dept,
         notes:     null,
-        photo_url: null,
+        photo_url: photoUrl,
         status:    'open',
         tenant_id: tenant!.id,
       });
@@ -889,7 +913,12 @@ export default function CrewPage() {
     if (!name || !partDept || saving) return;
     setSaving(true);
     try {
-      const { error } = await supabase.from('parts_log').insert({
+      let photoUrl: string | null = null;
+      if (partPhoto) {
+        try { photoUrl = await uploadPhoto(partPhoto, 'part-photos'); }
+        catch (_) { /* photo upload failed — continue without it */ }
+      }
+      const payload: Record<string, unknown> = {
         part_name:   name,
         job_number:  partJobNum.trim() || null,
         dept:        partDept,
@@ -898,7 +927,9 @@ export default function CrewPage() {
         notes:       partNotes.trim() || null,
         worker_name: crewName || null,
         tenant_id:   tenant!.id,
-      });
+      };
+      if (photoUrl !== null) payload.photo_url = photoUrl;
+      const { error } = await supabase.from('parts_log').insert(payload);
       if (error) throw error;
       closeModal();
       showToast('Part logged ✓');
@@ -1484,6 +1515,38 @@ export default function CrewPage() {
           <Field label="Department *">
             <input className="form-input" placeholder="e.g. Finish, Trim, Install…" value={dmgDept} onChange={(e) => setDmgDept(e.target.value)} />
           </Field>
+
+          {/* Photo upload */}
+          <Field label="Photo (optional)">
+            {dmgPhotoPreview ? (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <img src={dmgPhotoPreview} alt="preview" style={{ width: 80, height: 60, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--line)', flexShrink: 0 }} />
+                <button
+                  type="button"
+                  onClick={() => { setDmgPhoto(null); setDmgPhotoPreview(null); }}
+                  style={{ background: 'none', border: '1px solid var(--line)', borderRadius: 6, padding: '4px 10px', fontSize: 12, color: 'var(--ink-mute)', cursor: 'pointer' }}
+                >
+                  Remove
+                </button>
+              </div>
+            ) : (
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 8, fontSize: 13, color: 'var(--ink-mute)', cursor: 'pointer' }}>
+                <span>📷</span> Add Photo
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] ?? null;
+                    setDmgPhoto(file);
+                    setDmgPhotoPreview(file ? URL.createObjectURL(file) : null);
+                  }}
+                />
+              </label>
+            )}
+          </Field>
+
           <button
             className="btn btn-primary"
             style={{ width: '100%', justifyContent: 'center', marginTop: 4, background: '#F87171', boxShadow: 'none', opacity: (!dmgWhat.trim() || !dmgDept.trim() || saving) ? 0.5 : 1 }}
@@ -1850,6 +1913,38 @@ export default function CrewPage() {
                   style={{ resize: 'vertical' }}
                 />
               </Field>
+
+              {/* Photo upload */}
+              <Field label="Photo (optional)">
+                {partPhotoPreview ? (
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                    <img src={partPhotoPreview} alt="preview" style={{ width: 80, height: 60, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--line)', flexShrink: 0 }} />
+                    <button
+                      type="button"
+                      onClick={() => { setPartPhoto(null); setPartPhotoPreview(null); }}
+                      style={{ background: 'none', border: '1px solid var(--line)', borderRadius: 6, padding: '4px 10px', fontSize: 12, color: 'var(--ink-mute)', cursor: 'pointer' }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 8, fontSize: 13, color: 'var(--ink-mute)', cursor: 'pointer' }}>
+                    <span>📷</span> Add Photo
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] ?? null;
+                        setPartPhoto(file);
+                        setPartPhotoPreview(file ? URL.createObjectURL(file) : null);
+                      }}
+                    />
+                  </label>
+                )}
+              </Field>
+
               <button
                 className="btn btn-primary"
                 style={{ width: '100%', justifyContent: 'center', marginTop: 4, background: '#60A5FA', boxShadow: 'none', opacity: (!partName.trim() || !partDept || saving) ? 0.5 : 1 }}

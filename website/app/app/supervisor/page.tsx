@@ -88,6 +88,7 @@ type PartLog = {
   status: string;
   next_dept: string | null;
   notes: string | null;
+  photo_url: string | null;
   created_at: string;
 };
 
@@ -1171,6 +1172,11 @@ export default function SupervisorPage() {
                                   {p.next_dept ? ` → ${p.next_dept}` : ''}
                                 </div>
                               </div>
+                              {p.photo_url && (
+                                <a href={p.photo_url} target="_blank" rel="noopener noreferrer" style={{ flexShrink: 0 }}>
+                                  <img src={p.photo_url} alt="part" style={{ width: 48, height: 36, borderRadius: 6, objectFit: 'cover', border: '1px solid var(--line)' }} />
+                                </a>
+                              )}
                               <div style={{ textAlign: 'right', flexShrink: 0 }}>
                                 <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>{p.worker_name ?? 'Unknown'}</div>
                                 <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>{formatTime(p.created_at)}</div>
