@@ -158,6 +158,7 @@ export default function CrewPage() {
   // Message modal
   const [msgDept, setMsgDept] = useState('');
   const [msgBody, setMsgBody] = useState('');
+  const [msgSent, setMsgSent] = useState(false);
 
   // Load localStorage identity
   useEffect(() => {
@@ -231,6 +232,7 @@ export default function CrewPage() {
   function openMessage() {
     setMsgDept(crewDept);
     setMsgBody('');
+    setMsgSent(false);
     setModal('message');
   }
 
@@ -395,8 +397,8 @@ export default function CrewPage() {
         tenant_id: tenant!.id,
       });
       if (error) throw error;
-      closeModal();
-      showToast('Message sent to supervisor ✓');
+      setMsgSent(true);
+      setTimeout(() => { closeModal(); setMsgSent(false); }, 1800);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Send failed';
       showToast(msg, true);
@@ -743,38 +745,50 @@ export default function CrewPage() {
       {/* ── Message Modal ────────────────────────────────────────────────────── */}
       {modal === 'message' && (
         <ModalOverlay onClose={closeModal} title="Message Supervisor">
-          {crewName && (
-            <p style={{ fontSize: 13, color: 'var(--ink-dim)', marginBottom: 20 }}>
-              Sending as <b style={{ color: 'var(--ink)' }}>{crewName}</b>
-            </p>
+          {msgSent ? (
+            <div style={{ textAlign: 'center', padding: '24px 0 8px' }}>
+              <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(52,211,153,0.12)', border: '2px solid #34D399', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
+                <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: '#34D399', marginBottom: 8 }}>Message sent!</div>
+              <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Your supervisor has been notified.</div>
+            </div>
+          ) : (
+            <>
+              {crewName && (
+                <p style={{ fontSize: 13, color: 'var(--ink-dim)', marginBottom: 20 }}>
+                  Sending as <b style={{ color: 'var(--ink)' }}>{crewName}</b>
+                </p>
+              )}
+              <Field label="Department *">
+                <select className="form-input" value={msgDept} onChange={(e) => setMsgDept(e.target.value)} autoFocus style={{ cursor: 'pointer' }}>
+                  <option value="">Select department…</option>
+                  <option value="Production">Production</option>
+                  <option value="Assembly">Assembly</option>
+                  <option value="Finishing">Finishing</option>
+                  <option value="Craftsman">Craftsman</option>
+                </select>
+              </Field>
+              <Field label="Message *">
+                <textarea
+                  className="form-input"
+                  placeholder="Type a message to your supervisor…"
+                  value={msgBody}
+                  onChange={(e) => setMsgBody(e.target.value)}
+                  rows={4}
+                  style={{ resize: 'vertical', minHeight: 100 }}
+                />
+              </Field>
+              <button
+                className="btn btn-primary"
+                style={{ width: '100%', justifyContent: 'center', marginTop: 4, opacity: (!msgBody.trim() || !msgDept || saving) ? 0.5 : 1 }}
+                onClick={handleMessageSubmit}
+                disabled={!msgBody.trim() || !msgDept || saving}
+              >
+                {saving ? 'Sending…' : 'Send Message'}
+              </button>
+            </>
           )}
-          <Field label="Department *">
-            <select className="form-input" value={msgDept} onChange={(e) => setMsgDept(e.target.value)} autoFocus style={{ cursor: 'pointer' }}>
-              <option value="">Select department…</option>
-              <option value="Production">Production</option>
-              <option value="Assembly">Assembly</option>
-              <option value="Finishing">Finishing</option>
-              <option value="Craftsman">Craftsman</option>
-            </select>
-          </Field>
-          <Field label="Message *">
-            <textarea
-              className="form-input"
-              placeholder="Type a message to your supervisor…"
-              value={msgBody}
-              onChange={(e) => setMsgBody(e.target.value)}
-              rows={4}
-              style={{ resize: 'vertical', minHeight: 100 }}
-            />
-          </Field>
-          <button
-            className="btn btn-primary"
-            style={{ width: '100%', justifyContent: 'center', marginTop: 4, opacity: (!msgBody.trim() || !msgDept || saving) ? 0.5 : 1 }}
-            onClick={handleMessageSubmit}
-            disabled={!msgBody.trim() || !msgDept || saving}
-          >
-            {saving ? 'Sending…' : 'Send Message'}
-          </button>
         </ModalOverlay>
       )}
 
