@@ -10,10 +10,10 @@ import { trialDaysLeft } from '@/lib/auth';
 
 type CrewRow = {
   id: string;
-  employee_name: string;
+  worker_name: string;
   dept: string;
   clock_in: string;
-  job_name: string | null;
+  status: string | null;
 };
 
 type Message = {
@@ -175,7 +175,7 @@ export default function SupervisorPage() {
     if (!tenant) return;
     try {
       const [crewRes, msgRes, needsRes, damageRes] = await Promise.all([
-        supabase.from('time_clock').select('id, employee_name, dept, clock_in, job_name').eq('tenant_id', tenant.id).is('clock_out', null).order('clock_in', { ascending: true }),
+        supabase.from('time_clock').select('id, worker_name, dept, clock_in, status').eq('tenant_id', tenant.id).is('clock_out', null).order('clock_in', { ascending: true }),
         supabase.from('messages').select('id, sender_name, dept, body, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
         supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
         supabase.from('damage_reports').select('id, part_name, job_id, dept, notes, photo_url, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
@@ -377,7 +377,7 @@ export default function SupervisorPage() {
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                      {['Name', 'Department', 'Job', 'Clocked In', 'Duration'].map((h) => (
+                      {['Name', 'Department', 'Status', 'Clocked In', 'Duration'].map((h) => (
                         <th key={h} style={thStyle}>{h}</th>
                       ))}
                     </tr>
@@ -385,9 +385,9 @@ export default function SupervisorPage() {
                   <tbody>
                     {activeCrew.map((row) => (
                       <tr key={row.id} style={{ borderBottom: '1px solid var(--line)' }}>
-                        <td style={tdBold}>{row.employee_name}</td>
+                        <td style={tdBold}>{row.worker_name}</td>
                         <td style={tdStyle}>{row.dept}</td>
-                        <td style={tdStyle}>{row.job_name ?? '—'}</td>
+                        <td style={tdStyle}>{row.status ?? 'active'}</td>
                         <td style={tdStyle}>{formatTime(row.clock_in)}</td>
                         <td style={{ ...tdStyle }}>
                           <span style={{ fontSize: 12, fontWeight: 700, color: '#2DE1C9', background: 'rgba(45,225,201,0.1)', padding: '3px 8px', borderRadius: 6 }}>{elapsed(row.clock_in)}</span>
