@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
 import { useSession } from '@/lib/useSession';
@@ -73,7 +73,30 @@ type CraftsmanBuild = {
   total_hours: number | null;
 };
 
-type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops';
+type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai';
+
+type AiMode = 'learn' | 'assist';
+
+type DailyLog = {
+  id: string;
+  tenant_id: string;
+  supervisor_name: string | null;
+  responses: Record<string, string>;
+  created_at: string;
+  date: string;
+};
+
+type BriefCard = {
+  type: 'alert' | 'watch' | 'info';
+  title: string;
+  detail: string;
+};
+
+type ProactiveFlag = {
+  trigger: string;
+  action: string;
+  severity: 'alert' | 'watch';
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -223,6 +246,28 @@ export default function SupervisorPage() {
   // Message thread view — null = inbox, string = dept key ('__broadcast__' for null-dept)
   const [openThread, setOpenThread] = useState<string | null>(null);
 
+  // ── AI tab ──────────────────────────────────────────────────────────────────
+  const [aiMode,       setAiMode]       = useState<AiMode>('assist');
+  const [dailyLogs,    setDailyLogs]    = useState<DailyLog[]>([]);
+  const [todayLog,     setTodayLog]     = useState<DailyLog | null>(null);
+  const [editingLog,   setEditingLog]   = useState(false);
+  const [savingLog,    setSavingLog]    = useState(false);
+  const [logForm,      setLogForm]      = useState({
+    production_rating: '3',
+    production_comment: '',
+    crew_issues: '',
+    material_costs_flag: 'no',
+    material_costs_detail: '',
+    time_variance: '',
+    biggest_challenge: '',
+    additional_comments: '',
+  });
+  const [brief,        setBrief]        = useState<BriefCard[] | null>(null);
+  const [briefTs,      setBriefTs]      = useState<string | null>(null);
+  const [briefLoading, setBriefLoading] = useState(false);
+  const [briefError,   setBriefError]   = useState<string | null>(null);
+  const briefAutoRun   = useRef(false);
+
   // Toast
   const [toast,     setToast]     = useState<{ msg: string; error?: boolean } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -259,8 +304,99 @@ export default function SupervisorPage() {
       if (sopsRes.data)   setSops(sopsRes.data as SopItem[]);
       if (buildsRes.data) setCraftsmanBuilds(buildsRes.data as CraftsmanBuild[]);
     } catch (_) {}
+    try {
+      const today        = new Date().toISOString().split('T')[0];
+      const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+      const { data: logData } = await supabase
+        .from('ai_daily_logs')
+        .select('*')
+        .eq('tenant_id', tenant.id)
+        .gte('date', sevenDaysAgo)
+        .order('date', { ascending: false });
+      if (logData) {
+        setDailyLogs(logData as DailyLog[]);
+        const tl = (logData as DailyLog[]).find((l) => l.date === today) ?? null;
+        setTodayLog(tl);
+        if (tl) setLogForm(tl.responses as typeof logForm);
+      }
+    } catch (_) {}
     setDataLoading(false);
   }, [tenant]);
+
+  // ── AI handlers ────────────────────────────────────────────────────────────
+
+  const generateBrief = useCallback(async () => {
+    setBriefLoading(true);
+    setBriefError(null);
+    try {
+      const cutoff24h     = new Date(Date.now() - 86400000).toISOString();
+      const recentMsgs    = messages.filter((m) => m.created_at >= cutoff24h);
+      const openNeedsNow  = needs.filter((n) => !['resolved', 'closed', 'received', 'cancelled'].includes((n.status ?? 'open').toLowerCase()));
+      const openDamageNow = damage.filter((d) => !['resolved', 'closed'].includes((d.status ?? 'open').toLowerCase()));
+      const res = await fetch('/app/api/ai-brief', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          crew:     activeCrew,
+          needs:    openNeedsNow,
+          damage:   openDamageNow,
+          messages: recentMsgs,
+          builds:   craftsmanBuilds,
+          logs:     dailyLogs,
+        }),
+      });
+      const data = await res.json() as { insights?: BriefCard[]; error?: string };
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setBrief(data.insights ?? []);
+      setBriefTs(new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }));
+    } catch (err: unknown) {
+      setBriefError(err instanceof Error ? err.message : 'Failed to generate brief');
+    } finally {
+      setBriefLoading(false);
+    }
+  }, [activeCrew, needs, damage, messages, craftsmanBuilds, dailyLogs]);
+
+  async function handleSaveDailyLog() {
+    if (!tenant) return;
+    setSavingLog(true);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      if (todayLog) {
+        const { data, error } = await supabase
+          .from('ai_daily_logs')
+          .update({ responses: logForm, supervisor_name: email })
+          .eq('id', todayLog.id)
+          .select()
+          .single();
+        if (error) throw error;
+        setTodayLog(data as DailyLog);
+        setDailyLogs((prev) => prev.map((l) => l.id === todayLog.id ? data as DailyLog : l));
+      } else {
+        const { data, error } = await supabase
+          .from('ai_daily_logs')
+          .insert({ tenant_id: tenant.id, supervisor_name: email, responses: logForm, date: today })
+          .select()
+          .single();
+        if (error) throw error;
+        setTodayLog(data as DailyLog);
+        setDailyLogs((prev) => [data as DailyLog, ...prev]);
+      }
+      setEditingLog(false);
+      showToast('Check-in saved ✓');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Save failed', true);
+    } finally {
+      setSavingLog(false);
+    }
+  }
+
+  // Auto-generate brief once when AI/Assist tab is first opened this session
+  useEffect(() => {
+    if (tab === 'ai' && aiMode === 'assist' && !brief && !briefLoading && !briefAutoRun.current) {
+      briefAutoRun.current = true;
+      void generateBrief();
+    }
+  }, [tab, aiMode, brief, briefLoading, generateBrief]);
 
   // Tick every minute to refresh elapsed times in Craftsman Activity panel
   useEffect(() => {
@@ -557,6 +693,49 @@ export default function SupervisorPage() {
   const openNeeds  = needs.filter((n)  => !['resolved', 'closed', 'received', 'cancelled'].includes((n.status  ?? 'open').toLowerCase()));
   const openDamage = damage.filter((d) => !['resolved', 'closed'].includes((d.status ?? 'open').toLowerCase()));
 
+  const proactiveFlags = useMemo((): ProactiveFlag[] => {
+    const flags: ProactiveFlag[] = [];
+    const now = Date.now();
+    activeCrew.forEach((c) => {
+      const hrs = (now - new Date(c.clock_in).getTime()) / 3600000;
+      if (hrs > 12) flags.push({
+        trigger: `${c.worker_name} (${c.dept}) has been clocked in for ${Math.floor(hrs)}h`,
+        action:  'Verify they clocked out properly or check in with them.',
+        severity: 'watch',
+      });
+    });
+    const itemCounts: Record<string, number> = {};
+    openNeeds.forEach((n) => {
+      const k = n.item.toLowerCase().trim();
+      itemCounts[k] = (itemCounts[k] ?? 0) + 1;
+    });
+    Object.entries(itemCounts).forEach(([item, count]) => {
+      if (count >= 2) flags.push({
+        trigger: `"${item}" has been requested ${count} times`,
+        action:  'Consolidate orders or mark duplicates resolved.',
+        severity: 'watch',
+      });
+    });
+    openDamage.forEach((d) => {
+      const ageHrs = (now - new Date(d.created_at).getTime()) / 3600000;
+      if (ageHrs > 48) flags.push({
+        trigger: `Damage report on "${d.part_name}" has been open for ${Math.floor(ageHrs / 24)} days`,
+        action:  'Review and update the status of this damage report.',
+        severity: 'alert',
+      });
+    });
+    const allDepts = ['Production', 'Assembly', 'Finishing', 'Craftsman'];
+    const activeDepts = new Set(activeCrew.map((c) => c.dept));
+    allDepts.forEach((dept) => {
+      if (!activeDepts.has(dept)) flags.push({
+        trigger: `No ${dept} crew clocked in today`,
+        action:  `Check if ${dept} is scheduled today.`,
+        severity: 'watch',
+      });
+    });
+    return flags;
+  }, [activeCrew, openNeeds, openDamage]);
+
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: 'overview',  label: 'Overview' },
     { key: 'messages',  label: 'Messages',  count: messages.length },
@@ -564,6 +743,7 @@ export default function SupervisorPage() {
     { key: 'damage',    label: 'Damage',    count: openDamage.length },
     { key: 'plans',     label: 'Plans',     count: plans.length > 0 ? plans.length : undefined },
     { key: 'sops',      label: 'SOPs',      count: sops.length > 0 ? sops.length : undefined },
+    { key: 'ai',        label: 'AI' },
   ];
 
   // ── Thread computation for Messages tab ────────────────────────────────────
@@ -1220,6 +1400,299 @@ export default function SupervisorPage() {
                     ));
                   })()}
                 </div>
+              )}
+            </div>
+          )}
+
+          {/* ── AI tab ──────────────────────────────────────────────────────────── */}
+          {tab === 'ai' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+              {/* Mode selector */}
+              <div style={{ display: 'flex', gap: 8 }}>
+                {(['learn', 'assist'] as AiMode[]).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setAiMode(m)}
+                    style={{
+                      padding: '8px 20px', fontSize: 13, fontWeight: 700, borderRadius: 8,
+                      border: aiMode === m ? '1px solid var(--teal)' : '1px solid var(--line)',
+                      background: aiMode === m ? 'rgba(94,234,212,0.1)' : 'transparent',
+                      color: aiMode === m ? 'var(--teal)' : 'var(--ink-mute)',
+                      cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s',
+                    }}
+                  >
+                    {m === 'learn' ? '📋  Learn' : '✨  Assist'}
+                  </button>
+                ))}
+                <div style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)', alignSelf: 'center' }}>
+                  {aiMode === 'learn' ? 'Teach the AI about your shop through daily check-ins' : 'AI-generated insights from live shop data'}
+                </div>
+              </div>
+
+              {/* ── LEARN mode ───────────────────────────────────────────────── */}
+              {aiMode === 'learn' && (() => {
+                const showForm = !todayLog || editingLog;
+                return (
+                  <>
+                    {/* Daily check-in form or today's submitted response */}
+                    <div className="portal-card">
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--teal)', marginBottom: 4 }}>Daily Check-in</div>
+                          <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>
+                            {todayLog && !editingLog
+                              ? `Submitted today · ${new Date(todayLog.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`
+                              : 'Helps AI understand patterns over time'}
+                          </div>
+                        </div>
+                        {todayLog && !editingLog && (
+                          <button
+                            onClick={() => setEditingLog(true)}
+                            className="btn btn-ghost"
+                            style={{ fontSize: 12, padding: '6px 14px' }}
+                          >Edit</button>
+                        )}
+                      </div>
+
+                      {showForm ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                          {/* Q1: Production rating */}
+                          <div>
+                            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 8 }}>1. How did production go today?</label>
+                            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                              {['1','2','3','4','5'].map((v) => (
+                                <button
+                                  key={v}
+                                  onClick={() => setLogForm((f) => ({ ...f, production_rating: v }))}
+                                  style={{
+                                    width: 40, height: 40, borderRadius: 8, border: logForm.production_rating === v ? '2px solid var(--teal)' : '1px solid var(--line)',
+                                    background: logForm.production_rating === v ? 'rgba(94,234,212,0.15)' : 'transparent',
+                                    color: logForm.production_rating === v ? 'var(--teal)' : 'var(--ink-mute)',
+                                    fontWeight: 700, fontSize: 14, cursor: 'pointer', fontFamily: 'inherit',
+                                  }}
+                                >{v}</button>
+                              ))}
+                              <span style={{ fontSize: 12, color: 'var(--ink-mute)', alignSelf: 'center', marginLeft: 4 }}>
+                                {['','Rough day','Below average','Average','Good day','Great day'][parseInt(logForm.production_rating)]}
+                              </span>
+                            </div>
+                            <input className="form-input" placeholder="Optional comment…" value={logForm.production_comment} onChange={(e) => setLogForm((f) => ({ ...f, production_comment: e.target.value }))} />
+                          </div>
+
+                          {/* Q2: Crew issues */}
+                          <div>
+                            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 6 }}>2. Any crew issues or standouts today?</label>
+                            <textarea className="form-input" placeholder="e.g. Jason was late, Maria finished ahead of schedule…" value={logForm.crew_issues} onChange={(e) => setLogForm((f) => ({ ...f, crew_issues: e.target.value }))} rows={2} style={{ resize: 'none' }} />
+                          </div>
+
+                          {/* Q3: Material costs */}
+                          <div>
+                            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 6 }}>3. Any unexpected material costs?</label>
+                            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                              {(['no','yes'] as const).map((v) => (
+                                <button
+                                  key={v}
+                                  onClick={() => setLogForm((f) => ({ ...f, material_costs_flag: v }))}
+                                  style={{
+                                    padding: '6px 16px', borderRadius: 7, border: logForm.material_costs_flag === v ? '2px solid var(--teal)' : '1px solid var(--line)',
+                                    background: logForm.material_costs_flag === v ? 'rgba(94,234,212,0.15)' : 'transparent',
+                                    color: logForm.material_costs_flag === v ? 'var(--teal)' : 'var(--ink-mute)',
+                                    fontWeight: 700, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', textTransform: 'capitalize',
+                                  }}
+                                >{v}</button>
+                              ))}
+                            </div>
+                            {logForm.material_costs_flag === 'yes' && (
+                              <input className="form-input" placeholder="Describe the unexpected costs…" value={logForm.material_costs_detail} onChange={(e) => setLogForm((f) => ({ ...f, material_costs_detail: e.target.value }))} />
+                            )}
+                          </div>
+
+                          {/* Q4: Time variance */}
+                          <div>
+                            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 6 }}>4. Did any jobs run over or under estimated time?</label>
+                            <textarea className="form-input" placeholder="e.g. Cabinet install ran 2h over, finishing crew finished 1h early…" value={logForm.time_variance} onChange={(e) => setLogForm((f) => ({ ...f, time_variance: e.target.value }))} rows={2} style={{ resize: 'none' }} />
+                          </div>
+
+                          {/* Q5: Biggest challenge */}
+                          <div>
+                            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 6 }}>5. What&apos;s your biggest challenge this week?</label>
+                            <input className="form-input" placeholder="e.g. Staffing shortage, supply delays…" value={logForm.biggest_challenge} onChange={(e) => setLogForm((f) => ({ ...f, biggest_challenge: e.target.value }))} />
+                          </div>
+
+                          {/* Q6: Additional comments */}
+                          <div>
+                            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 6 }}>6. Additional comments</label>
+                            <textarea className="form-input" placeholder="Anything else worth noting…" value={logForm.additional_comments} onChange={(e) => setLogForm((f) => ({ ...f, additional_comments: e.target.value }))} rows={3} style={{ resize: 'none' }} />
+                          </div>
+
+                          <div style={{ display: 'flex', gap: 10 }}>
+                            <button
+                              className="btn btn-primary"
+                              style={{ opacity: savingLog ? 0.5 : 1 }}
+                              onClick={handleSaveDailyLog}
+                              disabled={savingLog}
+                            >
+                              {savingLog ? 'Saving…' : (todayLog ? 'Save Changes' : 'Submit Check-in')}
+                            </button>
+                            {editingLog && (
+                              <button className="btn btn-ghost" onClick={() => setEditingLog(false)}>Cancel</button>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        /* Submitted-today view */
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                          {[
+                            { label: 'Production Rating', value: `${todayLog!.responses.production_rating}/5 — ${['','Rough day','Below average','Average','Good day','Great day'][parseInt(todayLog!.responses.production_rating ?? '3')]}` },
+                            todayLog!.responses.production_comment ? { label: 'Comment', value: todayLog!.responses.production_comment } : null,
+                            todayLog!.responses.crew_issues ? { label: 'Crew Issues', value: todayLog!.responses.crew_issues } : null,
+                            { label: 'Unexpected Material Costs', value: todayLog!.responses.material_costs_flag === 'yes' ? `Yes — ${todayLog!.responses.material_costs_detail ?? ''}` : 'No' },
+                            todayLog!.responses.time_variance ? { label: 'Time Variance', value: todayLog!.responses.time_variance } : null,
+                            todayLog!.responses.biggest_challenge ? { label: 'Biggest Challenge', value: todayLog!.responses.biggest_challenge } : null,
+                            todayLog!.responses.additional_comments ? { label: 'Additional Comments', value: todayLog!.responses.additional_comments } : null,
+                          ].filter(Boolean).map((item) => (
+                            <div key={item!.label} style={{ display: 'flex', gap: 12, padding: '12px 16px', borderRadius: 8, background: 'rgba(94,234,212,0.04)', border: '1px solid var(--line)' }}>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-mute)', textTransform: 'uppercase', letterSpacing: '0.07em', minWidth: 160, flexShrink: 0 }}>{item!.label}</div>
+                              <div style={{ fontSize: 13, color: 'var(--ink)' }}>{item!.value}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Past check-ins log */}
+                    {dailyLogs.filter((l) => !todayLog || l.id !== todayLog.id).length > 0 && (
+                      <div className="portal-card">
+                        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Past Check-ins</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 400, overflowY: 'auto' }}>
+                          {dailyLogs
+                            .filter((l) => !todayLog || l.id !== todayLog.id)
+                            .map((l) => (
+                              <div key={l.id} style={{ padding: '12px 16px', borderRadius: 8, border: '1px solid var(--line)', display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+                                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--teal)', minWidth: 90, flexShrink: 0 }}>{new Date(l.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: 13, color: 'var(--ink)', fontWeight: 600, marginBottom: 3 }}>
+                                    Production {l.responses.production_rating ?? '?'}/5
+                                    {l.responses.production_comment ? ` — ${l.responses.production_comment}` : ''}
+                                  </div>
+                                  {l.responses.crew_issues && (
+                                    <div style={{ fontSize: 12, color: 'var(--ink-dim)', marginTop: 2 }}>Crew: {l.responses.crew_issues}</div>
+                                  )}
+                                  {l.responses.biggest_challenge && (
+                                    <div style={{ fontSize: 12, color: 'var(--ink-dim)', marginTop: 2 }}>Challenge: {l.responses.biggest_challenge}</div>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+
+              {/* ── ASSIST mode ──────────────────────────────────────────────── */}
+              {aiMode === 'assist' && (
+                <>
+                  {/* Morning brief */}
+                  <div className="portal-card">
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: briefLoading || !brief ? 0 : 16 }}>
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--teal)', marginBottom: 4 }}>Morning Brief</div>
+                        {briefTs && !briefLoading && (
+                          <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>Generated at {briefTs}</div>
+                        )}
+                      </div>
+                      <button
+                        className="btn btn-ghost"
+                        style={{ fontSize: 12, padding: '6px 14px', display: 'flex', alignItems: 'center', gap: 6, opacity: briefLoading ? 0.5 : 1 }}
+                        onClick={() => { void generateBrief(); }}
+                        disabled={briefLoading}
+                      >
+                        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                        {brief ? 'Regenerate Brief' : 'Generate Brief'}
+                      </button>
+                    </div>
+
+                    {briefLoading && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '20px 0', color: 'var(--ink-mute)', fontSize: 13 }}>
+                        <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px solid rgba(94,234,212,0.2)', borderTopColor: '#5EEAD4', animation: 'spin 0.7s linear infinite', flexShrink: 0 }} />
+                        Analyzing shop data…
+                        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+                      </div>
+                    )}
+
+                    {briefError && !briefLoading && (
+                      <div style={{ padding: '14px 16px', borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', fontSize: 13, color: '#F87171', marginTop: 12 }}>
+                        {briefError}
+                      </div>
+                    )}
+
+                    {brief && !briefLoading && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {brief.map((card, i) => {
+                          const colors = {
+                            alert: { border: 'rgba(248,113,113,0.3)', bg: 'rgba(248,113,113,0.06)', badge: '#F87171', badgeBg: 'rgba(248,113,113,0.15)' },
+                            watch: { border: 'rgba(251,191,36,0.3)',  bg: 'rgba(251,191,36,0.06)',  badge: '#FBBF24', badgeBg: 'rgba(251,191,36,0.15)'  },
+                            info:  { border: 'rgba(94,234,212,0.25)', bg: 'rgba(94,234,212,0.05)', badge: '#5EEAD4', badgeBg: 'rgba(94,234,212,0.12)'  },
+                          }[card.type] ?? { border: 'var(--line)', bg: 'transparent', badge: '#5F6F6C', badgeBg: 'rgba(95,111,108,0.1)' };
+                          return (
+                            <div key={i} style={{ padding: '14px 16px', borderRadius: 10, background: colors.bg, border: `1px solid ${colors.border}`, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                              <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', padding: '3px 8px', borderRadius: 5, background: colors.badgeBg, color: colors.badge, flexShrink: 0, marginTop: 1 }}>
+                                {card.type}
+                              </span>
+                              <div>
+                                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)', marginBottom: 3 }}>{card.title}</div>
+                                <div style={{ fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.5 }}>{card.detail}</div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {!brief && !briefLoading && !briefError && (
+                      <div style={{ padding: '20px 0', fontSize: 13, color: 'var(--ink-mute)', textAlign: 'center' }}>
+                        Click &ldquo;Generate Brief&rdquo; to get AI-powered insights on today&apos;s shop activity.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Proactive flags */}
+                  <div className="portal-card">
+                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>
+                      Proactive Flags
+                      {proactiveFlags.length > 0 && (
+                        <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(251,191,36,0.15)', color: '#FBBF24' }}>
+                          {proactiveFlags.length}
+                        </span>
+                      )}
+                    </div>
+
+                    {proactiveFlags.length === 0 ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 0', fontSize: 13, color: 'var(--ink-mute)' }}>
+                        <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                        No flags — shop looks healthy based on current data.
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {proactiveFlags.map((flag, i) => {
+                          const isAlert = flag.severity === 'alert';
+                          return (
+                            <div key={i} style={{ padding: '12px 16px', borderRadius: 10, background: isAlert ? 'rgba(248,113,113,0.06)' : 'rgba(251,191,36,0.06)', border: `1px solid ${isAlert ? 'rgba(248,113,113,0.25)' : 'rgba(251,191,36,0.25)'}` }}>
+                              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={isAlert ? '#F87171' : '#FBBF24'} strokeWidth="2" strokeLinecap="round"><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                                <div style={{ fontSize: 13, fontWeight: 700, color: isAlert ? '#F87171' : '#FBBF24' }}>{flag.trigger}</div>
+                              </div>
+                              <div style={{ fontSize: 12, color: 'var(--ink-dim)', paddingLeft: 22 }}>{flag.action}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
             </div>
           )}
