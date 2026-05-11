@@ -1657,9 +1657,9 @@ export default function SupervisorPage() {
               {/* Mode selector */}
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {([
-                  { key: 'learn',      label: '📋  Learn' },
-                  { key: 'assist',     label: '✨  Assist' },
-                  { key: 'autonomous', label: '⚡  Autonomous' },
+                  { key: 'learn',      label: 'Learn' },
+                  { key: 'assist',     label: 'Assist' },
+                  { key: 'autonomous', label: 'Autonomous' },
                 ] as { key: AiMode; label: string }[]).map(({ key, label }) => (
                   <button
                     key={key}
