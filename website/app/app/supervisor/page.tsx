@@ -47,7 +47,7 @@ type DamageReport = {
 
 type JobDrawing = {
   id: string;
-  job_number: string | null;
+  job_name: string | null;
   label: string | null;
   file_url: string | null;
   file_name: string | null;
@@ -75,7 +75,31 @@ type CraftsmanBuild = {
 
 type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai';
 
-type AiMode = 'learn' | 'assist';
+type AiMode = 'learn' | 'assist' | 'autonomous';
+
+type AutoSettings = {
+  allPaused: boolean;
+  autoMessage:     { enabled: boolean; thresholdHours: number };
+  autoDamageFlag:  { enabled: boolean };
+  autoReorderAlert:{ enabled: boolean; thresholdCount: number };
+  dailySummary:    { enabled: boolean; time: string };
+};
+
+const DEFAULT_AUTO_SETTINGS: AutoSettings = {
+  allPaused: false,
+  autoMessage:     { enabled: false, thresholdHours: 2 },
+  autoDamageFlag:  { enabled: false },
+  autoReorderAlert:{ enabled: false, thresholdCount: 3 },
+  dailySummary:    { enabled: false, time: '17:00' },
+};
+
+type AutoLogEntry = {
+  id: string;
+  action_type: string;
+  triggered_by: string | null;
+  message_sent: string | null;
+  created_at: string;
+};
 
 type DailyLog = {
   id: string;
@@ -247,7 +271,9 @@ export default function SupervisorPage() {
   const [openThread, setOpenThread] = useState<string | null>(null);
 
   // ── AI tab ──────────────────────────────────────────────────────────────────
-  const [aiMode,       setAiMode]       = useState<AiMode>('assist');
+  const [aiMode,       setAiMode]       = useState<AiMode>('learn');
+  const [autoSettings, setAutoSettings] = useState<AutoSettings>(DEFAULT_AUTO_SETTINGS);
+  const [autoLog,      setAutoLog]      = useState<AutoLogEntry[]>([]);
   const [dailyLogs,    setDailyLogs]    = useState<DailyLog[]>([]);
   const [todayLog,     setTodayLog]     = useState<DailyLog | null>(null);
   const [editingLog,   setEditingLog]   = useState(false);
@@ -296,7 +322,7 @@ export default function SupervisorPage() {
     } catch (_) {}
     try {
       const [plansRes, sopsRes, buildsRes] = await Promise.all([
-        supabase.from('job_drawings').select('id, job_number, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
+        supabase.from('job_drawings').select('id, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('time_clock').select('id, worker_name, clock_in, clock_out, notes, job_number, total_hours').eq('tenant_id', tenant.id).eq('status', 'craftsman_build').order('clock_in', { ascending: false }).limit(50),
       ]);
@@ -319,6 +345,15 @@ export default function SupervisorPage() {
         setTodayLog(tl);
         if (tl) setLogForm(tl.responses as typeof logForm);
       }
+    } catch (_) {}
+    try {
+      const { data: logEntries } = await supabase
+        .from('ai_autonomous_log')
+        .select('id, action_type, triggered_by, message_sent, created_at')
+        .eq('tenant_id', tenant.id)
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (logEntries) setAutoLog(logEntries as AutoLogEntry[]);
     } catch (_) {}
     setDataLoading(false);
   }, [tenant]);
@@ -389,6 +424,17 @@ export default function SupervisorPage() {
       setSavingLog(false);
     }
   }
+
+  // Load / persist autonomous settings in localStorage
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('ai_auto_settings');
+      if (stored) setAutoSettings(JSON.parse(stored) as AutoSettings);
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem('ai_auto_settings', JSON.stringify(autoSettings)); } catch {}
+  }, [autoSettings]);
 
   // Auto-generate brief once when AI/Assist tab is first opened this session
   useEffect(() => {
@@ -598,7 +644,7 @@ export default function SupervisorPage() {
       const { data: { publicUrl } } = supabase.storage.from('job-plans').getPublicUrl(path);
       const { error: dbErr } = await supabase.from('job_drawings').insert({
         tenant_id: tenant!.id,
-        job_number: planJobNum.trim(),
+        job_name: planJobNum.trim(),
         label: planLabel.trim() || null,
         file_url: publicUrl,
         file_name: planFile.name,
@@ -609,7 +655,7 @@ export default function SupervisorPage() {
       setPlanJobNum('');
       setPlanLabel('');
       showToast('Plan uploaded ✓');
-      const { data } = await supabase.from('job_drawings').select('id, job_number, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
+      const { data } = await supabase.from('job_drawings').select('id, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
       if (data) setPlans(data as JobDrawing[]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Upload failed';
@@ -627,7 +673,7 @@ export default function SupervisorPage() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Delete failed';
       showToast(msg, true);
-      const { data } = await supabase.from('job_drawings').select('id, job_number, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
+      const { data } = await supabase.from('job_drawings').select('id, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
       if (data) setPlans(data as JobDrawing[]);
     }
   }
@@ -1287,7 +1333,7 @@ export default function SupervisorPage() {
                   {(() => {
                     const groups: Record<string, JobDrawing[]> = {};
                     plans.forEach((p) => {
-                      const k = p.job_number || 'No Job Number';
+                      const k = p.job_name || 'No Job Number';
                       if (!groups[k]) groups[k] = [];
                       groups[k].push(p);
                     });
@@ -1410,24 +1456,34 @@ export default function SupervisorPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
               {/* Mode selector */}
-              <div style={{ display: 'flex', gap: 8 }}>
-                {(['learn', 'assist'] as AiMode[]).map((m) => (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {([
+                  { key: 'learn',      label: '📋  Learn' },
+                  { key: 'assist',     label: '✨  Assist' },
+                  { key: 'autonomous', label: '⚡  Autonomous' },
+                ] as { key: AiMode; label: string }[]).map(({ key, label }) => (
                   <button
-                    key={m}
-                    onClick={() => setAiMode(m)}
+                    key={key}
+                    onClick={() => setAiMode(key)}
                     style={{
                       padding: '8px 20px', fontSize: 13, fontWeight: 700, borderRadius: 8,
-                      border: aiMode === m ? '1px solid var(--teal)' : '1px solid var(--line)',
-                      background: aiMode === m ? 'rgba(94,234,212,0.1)' : 'transparent',
-                      color: aiMode === m ? 'var(--teal)' : 'var(--ink-mute)',
+                      border: aiMode === key
+                        ? (key === 'autonomous' ? '1px solid #F87171' : '1px solid var(--teal)')
+                        : '1px solid var(--line)',
+                      background: aiMode === key
+                        ? (key === 'autonomous' ? 'rgba(248,113,113,0.1)' : 'rgba(94,234,212,0.1)')
+                        : 'transparent',
+                      color: aiMode === key
+                        ? (key === 'autonomous' ? '#F87171' : 'var(--teal)')
+                        : 'var(--ink-mute)',
                       cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s',
                     }}
-                  >
-                    {m === 'learn' ? '📋  Learn' : '✨  Assist'}
-                  </button>
+                  >{label}</button>
                 ))}
                 <div style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)', alignSelf: 'center' }}>
-                  {aiMode === 'learn' ? 'Teach the AI about your shop through daily check-ins' : 'AI-generated insights from live shop data'}
+                  {aiMode === 'learn' ? 'Teach the AI about your shop through daily check-ins'
+                   : aiMode === 'assist' ? 'AI-generated insights from live shop data'
+                   : 'Automated actions that run without manual input'}
                 </div>
               </div>
 
@@ -1687,6 +1743,202 @@ export default function SupervisorPage() {
                                 <div style={{ fontSize: 13, fontWeight: 700, color: isAlert ? '#F87171' : '#FBBF24' }}>{flag.trigger}</div>
                               </div>
                               <div style={{ fontSize: 12, color: 'var(--ink-dim)', paddingLeft: 22 }}>{flag.action}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* ── AUTONOMOUS mode ───────────────────────────────────────────── */}
+              {aiMode === 'autonomous' && (
+                <>
+                  {/* Warning banner */}
+                  <div style={{ padding: '14px 18px', borderRadius: 10, background: 'rgba(248,113,113,0.07)', border: '1px solid rgba(248,113,113,0.3)', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#F87171' }}>Autonomous mode takes real actions in your shop.</div>
+                      <div style={{ fontSize: 12, color: 'var(--ink-dim)', marginTop: 3 }}>Review settings carefully before enabling actions. Each toggle sends real messages or logs entries.</div>
+                    </div>
+                    <button
+                      onClick={() => setAutoSettings((s) => ({ ...s, allPaused: !s.allPaused }))}
+                      style={{
+                        marginLeft: 'auto', flexShrink: 0, padding: '6px 16px', fontSize: 12, fontWeight: 700,
+                        borderRadius: 7, border: autoSettings.allPaused ? '1px solid #34D399' : '1px solid rgba(248,113,113,0.5)',
+                        background: autoSettings.allPaused ? 'rgba(52,211,153,0.1)' : 'rgba(248,113,113,0.1)',
+                        color: autoSettings.allPaused ? '#34D399' : '#F87171',
+                        cursor: 'pointer', fontFamily: 'inherit',
+                      }}
+                    >
+                      {autoSettings.allPaused ? '▶  Resume All' : '⏸  Pause All'}
+                    </button>
+                  </div>
+
+                  {autoSettings.allPaused && (
+                    <div style={{ textAlign: 'center', padding: '10px 0', fontSize: 13, fontWeight: 700, color: '#FBBF24', letterSpacing: '0.04em' }}>
+                      ALL AUTONOMOUS ACTIONS PAUSED
+                    </div>
+                  )}
+
+                  {/* Settings panel */}
+                  <div className="portal-card">
+                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 16 }}>Actions &amp; Settings</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+
+                      {/* a. Auto-message crew */}
+                      {[
+                        {
+                          key: 'autoMessage' as const,
+                          title: 'Auto-message crew',
+                          desc: 'If a department has no activity for the threshold period, AI sends a check-in message to that department.',
+                          extra: (
+                            autoSettings.autoMessage.enabled && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                                <label style={{ fontSize: 12, color: 'var(--ink-mute)', whiteSpace: 'nowrap' }}>Threshold:</label>
+                                <input
+                                  type="number" min="1" max="24"
+                                  className="form-input"
+                                  style={{ width: 72 }}
+                                  value={autoSettings.autoMessage.thresholdHours}
+                                  onChange={(e) => setAutoSettings((s) => ({ ...s, autoMessage: { ...s.autoMessage, thresholdHours: Number(e.target.value) || 2 } }))}
+                                />
+                                <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>hours of inactivity</span>
+                              </div>
+                            )
+                          ),
+                        },
+                        {
+                          key: 'autoDamageFlag' as const,
+                          title: 'Auto-flag damage reports',
+                          desc: 'Unresolved damage reports older than 48 hours trigger a reminder message to the supervisor.',
+                          extra: null,
+                        },
+                        {
+                          key: 'autoReorderAlert' as const,
+                          title: 'Auto-reorder alert',
+                          desc: 'If the same inventory item is requested repeatedly, an alert is sent to the supervisor.',
+                          extra: (
+                            autoSettings.autoReorderAlert.enabled && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                                <label style={{ fontSize: 12, color: 'var(--ink-mute)', whiteSpace: 'nowrap' }}>Trigger after:</label>
+                                <input
+                                  type="number" min="2" max="10"
+                                  className="form-input"
+                                  style={{ width: 72 }}
+                                  value={autoSettings.autoReorderAlert.thresholdCount}
+                                  onChange={(e) => setAutoSettings((s) => ({ ...s, autoReorderAlert: { ...s.autoReorderAlert, thresholdCount: Number(e.target.value) || 3 } }))}
+                                />
+                                <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>requests for same item</span>
+                              </div>
+                            )
+                          ),
+                        },
+                        {
+                          key: 'dailySummary' as const,
+                          title: 'Daily summary',
+                          desc: 'AI generates an end-of-day summary and saves it to the daily log at the configured time.',
+                          extra: (
+                            autoSettings.dailySummary.enabled && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                                <label style={{ fontSize: 12, color: 'var(--ink-mute)', whiteSpace: 'nowrap' }}>Generate at:</label>
+                                <input
+                                  type="time"
+                                  className="form-input"
+                                  style={{ width: 110 }}
+                                  value={autoSettings.dailySummary.time}
+                                  onChange={(e) => setAutoSettings((s) => ({ ...s, dailySummary: { ...s.dailySummary, time: e.target.value } }))}
+                                />
+                              </div>
+                            )
+                          ),
+                        },
+                      ].map((action, idx, arr) => {
+                        const isEnabled = (autoSettings[action.key] as { enabled: boolean }).enabled;
+                        return (
+                          <div key={action.key} style={{ padding: '16px 0', borderBottom: idx < arr.length - 1 ? '1px solid var(--line)' : 'none' }}>
+                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+                              <button
+                                onClick={() => {
+                                  const cur = autoSettings[action.key] as { enabled: boolean };
+                                  setAutoSettings((s) => ({ ...s, [action.key]: { ...cur, enabled: !cur.enabled } }));
+                                }}
+                                style={{
+                                  flexShrink: 0, marginTop: 2,
+                                  width: 40, height: 22, borderRadius: 11,
+                                  background: isEnabled ? '#2DE1C9' : 'rgba(255,255,255,0.1)',
+                                  border: 'none', cursor: 'pointer', position: 'relative', transition: 'background 0.2s',
+                                }}
+                                aria-label={`Toggle ${action.title}`}
+                              >
+                                <span style={{
+                                  position: 'absolute', top: 3, left: isEnabled ? 21 : 3,
+                                  width: 16, height: 16, borderRadius: '50%',
+                                  background: isEnabled ? '#050608' : 'rgba(255,255,255,0.5)',
+                                  transition: 'left 0.2s',
+                                }} />
+                              </button>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontSize: 14, fontWeight: 700, color: isEnabled ? 'var(--ink)' : 'var(--ink-mute)', marginBottom: 3 }}>
+                                  {action.title}
+                                  {isEnabled && autoSettings.allPaused && (
+                                    <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: '#FBBF24', background: 'rgba(251,191,36,0.12)', padding: '2px 6px', borderRadius: 4 }}>PAUSED</span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.5 }}>{action.desc}</div>
+                                {action.extra}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Action log */}
+                  <div className="portal-card">
+                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>
+                      Action Log
+                      {autoLog.length > 0 && (
+                        <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(94,234,212,0.12)', color: 'var(--teal)' }}>
+                          {autoLog.length}
+                        </span>
+                      )}
+                    </div>
+
+                    {autoLog.length === 0 ? (
+                      <div style={{ fontSize: 13, color: 'var(--ink-mute)', padding: '8px 0' }}>
+                        No autonomous actions taken yet. Enable actions above and they will appear here.
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 0, maxHeight: 400, overflowY: 'auto' }}>
+                        {autoLog.map((entry, idx) => {
+                          const typeColors: Record<string, { color: string; bg: string }> = {
+                            auto_message:      { color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)'  },
+                            damage_flag:       { color: '#F87171', bg: 'rgba(248,113,113,0.1)' },
+                            reorder_alert:     { color: '#FBBF24', bg: 'rgba(251,191,36,0.1)'  },
+                            daily_summary:     { color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
+                          };
+                          const tc = typeColors[entry.action_type] ?? { color: '#5F6F6C', bg: 'rgba(95,111,108,0.1)' };
+                          return (
+                            <div key={entry.id} style={{ padding: '12px 0', borderBottom: idx < autoLog.length - 1 ? '1px solid var(--line)' : 'none', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 5, background: tc.bg, color: tc.color, flexShrink: 0, marginTop: 1, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+                                {entry.action_type.replace(/_/g, ' ')}
+                              </span>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                {entry.triggered_by && (
+                                  <div style={{ fontSize: 12, color: 'var(--ink-dim)', marginBottom: 3 }}>
+                                    <span style={{ fontWeight: 600, color: 'var(--ink-mute)' }}>Triggered by:</span> {entry.triggered_by}
+                                  </div>
+                                )}
+                                {entry.message_sent && (
+                                  <div style={{ fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic' }}>&ldquo;{entry.message_sent}&rdquo;</div>
+                                )}
+                              </div>
+                              <div style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0, marginTop: 1 }}>
+                                {formatTime(entry.created_at)} {formatDate(entry.created_at)}
+                              </div>
                             </div>
                           );
                         })}
