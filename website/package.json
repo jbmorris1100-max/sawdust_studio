@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "seed": "node scripts/seed-test-user.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.3",
