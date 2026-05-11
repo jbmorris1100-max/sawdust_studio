@@ -7,7 +7,6 @@ import { supabase } from '@/lib/supabase';
 import type { Tenant } from '@/lib/auth';
 import { isTenantExpired, trialDaysLeft } from '@/lib/auth';
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || '#';
 
 function TrialBanner({ days }: { days: number }) {
   return (
@@ -138,7 +137,7 @@ export default function AppPage() {
             {/* Launch buttons */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 48 }}>
               <a
-                href={APP_URL}
+                href="/app/crew"
                 className="app-role-card"
               >
                 <div className="app-role-icon" style={{ background: 'rgba(45,225,201,0.1)', color: '#2DE1C9' }}>
@@ -153,7 +152,7 @@ export default function AppPage() {
               </a>
 
               <a
-                href={APP_URL}
+                href="/app/supervisor"
                 className="app-role-card"
                 style={{ borderColor: 'rgba(167,139,250,0.2)' }}
               >
