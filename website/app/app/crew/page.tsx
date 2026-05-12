@@ -66,7 +66,7 @@ type Job = {
   status: string;
 };
 
-type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'message' | 'switchDept' | 'editName' | 'buildTimer' | 'parts' | null;
+type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'switchDept' | 'editName' | 'buildTimer' | 'parts' | null;
 type ClockStep = 'lookup' | 'clockin' | 'clockout';
 type BuildTimerStep = 'form' | 'summary';
 
@@ -287,10 +287,12 @@ export default function CrewPage() {
   const [jobs,             setJobs]             = useState<Job[]>([]);
   const [partJobId,        setPartJobId]        = useState('');
 
-  // Message modal
-  const [msgDept, setMsgDept] = useState('');
-  const [msgBody, setMsgBody] = useState('');
-  const [msgSent, setMsgSent] = useState(false);
+  // Camera (shared between damage + parts modals — only one open at a time)
+  const videoRef         = useRef<HTMLVideoElement>(null);
+  const canvasRef        = useRef<HTMLCanvasElement>(null);
+  const streamRef        = useRef<MediaStream | null>(null);
+  const [cameraError,    setCameraError]    = useState<string | null>(null);
+  const [cameraStarting, setCameraStarting] = useState(false);
 
   // Switch department modal
   const [switchDeptVal, setSwitchDeptVal] = useState('');
@@ -396,6 +398,20 @@ export default function CrewPage() {
     return () => { supabase.removeChannel(msgCh); };
   }, [tenant]);
 
+  // Start / stop the camera stream whenever the camera step becomes active/inactive
+  useEffect(() => {
+    const isCamera =
+      (modal === 'damage' && dmgScanStep === 'camera') ||
+      (modal === 'parts'  && partsMode === 'log' && partScanStep === 'camera');
+    if (isCamera) {
+      void startCamera();
+    } else {
+      stopCamera();
+    }
+    return () => { stopCamera(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modal, dmgScanStep, partScanStep, partsMode]);
+
   const showToast = useCallback((msg: string, error = false) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast({ msg, error });
@@ -459,14 +475,9 @@ export default function CrewPage() {
     setDmgPhotoPreview(null);
     setDmgScanStep('camera');
     setDmgShowDetails(false);
+    setCameraError(null);
+    setCameraStarting(false);
     setModal('damage');
-  }
-
-  function openMessage() {
-    setMsgDept(crewDept);
-    setMsgBody('');
-    setMsgSent(false);
-    setModal('message');
   }
 
   function openSwitchDept() {
@@ -554,6 +565,8 @@ export default function CrewPage() {
     setPartPhotoPreview(null);
     setPartScanStep('camera');
     setPartShowDetails(false);
+    setCameraError(null);
+    setCameraStarting(false);
     setModal('parts');
     // Fetch jobs for dropdown (best-effort)
     if (tenant) {
@@ -700,9 +713,15 @@ export default function CrewPage() {
     }
   }
 
+  function stopCamera() {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+  }
+
   function closeModal() {
     setModal(null);
     setSaving(false);
+    stopCamera();
   }
 
   // ── Clock handlers ──────────────────────────────────────────────────────────
@@ -826,6 +845,58 @@ export default function CrewPage() {
     return data.publicUrl;
   }
 
+  // ── Camera functions ────────────────────────────────────────────────────────
+
+  async function startCamera() {
+    setCameraStarting(true);
+    setCameraError(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError('Camera not supported — tap below to upload a photo instead');
+      setCameraStarting(false);
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      streamRef.current = stream;
+      if (videoRef.current) videoRef.current.srcObject = stream;
+      setCameraStarting(false);
+    } catch (err) {
+      const isDenied = err instanceof DOMException &&
+        (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError');
+      setCameraError(isDenied
+        ? 'Camera access denied — tap below to upload a photo instead'
+        : 'Camera not available — tap below to upload a photo instead');
+      setCameraStarting(false);
+    }
+  }
+
+  async function captureFromVideo(): Promise<File | null> {
+    const video  = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return null;
+    canvas.width  = video.videoWidth  || 1280;
+    canvas.height = video.videoHeight || 960;
+    canvas.getContext('2d')?.drawImage(video, 0, 0);
+    return new Promise((resolve) => {
+      canvas.toBlob(
+        (blob) => resolve(blob ? new File([blob], `capture-${Date.now()}.jpg`, { type: 'image/jpeg' }) : null),
+        'image/jpeg', 0.92
+      );
+    });
+  }
+
+  async function captureDmgPhoto() {
+    const file = await captureFromVideo();
+    stopCamera();
+    if (file) { setDmgPhoto(file); setDmgPhotoPreview(URL.createObjectURL(file)); setDmgScanStep('preview'); }
+  }
+
+  async function capturePartPhoto() {
+    const file = await captureFromVideo();
+    stopCamera();
+    if (file) { setPartPhoto(file); setPartPhotoPreview(URL.createObjectURL(file)); setPartScanStep('preview'); }
+  }
+
   // ── Damage handler ──────────────────────────────────────────────────────────
 
   async function handleDamageSubmit() {
@@ -853,42 +924,6 @@ export default function CrewPage() {
       setTimeout(() => setDmgFlash(false), 2000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Insert failed';
-      showToast(msg, true);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  // ── Message handler ─────────────────────────────────────────────────────────
-
-  async function handleMessageSubmit() {
-    const body = msgBody.trim();
-    const dept = msgDept;
-    if (!body || !dept || saving) return;
-    setSaving(true);
-    const optimisticId = `opt-${Date.now()}`;
-    const optimistic: Message = {
-      id: optimisticId,
-      sender_name: crewName || 'Crew',
-      dept,
-      body,
-      created_at: new Date().toISOString(),
-    };
-    setMessages((prev) => [optimistic, ...prev]);
-    setMsgSent(true);
-    try {
-      const { data, error } = await supabase
-        .from('messages')
-        .insert({ sender_name: crewName || 'Crew', dept, body, tenant_id: tenant!.id })
-        .select('id, sender_name, dept, body, created_at')
-        .single();
-      if (error) throw error;
-      setMessages((prev) => prev.map((m) => m.id === optimisticId ? (data as Message) : m));
-      setTimeout(() => { closeModal(); setMsgSent(false); }, 1800);
-    } catch (err: unknown) {
-      setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
-      setMsgSent(false);
-      const msg = err instanceof Error ? err.message : 'Send failed';
       showToast(msg, true);
     } finally {
       setSaving(false);
@@ -1069,12 +1104,6 @@ export default function CrewPage() {
       color: '#5EEAD4', bg: 'rgba(94,234,212,0.08)',
       onClick: openSOPs,
       icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>,
-    },
-    {
-      label: 'Message Supervisor',
-      color: '#FBBF24', bg: 'rgba(251,191,36,0.08)',
-      onClick: openMessage,
-      icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
     },
     {
       label: 'Scan Part / QC',
@@ -1534,22 +1563,50 @@ export default function CrewPage() {
             /* ── Step 1: Camera ── */
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18, padding: '8px 0 4px' }}>
               {/* Viewfinder */}
-              <div style={{ position: 'relative', width: '100%', maxWidth: 300, aspectRatio: '4/3', background: '#07090A', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <div style={{ position: 'absolute', top: 14, left: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '3px 0 0 0' }} />
-                <div style={{ position: 'absolute', top: 14, right: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 3px 0 0' }} />
-                <div style={{ position: 'absolute', bottom: 14, left: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '0 0 0 3px' }} />
-                <div style={{ position: 'absolute', bottom: 14, right: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 0 3px 0' }} />
-                <svg width={44} height={44} viewBox="0 0 24 24" fill="none" stroke="rgba(94,234,212,0.25)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+              <div style={{ position: 'relative', width: '100%', maxWidth: 300, aspectRatio: '4/3', background: '#07090A', borderRadius: 12, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {/* Live video feed */}
+                {!cameraError && (
+                  <video ref={videoRef} autoPlay playsInline muted
+                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+                )}
+                {/* Starting indicator */}
+                {cameraStarting && !cameraError && (
+                  <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(7,9,10,0.75)' }}>
+                    <span style={{ fontSize: 11, color: 'var(--ink-mute)', fontFamily: 'var(--font-mono)' }}>Starting camera…</span>
+                  </div>
+                )}
+                {/* Error / unsupported */}
+                {cameraError && (
+                  <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 16 }}>
+                    <svg width={32} height={32} viewBox="0 0 24 24" fill="none" stroke="rgba(94,234,212,0.3)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                    <p style={{ fontSize: 11, color: 'var(--ink-mute)', textAlign: 'center', fontFamily: 'var(--font-mono)', lineHeight: 1.5, margin: 0 }}>{cameraError}</p>
+                  </div>
+                )}
+                {/* Corner brackets overlay */}
+                <div style={{ position: 'absolute', top: 14, left: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '3px 0 0 0', zIndex: 2 }} />
+                <div style={{ position: 'absolute', top: 14, right: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 3px 0 0', zIndex: 2 }} />
+                <div style={{ position: 'absolute', bottom: 14, left: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '0 0 0 3px', zIndex: 2 }} />
+                <div style={{ position: 'absolute', bottom: 14, right: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 0 3px 0', zIndex: 2 }} />
               </div>
               <p style={{ fontSize: 12, color: 'var(--ink-mute)', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em', margin: 0 }}>Point camera at damage</p>
-              <label style={{ width: 62, height: 62, borderRadius: '50%', background: '#F87171', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 0 0 5px rgba(248,113,113,0.18)', flexShrink: 0 }}>
-                <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#050608" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-                <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0] ?? null;
-                    if (file) { setDmgPhoto(file); setDmgPhotoPreview(URL.createObjectURL(file)); setDmgScanStep('preview'); }
-                  }} />
-              </label>
+              {cameraError ? (
+                /* Fallback: file input */
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 20px', background: 'rgba(94,234,212,0.08)', border: '1px solid rgba(94,234,212,0.25)', borderRadius: 10, fontSize: 13, color: '#5EEAD4', cursor: 'pointer' }}>
+                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                  Upload photo
+                  <input type="file" accept="image/*" style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] ?? null;
+                      if (file) { setDmgPhoto(file); setDmgPhotoPreview(URL.createObjectURL(file)); setDmgScanStep('preview'); }
+                    }} />
+                </label>
+              ) : (
+                /* Capture button */
+                <button type="button" onClick={() => { void captureDmgPhoto(); }}
+                  style={{ width: 62, height: 62, borderRadius: '50%', background: '#2DE1C9', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 0 0 5px rgba(45,225,201,0.18)', flexShrink: 0 }}>
+                  <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#050608" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                </button>
+              )}
             </div>
           ) : (
             /* ── Step 2: Preview + submit ── */
@@ -1666,55 +1723,6 @@ export default function CrewPage() {
       )}
 
       {/* ── Message Modal ────────────────────────────────────────────────────── */}
-      {modal === 'message' && (
-        <ModalOverlay onClose={closeModal} title="Message Supervisor">
-          {msgSent ? (
-            <div style={{ textAlign: 'center', padding: '24px 0 8px' }}>
-              <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(52,211,153,0.12)', border: '2px solid #34D399', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-                <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              </div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: '#34D399', marginBottom: 8 }}>Message sent!</div>
-              <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Your supervisor has been notified.</div>
-            </div>
-          ) : (
-            <>
-              {crewName && (
-                <p style={{ fontSize: 13, color: 'var(--ink-dim)', marginBottom: 20 }}>
-                  Sending as <b style={{ color: 'var(--ink)' }}>{crewName}</b>
-                </p>
-              )}
-              <Field label="Department *">
-                <select className="form-input" value={msgDept} onChange={(e) => setMsgDept(e.target.value)} autoFocus style={{ cursor: 'pointer' }}>
-                  <option value="">Select department…</option>
-                  <option value="Production">Production</option>
-                  <option value="Assembly">Assembly</option>
-                  <option value="Finishing">Finishing</option>
-                  <option value="Craftsman">Craftsman</option>
-                </select>
-              </Field>
-              <Field label="Message *">
-                <textarea
-                  className="form-input"
-                  placeholder="Type a message to your supervisor…"
-                  value={msgBody}
-                  onChange={(e) => setMsgBody(e.target.value)}
-                  rows={4}
-                  style={{ resize: 'vertical', minHeight: 100 }}
-                />
-              </Field>
-              <button
-                className="btn btn-primary"
-                style={{ width: '100%', justifyContent: 'center', marginTop: 4, opacity: (!msgBody.trim() || !msgDept || saving) ? 0.5 : 1 }}
-                onClick={handleMessageSubmit}
-                disabled={!msgBody.trim() || !msgDept || saving}
-              >
-                {saving ? 'Sending…' : 'Send Message'}
-              </button>
-            </>
-          )}
-        </ModalOverlay>
-      )}
-
       {/* ── Switch Department Modal ──────────────────────────────────────── */}
       {modal === 'switchDept' && (
         <ModalOverlay onClose={closeModal} title="Switch Department">
@@ -1891,22 +1899,44 @@ export default function CrewPage() {
               {partScanStep === 'camera' ? (
                 /* Step 1: Camera */
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18, padding: '4px 0' }}>
-                  <div style={{ position: 'relative', width: '100%', maxWidth: 300, aspectRatio: '4/3', background: '#07090A', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <div style={{ position: 'absolute', top: 14, left: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '3px 0 0 0' }} />
-                    <div style={{ position: 'absolute', top: 14, right: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 3px 0 0' }} />
-                    <div style={{ position: 'absolute', bottom: 14, left: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '0 0 0 3px' }} />
-                    <div style={{ position: 'absolute', bottom: 14, right: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 0 3px 0' }} />
-                    <svg width={44} height={44} viewBox="0 0 24 24" fill="none" stroke="rgba(94,234,212,0.25)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                  <div style={{ position: 'relative', width: '100%', maxWidth: 300, aspectRatio: '4/3', background: '#07090A', borderRadius: 12, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {!cameraError && (
+                      <video ref={videoRef} autoPlay playsInline muted
+                        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+                    )}
+                    {cameraStarting && !cameraError && (
+                      <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(7,9,10,0.75)' }}>
+                        <span style={{ fontSize: 11, color: 'var(--ink-mute)', fontFamily: 'var(--font-mono)' }}>Starting camera…</span>
+                      </div>
+                    )}
+                    {cameraError && (
+                      <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 16 }}>
+                        <svg width={32} height={32} viewBox="0 0 24 24" fill="none" stroke="rgba(94,234,212,0.3)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                        <p style={{ fontSize: 11, color: 'var(--ink-mute)', textAlign: 'center', fontFamily: 'var(--font-mono)', lineHeight: 1.5, margin: 0 }}>{cameraError}</p>
+                      </div>
+                    )}
+                    <div style={{ position: 'absolute', top: 14, left: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '3px 0 0 0', zIndex: 2 }} />
+                    <div style={{ position: 'absolute', top: 14, right: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 3px 0 0', zIndex: 2 }} />
+                    <div style={{ position: 'absolute', bottom: 14, left: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '0 0 0 3px', zIndex: 2 }} />
+                    <div style={{ position: 'absolute', bottom: 14, right: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 0 3px 0', zIndex: 2 }} />
                   </div>
                   <p style={{ fontSize: 12, color: 'var(--ink-mute)', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em', margin: 0 }}>Point camera at part</p>
-                  <label style={{ width: 62, height: 62, borderRadius: '50%', background: '#5EEAD4', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 0 0 5px rgba(94,234,212,0.18)', flexShrink: 0 }}>
-                    <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#050608" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-                    <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
-                      onChange={(e) => {
-                        const file = e.target.files?.[0] ?? null;
-                        if (file) { setPartPhoto(file); setPartPhotoPreview(URL.createObjectURL(file)); setPartScanStep('preview'); }
-                      }} />
-                  </label>
+                  {cameraError ? (
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 20px', background: 'rgba(94,234,212,0.08)', border: '1px solid rgba(94,234,212,0.25)', borderRadius: 10, fontSize: 13, color: '#5EEAD4', cursor: 'pointer' }}>
+                      <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                      Upload photo
+                      <input type="file" accept="image/*" style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] ?? null;
+                          if (file) { setPartPhoto(file); setPartPhotoPreview(URL.createObjectURL(file)); setPartScanStep('preview'); }
+                        }} />
+                    </label>
+                  ) : (
+                    <button type="button" onClick={() => { void capturePartPhoto(); }}
+                      style={{ width: 62, height: 62, borderRadius: '50%', background: '#2DE1C9', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 0 0 5px rgba(45,225,201,0.18)', flexShrink: 0 }}>
+                      <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#050608" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                    </button>
+                  )}
                 </div>
               ) : (
                 /* Step 2: Preview + submit */
@@ -2024,6 +2054,9 @@ export default function CrewPage() {
           )}
         </ModalOverlay>
       )}
+
+      {/* Hidden canvas for video frame capture */}
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
 
       {toast && <Toast msg={toast.msg} error={toast.error} />}
 
