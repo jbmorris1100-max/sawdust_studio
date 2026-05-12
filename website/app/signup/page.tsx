@@ -197,7 +197,7 @@ export default function SignupPage() {
                 <p style={{ fontSize: 12, color: 'var(--ink-mute)', textAlign: 'center', lineHeight: 1.55 }}>
                   By creating an account you agree to our{' '}
                   <a href="#" style={{ color: 'var(--teal-dim)' }}>Terms</a>{' '}and{' '}
-                  <a href="#" style={{ color: 'var(--teal-dim)' }}>Privacy Policy</a>.
+                  <a href="/privacy" style={{ color: 'var(--teal-dim)' }}>Privacy Policy</a>.
                 </p>
               </form>
 

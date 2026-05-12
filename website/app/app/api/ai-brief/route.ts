@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 
 const MODEL = 'claude-sonnet-4-6';
 
@@ -9,6 +10,60 @@ type MsgRow     = { sender_name: string; dept: string | null; body: string };
 type BuildRow   = { worker_name: string; notes: string | null; clock_in: string; clock_out: string | null };
 type LogRow     = { date: string; responses: Record<string, string> };
 
+type AnalyticsRow = {
+  event_type: string;
+  payload: Record<string, unknown>;
+  shop_size: string | null;
+};
+
+interface Benchmarks {
+  avgShiftHours: number | null;
+  qcPassRate: number | null;
+  topDamageCategory: string | null;
+  sampleSize: number;
+  shopSizeFilter: string | null;
+}
+
+async function fetchBenchmarks(shopSize: string | null): Promise<Benchmarks> {
+  const url        = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceKey) return { avgShiftHours: null, qcPassRate: null, topDamageCategory: null, sampleSize: 0, shopSizeFilter: shopSize };
+
+  const db = createClient(url, serviceKey);
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString();
+
+  let q = db.from('platform_analytics').select('event_type, payload, shop_size').gte('created_at', thirtyDaysAgo);
+  if (shopSize) q = q.eq('shop_size', shopSize);
+
+  const { data } = await q.limit(2000);
+  if (!data || data.length === 0) return { avgShiftHours: null, qcPassRate: null, topDamageCategory: null, sampleSize: 0, shopSizeFilter: shopSize };
+
+  const rows = data as AnalyticsRow[];
+
+  const shifts  = rows.filter((r) => r.event_type === 'shift_complete');
+  const qcs     = rows.filter((r) => r.event_type === 'qc_result');
+  const damages = rows.filter((r) => r.event_type === 'damage_resolved');
+
+  const shiftHours  = shifts.map((r) => Number(r.payload.hours)).filter((h) => h > 0 && h < 24);
+  const avgShiftHours = shiftHours.length > 0
+    ? Math.round((shiftHours.reduce((a, b) => a + b, 0) / shiftHours.length) * 10) / 10
+    : null;
+
+  const qcPasses = qcs.filter((r) => r.payload.result === 'pass').length;
+  const qcPassRate = qcs.length > 0 ? Math.round((qcPasses / qcs.length) * 100) : null;
+
+  const damageCounts: Record<string, number> = {};
+  damages.forEach((r) => {
+    const cat = String(r.payload.resolution_type ?? r.payload.category ?? 'unknown');
+    damageCounts[cat] = (damageCounts[cat] ?? 0) + 1;
+  });
+  const topDamageCategory = Object.keys(damageCounts).length > 0
+    ? Object.entries(damageCounts).sort((a, b) => b[1] - a[1])[0][0]
+    : null;
+
+  return { avgShiftHours, qcPassRate, topDamageCategory, sampleSize: rows.length, shopSizeFilter: shopSize };
+}
+
 export async function POST(req: Request) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -18,7 +73,13 @@ export async function POST(req: Request) {
   const { crew, needs, damage, messages, builds, logs } = await req.json() as {
     crew: CrewRow[]; needs: NeedRow[]; damage: DamageRow[];
     messages: MsgRow[]; builds: BuildRow[]; logs: LogRow[];
+    tenantId?: string;
   };
+
+  // Determine shop size for benchmark comparison
+  const n = crew.length;
+  const shopSize = n <= 5 ? 'small' : n <= 15 ? 'medium' : 'large';
+  const benchmarks = await fetchBenchmarks(shopSize);
 
   const todayStr = new Date().toLocaleDateString('en-US', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
@@ -68,6 +129,17 @@ ${logs.length === 0
       ].filter(Boolean);
       return `- ${parts.join(' | ')}`;
     }).join('\n')}
+
+INDUSTRY BENCHMARKS (last 30 days, ${shopSize} shops — ${benchmarks.sampleSize} data points):
+${benchmarks.sampleSize === 0
+  ? 'No benchmark data available yet — as more shops opt in to data sharing, comparisons will appear here.'
+  : [
+      benchmarks.avgShiftHours !== null ? `- Platform avg shift: ${benchmarks.avgShiftHours}h` : null,
+      benchmarks.qcPassRate    !== null ? `- Platform QC pass rate: ${benchmarks.qcPassRate}%` : null,
+      benchmarks.topDamageCategory     ? `- Most common damage type: ${benchmarks.topDamageCategory}` : null,
+    ].filter(Boolean).join('\n')}
+
+${benchmarks.sampleSize > 0 ? `When benchmarks are available, include 1–2 insights comparing this shop to platform averages. Highlight if they are above or below average and why it might matter for a cabinet shop.` : ''}
 
 Generate a morning brief with 4–8 insights. Respond ONLY with valid JSON matching this exact format — no extra text:
 {

@@ -429,6 +429,7 @@ export default function SupervisorPage() {
           messages: recentMsgs,
           builds:   craftsmanBuilds,
           logs:     dailyLogs,
+          tenantId: tenant?.id,
         }),
       });
       const data = await res.json() as { insights?: BriefCard[]; error?: string };
@@ -522,11 +523,16 @@ export default function SupervisorPage() {
             setActiveCrew((prev) => prev.some((r) => r.id === row.id) ? prev : [...prev, row]);
           }
         } else if (payload.eventType === 'UPDATE') {
-          const row = payload.new as CrewRow & { clock_out: string | null; status: string | null };
+          const row = payload.new as CrewRow & { clock_out: string | null; total_hours: number | null; job_number: string | null; status: string | null };
           if (row.status === 'craftsman_build') {
             setCraftsmanBuilds((prev) => prev.map((b) => b.id === row.id ? row as unknown as CraftsmanBuild : b));
           } else if (row.clock_out) {
             setActiveCrew((prev) => prev.filter((r) => r.id !== row.id));
+            callAnalytics(tenantId, 'shift_complete', {
+              hours:   row.total_hours ?? null,
+              dept:    row.dept,
+              had_job: !!row.job_number,
+            });
           } else {
             setActiveCrew((prev) => prev.map((r) => r.id === row.id ? { ...r, ...row } : r));
           }
@@ -749,6 +755,9 @@ export default function SupervisorPage() {
       const { error } = await supabase.from('inventory_needs').update({ status }).eq('id', id);
       if (error) throw error;
       showToast(`Marked as ${status} ✓`);
+      if (status === 'received' && tenant) {
+        callAnalytics(tenant.id, 'inventory_fulfilled', { dept: prev?.dept ?? null });
+      }
     } catch (err: unknown) {
       if (prev) setNeeds((ns) => ns.map((n) => n.id === id ? prev : n));
       const msg = err instanceof Error ? err.message : 'Update failed';
@@ -786,6 +795,15 @@ export default function SupervisorPage() {
       }).eq('id', id);
       if (error) throw error;
       showToast('Damage report resolved ✓');
+      if (tenant && prev) {
+        const createdAt = (prev as DamageReport).created_at;
+        const daysOpen  = createdAt ? Math.round((Date.now() - new Date(createdAt).getTime()) / 86400000) : null;
+        callAnalytics(tenant.id, 'damage_resolved', {
+          resolution_type: resType,
+          dept:            (prev as DamageReport).dept ?? null,
+          days_open:       daysOpen,
+        });
+      }
     } catch (_) {
       // Columns may not exist yet — fall back to status-only update
       try {
@@ -912,6 +930,16 @@ export default function SupervisorPage() {
     }
   }
 
+  // ── Analytics fire-and-forget ───────────────────────────────────────────────
+
+  function callAnalytics(tId: string, event_type: string, payload: Record<string, unknown>) {
+    void fetch('/app/api/analytics', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tenantId: tId, event_type, payload }),
+    }).catch(() => {});
+  }
+
   // ── Parts status update ─────────────────────────────────────────────────────
 
   async function handlePartStatusUpdate(partId: string, newStatus: string, nextDept?: string) {
@@ -932,6 +960,13 @@ export default function SupervisorPage() {
       const { error } = await supabase.from('parts_log').update(update).eq('id', partId);
       if (error) throw error;
       showToast('✓ Status updated');
+      if (tenant && (newStatus === 'Passed QC' || newStatus === 'Failed QC / Rework')) {
+        const part = snapshot.find((p) => p.id === partId);
+        callAnalytics(tenant.id, 'qc_result', {
+          result: newStatus === 'Passed QC' ? 'pass' : 'fail',
+          dept:   part?.dept ?? null,
+        });
+      }
     } catch (err: unknown) {
       setParts(snapshot);
       showToast(err instanceof Error ? err.message : 'Update failed', true);

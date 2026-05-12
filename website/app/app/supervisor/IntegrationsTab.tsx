@@ -335,6 +335,12 @@ function CsvImportCard({
 export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs, plans, setPlans }: Props) {
   const [openCard, setOpenCard] = useState<CardKey | null>(null);
 
+  // Data sharing opt-in
+  const [dataSharing,     setDataSharing]     = useState(false);
+  const [dataSharingAt,   setDataSharingAt]   = useState<string | null>(null);
+  const [showDataConfirm, setShowDataConfirm] = useState(false);
+  const [dataSharingSaving, setDataSharingSaving] = useState(false);
+
   // Innergy state
   const [inApiKey,    setInApiKey]    = useState('');
   const [inSubdomain, setInSubdomain] = useState('');
@@ -357,17 +363,21 @@ export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs, pl
   const [wlSubmitting,  setWlSubmitting]  = useState(false);
   const [wlDone,        setWlDone]        = useState<Record<string, boolean>>({});
 
-  // Load saved Innergy config from tenant record
+  // Load saved tenant config (Innergy + data sharing)
   useEffect(() => {
     async function loadConfig() {
       const { data } = await supabase
         .from('tenants')
-        .select('innergy_api_key, innergy_subdomain')
+        .select('innergy_api_key, innergy_subdomain, ai_data_sharing, ai_data_sharing_enabled_at')
         .eq('id', tenantId)
         .single();
       if (data) {
         if (data.innergy_api_key)   { setInApiKey(data.innergy_api_key); setInConnected(true); }
         if (data.innergy_subdomain) setInSubdomain(data.innergy_subdomain);
+        setDataSharing(!!data.ai_data_sharing);
+        if (data.ai_data_sharing_enabled_at) {
+          setDataSharingAt(new Date(data.ai_data_sharing_enabled_at as string).toLocaleDateString());
+        }
       }
     }
     void loadConfig();
@@ -375,6 +385,45 @@ export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs, pl
 
   function toggleCard(k: CardKey) {
     setOpenCard((prev) => (prev === k ? null : k));
+  }
+
+  // ── Data sharing actions ───────────────────────────────────────────────────
+
+  async function handleDisableDataSharing() {
+    const prev = dataSharing;
+    setDataSharing(false);
+    setDataSharingSaving(true);
+    try {
+      const { error } = await supabase.from('tenants').update({ ai_data_sharing: false }).eq('id', tenantId);
+      if (error) throw error;
+      showToast('Data sharing disabled');
+    } catch (err: unknown) {
+      setDataSharing(prev);
+      showToast(err instanceof Error ? err.message : 'Save failed', true);
+    } finally {
+      setDataSharingSaving(false);
+    }
+  }
+
+  async function handleConfirmDataSharing() {
+    setShowDataConfirm(false);
+    setDataSharing(true);
+    setDataSharingSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const { error } = await supabase.from('tenants').update({
+        ai_data_sharing: true,
+        ai_data_sharing_enabled_at: now,
+      }).eq('id', tenantId);
+      if (error) throw error;
+      setDataSharingAt(new Date(now).toLocaleDateString());
+      showToast('Contributing to InlineIQ AI ✓');
+    } catch (err: unknown) {
+      setDataSharing(false);
+      showToast(err instanceof Error ? err.message : 'Save failed', true);
+    } finally {
+      setDataSharingSaving(false);
+    }
   }
 
   // ── Innergy actions ────────────────────────────────────────────────────────
@@ -487,6 +536,79 @@ export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs, pl
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+      {/* ── Data sharing opt-in card ── */}
+      <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
+        <div style={{ padding: '16px 20px 0' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>Help Improve InlineIQ AI</span>
+                {dataSharing
+                  ? <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: 'rgba(52,211,153,0.15)', color: '#34D399' }}>Contributing</span>
+                  : <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-mute)', padding: '2px 6px' }}>Not sharing</span>
+                }
+              </div>
+              <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6, maxWidth: 520 }}>
+                Opt in to share anonymized shop data to help train and improve InlineIQ&apos;s AI across all shops. No identifying information is ever shared — job numbers, worker names, and company details are stripped before any data leaves your account. Shops that opt in get early access to new AI features.
+              </p>
+            </div>
+            {/* Toggle */}
+            <button
+              disabled={dataSharingSaving}
+              onClick={() => dataSharing ? void handleDisableDataSharing() : setShowDataConfirm(true)}
+              style={{
+                flexShrink: 0, width: 44, height: 24, borderRadius: 12, border: 'none', cursor: 'pointer',
+                background: dataSharing ? '#34D399' : 'rgba(255,255,255,0.12)',
+                position: 'relative', transition: 'background 0.2s', marginTop: 2,
+                opacity: dataSharingSaving ? 0.5 : 1,
+              }}
+              title={dataSharing ? 'Disable data sharing' : 'Enable data sharing'}
+            >
+              <span style={{
+                position: 'absolute', top: 3, left: dataSharing ? 23 : 3, width: 18, height: 18,
+                borderRadius: '50%', background: '#fff', transition: 'left 0.2s',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+              }} />
+            </button>
+          </div>
+          {dataSharing && dataSharingAt && (
+            <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--ink-mute)' }}>
+              Sharing enabled since {dataSharingAt} · <a href="/privacy" style={{ color: 'var(--teal-dim)' }}>Privacy Policy</a>
+            </p>
+          )}
+          {!dataSharing && (
+            <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--ink-mute)' }}>
+              Your data stays private. <a href="/privacy" style={{ color: 'var(--teal-dim)' }}>Learn what we collect →</a>
+            </p>
+          )}
+        </div>
+
+        {/* Confirmation dialog — inline */}
+        {showDataConfirm && (
+          <div style={{ margin: '12px 20px', padding: '14px 16px', borderRadius: 8, background: 'rgba(45,225,201,0.06)', border: '1px solid rgba(45,225,201,0.2)' }}>
+            <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6 }}>
+              By enabling this, you agree to share anonymized, stripped production data with InlineIQ to improve AI suggestions. No names, job numbers, or identifying details are included. You can opt out at any time.
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn btn-primary"
+                onClick={() => { void handleConfirmDataSharing(); }}
+                style={{ fontSize: 13, padding: '7px 18px', boxShadow: 'none' }}
+              >
+                Confirm — Enable Sharing
+              </button>
+              <button
+                onClick={() => setShowDataConfirm(false)}
+                style={{ fontSize: 13, padding: '7px 14px', background: 'none', border: '1px solid var(--line)', borderRadius: 8, color: 'var(--ink-mute)', cursor: 'pointer', fontFamily: 'inherit' }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        <div style={{ height: 16 }} />
+      </div>
 
       {/* Section header */}
       <div style={{ marginBottom: 4 }}>
