@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 import { useSession } from '@/lib/useSession';
 import { trialDaysLeft } from '@/lib/auth';
 import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
+import ReportsTab from './ReportsTab';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -103,7 +104,7 @@ type Job = {
   created_at: string;
 };
 
-type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations';
+type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports';
 
 type AiMode = 'learn' | 'assist' | 'autonomous';
 
@@ -976,6 +977,7 @@ export default function SupervisorPage() {
     { key: 'sops',          label: 'SOPs',        count: sops.length > 0 ? sops.length : undefined },
     { key: 'ai',            label: 'AI' },
     { key: 'integrations',  label: 'Integrations' },
+    { key: 'reports',       label: 'Reports' },
   ];
 
   // ── Thread computation for Messages tab ────────────────────────────────────
@@ -2285,6 +2287,11 @@ export default function SupervisorPage() {
               plans={plans}
               setPlans={setPlans}
             />
+          )}
+
+          {/* ── Reports tab ──────────────────────────────────────────────── */}
+          {tab === 'reports' && tenant && (
+            <ReportsTab tenantId={tenant.id} showToast={showToast} />
           )}
 
         </main>
