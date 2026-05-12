@@ -277,6 +277,9 @@ export default function SupervisorPage() {
   const [craftsmanBuilds, setCraftsmanBuilds] = useState<CraftsmanBuild[]>([]);
   const [craftsTick,     setCraftsTick]     = useState(0);
   const [parts,          setParts]          = useState<PartLog[]>([]);
+  const [expandedPartId, setExpandedPartId] = useState<string | null>(null);
+  const [updatingPartId, setUpdatingPartId] = useState<string | null>(null);
+  const [nextDeptFor,    setNextDeptFor]    = useState<Record<string, string>>({});
   const [jobs,           setJobs]           = useState<Job[]>([]);
   const [newJobNum,      setNewJobNum]      = useState('');
   const [newJobName,     setNewJobName]     = useState('');
@@ -369,7 +372,7 @@ export default function SupervisorPage() {
         supabase.from('job_drawings').select('id, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('time_clock').select('id, worker_name, clock_in, clock_out, notes, job_number, total_hours').eq('tenant_id', tenant.id).eq('status', 'craftsman_build').order('clock_in', { ascending: false }).limit(50),
-        supabase.from('parts_log').select('*').eq('tenant_id', tenant.id).not('status', 'in', '("Passed QC")').order('created_at', { ascending: false }).limit(100),
+        supabase.from('parts_log').select('*').eq('tenant_id', tenant.id).not('status', 'in', '("Archived")').order('created_at', { ascending: false }).limit(100),
         supabase.from('jobs').select('id, job_number, job_name, status, source, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
       ]);
       if (plansRes.data)  setPlans(plansRes.data as JobDrawing[]);
@@ -578,12 +581,12 @@ export default function SupervisorPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'parts_log', filter: `tenant_id=eq.${tenantId}` }, (payload) => {
         if (payload.eventType === 'INSERT') {
           const row = payload.new as PartLog;
-          if (row.status !== 'Passed QC') {
+          if (row.status !== 'Archived') {
             setParts((prev) => prev.some((p) => p.id === row.id) ? prev : [row, ...prev]);
           }
         } else if (payload.eventType === 'UPDATE') {
           const row = payload.new as PartLog;
-          if (row.status === 'Passed QC') {
+          if (row.status === 'Archived') {
             setParts((prev) => prev.filter((p) => p.id !== row.id));
           } else {
             setParts((prev) => prev.map((p) => p.id === row.id ? row : p));
@@ -909,6 +912,34 @@ export default function SupervisorPage() {
     }
   }
 
+  // ── Parts status update ─────────────────────────────────────────────────────
+
+  async function handlePartStatusUpdate(partId: string, newStatus: string, nextDept?: string) {
+    const snapshot = parts;
+    setUpdatingPartId(partId);
+    // Optimistic — remove Archived/Passed QC from list, otherwise update in-place
+    if (newStatus === 'Archived') {
+      setParts((prev) => prev.filter((p) => p.id !== partId));
+    } else {
+      setParts((prev) => prev.map((p) =>
+        p.id === partId ? { ...p, status: newStatus, ...(nextDept !== undefined && { next_dept: nextDept }) } : p
+      ));
+    }
+    setExpandedPartId(null);
+    try {
+      const update: Record<string, string> = { status: newStatus };
+      if (nextDept !== undefined) update.next_dept = nextDept;
+      const { error } = await supabase.from('parts_log').update(update).eq('id', partId);
+      if (error) throw error;
+      showToast('✓ Status updated');
+    } catch (err: unknown) {
+      setParts(snapshot);
+      showToast(err instanceof Error ? err.message : 'Update failed', true);
+    } finally {
+      setUpdatingPartId(null);
+    }
+  }
+
   // ── Sign out ────────────────────────────────────────────────────────────────
 
   const handleSignOut = async () => {
@@ -1203,7 +1234,9 @@ export default function SupervisorPage() {
                   'Failed QC / Rework':   { color: '#F87171', bg: 'rgba(248,113,113,0.1)',   order: 1 },
                   'In Progress':          { color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)',    order: 2 },
                   'Moving to Next Stage': { color: '#60A5FA', bg: 'rgba(96,165,250,0.1)',    order: 3 },
+                  'Passed QC':            { color: '#34D399', bg: 'rgba(52,211,153,0.1)',    order: 4 },
                 };
+                const NEXT_DEPTS = ['Production', 'Assembly', 'Finishing', 'Craftsman', 'Installation'];
                 const grouped: Record<string, PartLog[]> = {};
                 parts.forEach((p) => {
                   const k = p.status;
@@ -1231,28 +1264,149 @@ export default function SupervisorPage() {
                           <div style={{ padding: '8px 20px 4px', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: meta.color }}>
                             {status}
                           </div>
-                          {grouped[status].map((p) => (
-                            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '11px 20px', borderBottom: '1px solid var(--line)' }}>
-                              <div style={{ width: 8, height: 8, borderRadius: '50%', background: meta.color, flexShrink: 0 }} />
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>{p.part_name}</div>
-                                <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>
-                                  {p.job_number ? `Job ${p.job_number} · ` : ''}
-                                  {p.dept ?? '—'}
-                                  {p.next_dept ? ` → ${p.next_dept}` : ''}
+                          {grouped[status].map((p) => {
+                            const isOpen = expandedPartId === p.id;
+                            const isUpdating = updatingPartId === p.id;
+                            const pendingNextDept = nextDeptFor[p.id] ?? '';
+                            return (
+                              <div key={p.id} style={{ borderBottom: '1px solid var(--line)', opacity: isUpdating ? 0.5 : 1, transition: 'opacity 0.15s' }}>
+                                {/* Collapsed header row — always visible */}
+                                <div
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={() => setExpandedPartId(isOpen ? null : p.id)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setExpandedPartId(isOpen ? null : p.id); }}
+                                  style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '11px 20px', cursor: 'pointer', userSelect: 'none' }}
+                                >
+                                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: meta.color, flexShrink: 0 }} />
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.part_name}</div>
+                                    <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>
+                                      {p.job_number ? `Job ${p.job_number} · ` : ''}
+                                      {p.dept ?? '—'}{' · '}
+                                      {p.worker_name ?? 'Unknown'}{' · '}
+                                      {formatTime(p.created_at)}
+                                    </div>
+                                  </div>
+                                  {/* Chevron */}
+                                  <svg
+                                    width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                                    style={{ flexShrink: 0, transition: 'transform 0.2s', transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                                  >
+                                    <polyline points="6 9 12 15 18 9" />
+                                  </svg>
                                 </div>
+
+                                {/* Expanded detail panel */}
+                                {isOpen && (
+                                  <div style={{ padding: '0 20px 16px 42px', background: 'rgba(255,255,255,0.02)' }}>
+                                    {/* Detail grid */}
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 20px', marginBottom: 14 }}>
+                                      <div>
+                                        <div style={{ fontSize: 10, color: 'var(--ink-mute)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>Part</div>
+                                        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>{p.part_name}</div>
+                                      </div>
+                                      {p.job_number && (
+                                        <div>
+                                          <div style={{ fontSize: 10, color: 'var(--ink-mute)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>Job #</div>
+                                          <div style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{p.job_number}</div>
+                                        </div>
+                                      )}
+                                      <div>
+                                        <div style={{ fontSize: 10, color: 'var(--ink-mute)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>Department</div>
+                                        <div style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{p.dept ?? '—'}</div>
+                                      </div>
+                                      <div>
+                                        <div style={{ fontSize: 10, color: 'var(--ink-mute)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>Worker</div>
+                                        <div style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{p.worker_name ?? '—'}</div>
+                                      </div>
+                                      <div>
+                                        <div style={{ fontSize: 10, color: 'var(--ink-mute)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>Status</div>
+                                        <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: meta.bg, color: meta.color }}>{p.status}</span>
+                                      </div>
+                                      <div>
+                                        <div style={{ fontSize: 10, color: 'var(--ink-mute)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>Logged</div>
+                                        <div style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{formatTime(p.created_at)}</div>
+                                      </div>
+                                      {p.next_dept && (
+                                        <div>
+                                          <div style={{ fontSize: 10, color: 'var(--ink-mute)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>Next Dept</div>
+                                          <div style={{ fontSize: 13, color: '#60A5FA' }}>{p.next_dept}</div>
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    {/* Notes */}
+                                    {p.notes && (
+                                      <div style={{ marginBottom: 12, padding: '8px 12px', background: 'rgba(255,255,255,0.04)', borderRadius: 6, fontSize: 13, color: 'var(--ink-dim)', borderLeft: '3px solid var(--line-strong)' }}>
+                                        {p.notes}
+                                      </div>
+                                    )}
+
+                                    {/* Photo */}
+                                    {p.photo_url && (
+                                      <div style={{ marginBottom: 14 }}>
+                                        <a href={p.photo_url} target="_blank" rel="noopener noreferrer">
+                                          <img src={p.photo_url} alt="part" style={{ height: 80, borderRadius: 8, objectFit: 'cover', border: '1px solid var(--line)', cursor: 'zoom-in' }} />
+                                        </a>
+                                      </div>
+                                    )}
+
+                                    {/* Next dept selector for Moving to Next Stage */}
+                                    <div style={{ marginBottom: 10 }}>
+                                      <div style={{ fontSize: 10, color: 'var(--ink-mute)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>Move to next stage — select dept first:</div>
+                                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                        {NEXT_DEPTS.map((d) => (
+                                          <button
+                                            key={d}
+                                            onClick={() => setNextDeptFor((prev) => ({ ...prev, [p.id]: d }))}
+                                            style={{ fontSize: 11, padding: '4px 10px', borderRadius: 14, border: `1px solid ${pendingNextDept === d ? '#60A5FA' : 'var(--line)'}`, background: pendingNextDept === d ? 'rgba(96,165,250,0.15)' : 'none', color: pendingNextDept === d ? '#60A5FA' : 'var(--ink-mute)', cursor: 'pointer', fontFamily: 'inherit' }}
+                                          >
+                                            {d}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+
+                                    {/* Action buttons */}
+                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                      <button
+                                        onClick={() => { void handlePartStatusUpdate(p.id, 'Passed QC'); }}
+                                        disabled={isUpdating}
+                                        style={{ fontSize: 12, fontWeight: 600, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'rgba(52,211,153,0.15)', color: '#34D399', cursor: 'pointer', fontFamily: 'inherit' }}
+                                      >
+                                        Approve
+                                      </button>
+                                      <button
+                                        onClick={() => { void handlePartStatusUpdate(p.id, 'Failed QC / Rework'); }}
+                                        disabled={isUpdating}
+                                        style={{ fontSize: 12, fontWeight: 600, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'rgba(248,113,113,0.15)', color: '#F87171', cursor: 'pointer', fontFamily: 'inherit' }}
+                                      >
+                                        Send to Rework
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          if (!pendingNextDept) { showToast('Select a next department first', true); return; }
+                                          void handlePartStatusUpdate(p.id, 'Moving to Next Stage', pendingNextDept);
+                                        }}
+                                        disabled={isUpdating}
+                                        style={{ fontSize: 12, fontWeight: 600, padding: '6px 14px', borderRadius: 6, border: 'none', background: pendingNextDept ? 'rgba(96,165,250,0.15)' : 'rgba(255,255,255,0.06)', color: pendingNextDept ? '#60A5FA' : 'var(--ink-mute)', cursor: 'pointer', fontFamily: 'inherit' }}
+                                      >
+                                        Mark Complete
+                                      </button>
+                                      <button
+                                        onClick={() => { void handlePartStatusUpdate(p.id, 'Archived'); }}
+                                        disabled={isUpdating}
+                                        style={{ fontSize: 12, fontWeight: 600, padding: '6px 14px', borderRadius: 6, border: '1px solid var(--line)', background: 'none', color: 'var(--ink-mute)', cursor: 'pointer', fontFamily: 'inherit' }}
+                                      >
+                                        Dismiss
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
-                              {p.photo_url && (
-                                <a href={p.photo_url} target="_blank" rel="noopener noreferrer" style={{ flexShrink: 0 }}>
-                                  <img src={p.photo_url} alt="part" style={{ width: 48, height: 36, borderRadius: 6, objectFit: 'cover', border: '1px solid var(--line)' }} />
-                                </a>
-                              )}
-                              <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                                <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>{p.worker_name ?? 'Unknown'}</div>
-                                <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>{formatTime(p.created_at)}</div>
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       );
                     })}
