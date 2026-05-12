@@ -204,6 +204,9 @@ function Hero() {
           <p className="hero-sub">
             The 1–2 tap shop floor system that captures every minute, every part, and every dollar — then turns it into the data your bids have always been missing.
           </p>
+          <p style={{ fontSize: 13, color: 'var(--ink-dim)', marginTop: 10, lineHeight: 1.5 }}>
+            Connects to Innergy, Cabinet Vision, Mozaik, and more.
+          </p>
           <div className="hero-actions">
             <Link href="/signup" className="btn btn-primary">Start free trial <ArrowIcon /></Link>
             <a href="#features" className="btn btn-ghost">See it work</a>
@@ -268,6 +271,64 @@ function Capabilities() {
               <p>{desc}</p>
             </div>
           ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ── ERP Integration ─────────────────────────────────────────── */
+const ERP_BADGES = ['Innergy', 'Cabinet Vision', 'Mozaik'];
+
+function ErpIntegration() {
+  return (
+    <section className="section-tight" style={{ borderTop: '1px solid var(--line)' }}>
+      <div className="container">
+        <div style={{ maxWidth: 680, margin: '0 auto', textAlign: 'center' }}>
+          <span className="eyebrow" style={{ marginBottom: 16, display: 'block' }}>ERP Integration</span>
+          <h2 style={{ marginBottom: 20 }}>
+            Works with the ERP <span className="text-teal">you already use.</span>
+          </h2>
+          <p style={{ fontSize: 16, lineHeight: 1.7, color: 'var(--ink-dim)', marginBottom: 32 }}>
+            InlineIQ doesn&apos;t replace your ERP — it plugs into it. Connect to Innergy, Cabinet Vision, Mozaik, and other cabinet and fabrication ERPs to sync jobs, work orders, and labor data automatically. Your estimating stays in your ERP. Your shop floor runs in InlineIQ.
+          </p>
+
+          {/* ERP badges */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'center', marginBottom: 32 }}>
+            {ERP_BADGES.map((name) => (
+              <span key={name} style={{
+                padding: '7px 18px', borderRadius: 999,
+                border: '1px solid var(--teal-deep)',
+                background: 'rgba(20,184,166,0.06)',
+                fontSize: 13, fontWeight: 600, color: 'var(--teal)',
+                letterSpacing: '0.01em',
+              }}>
+                {name}
+              </span>
+            ))}
+            <span style={{
+              padding: '7px 18px', borderRadius: 999,
+              border: '1px solid var(--line)',
+              background: 'transparent',
+              fontSize: 13, color: 'var(--ink-mute)',
+              letterSpacing: '0.01em',
+            }}>
+              More coming soon
+            </span>
+          </div>
+
+          {/* Bullet points */}
+          <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 10, textAlign: 'left' }}>
+            {[
+              'Job numbers and work orders sync automatically',
+              'Labor hours post back to your ERP — no double entry',
+            ].map((item) => (
+              <div key={item} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: 'var(--ink-dim)' }}>
+                <span style={{ color: 'var(--teal)', flexShrink: 0 }}><CheckIcon size={15} /></span>
+                {item}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </section>
@@ -509,6 +570,7 @@ function Intel() {
                 InlineIQ doesn't just collect data — it gets smarter the longer you use it. The AI learns your production patterns, your job types, your crew behaviors, and your cost structures over time. The morning brief gets sharper. Part identification gets faster. Cost comparisons get more accurate.
               </p>
               <p style={{ marginTop: 14 }}>Every shop is different. InlineIQ adapts to yours.</p>
+              <p style={{ marginTop: 14, color: 'var(--ink-dim)' }}>Combined with your ERP data, InlineIQ gives you a complete picture of every job — from estimate to final hour.</p>
               <div className="intel-pills">
                 {['Pattern recognition','Job type modeling','Bid calibration','Anomaly detection','Photo → Part matching'].map((p) => (
                   <span key={p} className="pill">{p}</span>
@@ -645,6 +707,7 @@ export default function HomePage() {
         <main>
           <Hero />
           <Capabilities />
+          <ErpIntegration />
           <Deepdives />
           <Intel />
           <PricingSection />
