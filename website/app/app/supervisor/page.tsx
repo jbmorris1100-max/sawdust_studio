@@ -92,6 +92,15 @@ type PartLog = {
   created_at: string;
 };
 
+type Job = {
+  id: string;
+  tenant_id: string;
+  job_number: string;
+  job_name: string | null;
+  status: string;
+  created_at: string;
+};
+
 type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai';
 
 type AiMode = 'learn' | 'assist' | 'autonomous';
@@ -200,7 +209,7 @@ function StatusBadge({ status }: { status: string | null }) {
     reviewed: { color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
     resolved: { color: '#34D399', bg: 'rgba(52,211,153,0.1)' },
     received: { color: '#34D399', bg: 'rgba(52,211,153,0.1)' },
-    closed:   { color: '#5F6F6C', bg: 'rgba(95,111,108,0.1)' },
+    closed:   { color: '#8BA5A0', bg: 'rgba(95,111,108,0.1)' },
   };
   const st = map[s] ?? map.open;
   return (
@@ -247,7 +256,7 @@ function fileTypeBadge(fileName: string | null): { label: string; color: string;
     jpeg: { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
   };
   const t = map[ext];
-  return t ?? { label: ext.toUpperCase() || 'FILE', color: '#5F6F6C', bg: 'rgba(95,111,108,0.1)' };
+  return t ?? { label: ext.toUpperCase() || 'FILE', color: '#8BA5A0', bg: 'rgba(95,111,108,0.1)' };
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
@@ -265,6 +274,10 @@ export default function SupervisorPage() {
   const [craftsmanBuilds, setCraftsmanBuilds] = useState<CraftsmanBuild[]>([]);
   const [craftsTick,     setCraftsTick]     = useState(0);
   const [parts,          setParts]          = useState<PartLog[]>([]);
+  const [jobs,           setJobs]           = useState<Job[]>([]);
+  const [newJobNum,      setNewJobNum]      = useState('');
+  const [newJobName,     setNewJobName]     = useState('');
+  const [addingJob,      setAddingJob]      = useState(false);
 
   // Plans upload
   const [planFile,      setPlanFile]      = useState<File | null>(null);
@@ -349,16 +362,18 @@ export default function SupervisorPage() {
       if (damageRes.data) setDamage(damageRes.data as DamageReport[]);
     } catch (_) {}
     try {
-      const [plansRes, sopsRes, buildsRes, partsRes] = await Promise.all([
+      const [plansRes, sopsRes, buildsRes, partsRes, jobsRes] = await Promise.all([
         supabase.from('job_drawings').select('id, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('time_clock').select('id, worker_name, clock_in, clock_out, notes, job_number, total_hours').eq('tenant_id', tenant.id).eq('status', 'craftsman_build').order('clock_in', { ascending: false }).limit(50),
         supabase.from('parts_log').select('*').eq('tenant_id', tenant.id).not('status', 'in', '("Passed QC")').order('created_at', { ascending: false }).limit(100),
+        supabase.from('jobs').select('id, job_number, job_name, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
       ]);
       if (plansRes.data)  setPlans(plansRes.data as JobDrawing[]);
       if (sopsRes.data)   setSops(sopsRes.data as SopItem[]);
       if (buildsRes.data) setCraftsmanBuilds(buildsRes.data as CraftsmanBuild[]);
       if (partsRes.data)  setParts(partsRes.data as PartLog[]);
+      if (jobsRes.data)   setJobs(jobsRes.data as Job[]);
     } catch (_) {}
     try {
       const today        = new Date().toISOString().split('T')[0];
@@ -576,14 +591,64 @@ export default function SupervisorPage() {
       })
       .subscribe();
 
+    const jobsCh = supabase
+      .channel('rt-jobs')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs', filter: `tenant_id=eq.${tenantId}` }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setJobs((prev) => prev.some((j) => j.id === payload.new.id) ? prev : [payload.new as Job, ...prev]);
+        } else if (payload.eventType === 'UPDATE') {
+          setJobs((prev) => prev.map((j) => j.id === payload.new.id ? payload.new as Job : j));
+        } else if (payload.eventType === 'DELETE') {
+          setJobs((prev) => prev.filter((j) => j.id !== payload.old.id));
+        }
+      })
+      .subscribe();
+
     return () => {
       supabase.removeChannel(clockCh);
       supabase.removeChannel(msgCh);
       supabase.removeChannel(needsCh);
       supabase.removeChannel(damageCh);
       supabase.removeChannel(partsCh);
+      supabase.removeChannel(jobsCh);
     };
   }, [tenant]);
+
+  // ── Job handlers ────────────────────────────────────────────────────────────
+
+  async function handleAddJob() {
+    const num = newJobNum.trim();
+    if (!num || addingJob || !tenant) return;
+    setAddingJob(true);
+    try {
+      const { error } = await supabase.from('jobs').insert({
+        job_number: num,
+        job_name:   newJobName.trim() || null,
+        status:     'active',
+        tenant_id:  tenant.id,
+      });
+      if (error) throw error;
+      setNewJobNum('');
+      setNewJobName('');
+      showToast('Job added ✓');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Insert failed', true);
+    } finally {
+      setAddingJob(false);
+    }
+  }
+
+  async function handleDeleteJob(id: string) {
+    const prev = jobs.find((j) => j.id === id);
+    setJobs((jj) => jj.filter((j) => j.id !== id));
+    try {
+      const { error } = await supabase.from('jobs').delete().eq('id', id);
+      if (error) throw error;
+    } catch (err: unknown) {
+      if (prev) setJobs((jj) => [prev, ...jj]);
+      showToast(err instanceof Error ? err.message : 'Delete failed', true);
+    }
+  }
 
   // ── Message send ────────────────────────────────────────────────────────────
 
@@ -1155,7 +1220,7 @@ export default function SupervisorPage() {
                       )}
                     </div>
                     {sortedStatuses.map((status) => {
-                      const meta = STATUS_META[status] ?? { color: '#5F6F6C', bg: 'rgba(95,111,108,0.1)', order: 9 };
+                      const meta = STATUS_META[status] ?? { color: '#8BA5A0', bg: 'rgba(95,111,108,0.1)', order: 9 };
                       return (
                         <div key={status}>
                           <div style={{ padding: '8px 20px 4px', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: meta.color }}>
@@ -1189,6 +1254,63 @@ export default function SupervisorPage() {
                   </div>
                 );
               })()}
+
+              {/* ── Jobs ── */}
+              <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
+                <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#A78BFA' }}>Active Jobs</span>
+                  <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{jobs.filter((j) => j.status === 'active').length} jobs</span>
+                </div>
+
+                {/* Add job row */}
+                <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--line)', display: 'flex', gap: 8 }}>
+                  <input
+                    className="form-input"
+                    placeholder="Job #"
+                    value={newJobNum}
+                    onChange={(e) => setNewJobNum(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { void handleAddJob(); } }}
+                    style={{ width: 100, flexShrink: 0 }}
+                  />
+                  <input
+                    className="form-input"
+                    placeholder="Job name (optional)"
+                    value={newJobName}
+                    onChange={(e) => setNewJobName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { void handleAddJob(); } }}
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    className="btn btn-primary"
+                    style={{ flexShrink: 0, padding: '8px 14px', fontSize: 13, boxShadow: 'none', opacity: (!newJobNum.trim() || addingJob) ? 0.5 : 1 }}
+                    onClick={handleAddJob}
+                    disabled={!newJobNum.trim() || addingJob}
+                  >
+                    {addingJob ? '…' : '+ Add'}
+                  </button>
+                </div>
+
+                {jobs.filter((j) => j.status === 'active').length === 0 ? (
+                  <div style={{ padding: '16px 20px', fontSize: 13, color: 'var(--ink-mute)' }}>No active jobs. Add one above — crew will see these in the parts dropdown.</div>
+                ) : (
+                  jobs.filter((j) => j.status === 'active').map((j) => (
+                    <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 20px', borderBottom: '1px solid var(--line)' }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)', marginRight: 10 }}>{j.job_number}</span>
+                        {j.job_name && <span style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{j.job_name}</span>}
+                      </div>
+                      <button
+                        onClick={() => { void handleDeleteJob(j.id); }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex', alignItems: 'center' }}
+                        title="Delete job"
+                      >
+                        <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+
             </div>
           )}
 
@@ -1480,7 +1602,7 @@ export default function SupervisorPage() {
                             <ActionBtn label="Mark Reviewed" color="#A78BFA" onClick={() => handleDamageStatus(d.id, 'reviewed')} disabled={busy} />
                           )}
                           <ActionBtn label="Resolve" color="#34D399" onClick={() => openResolutionModal(d.id)} disabled={busy} />
-                          <ActionBtn label="Close" color="#5F6F6C" onClick={() => handleDamageStatus(d.id, 'closed')} disabled={busy} />
+                          <ActionBtn label="Close" color="#8BA5A0" onClick={() => handleDamageStatus(d.id, 'closed')} disabled={busy} />
                         </div>
                       )}
                     </div>
@@ -1892,7 +2014,7 @@ export default function SupervisorPage() {
                             alert: { border: 'rgba(248,113,113,0.3)', bg: 'rgba(248,113,113,0.06)', badge: '#F87171', badgeBg: 'rgba(248,113,113,0.15)' },
                             watch: { border: 'rgba(251,191,36,0.3)',  bg: 'rgba(251,191,36,0.06)',  badge: '#FBBF24', badgeBg: 'rgba(251,191,36,0.15)'  },
                             info:  { border: 'rgba(94,234,212,0.25)', bg: 'rgba(94,234,212,0.05)', badge: '#5EEAD4', badgeBg: 'rgba(94,234,212,0.12)'  },
-                          }[card.type] ?? { border: 'var(--line)', bg: 'transparent', badge: '#5F6F6C', badgeBg: 'rgba(95,111,108,0.1)' };
+                          }[card.type] ?? { border: 'var(--line)', bg: 'transparent', badge: '#8BA5A0', badgeBg: 'rgba(95,111,108,0.1)' };
                           return (
                             <div key={i} style={{ padding: '14px 16px', borderRadius: 10, background: colors.bg, border: `1px solid ${colors.border}`, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                               <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', padding: '3px 8px', borderRadius: 5, background: colors.badgeBg, color: colors.badge, flexShrink: 0, marginTop: 1 }}>
@@ -2119,7 +2241,7 @@ export default function SupervisorPage() {
                             reorder_alert:     { color: '#FBBF24', bg: 'rgba(251,191,36,0.1)'  },
                             daily_summary:     { color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
                           };
-                          const tc = typeColors[entry.action_type] ?? { color: '#5F6F6C', bg: 'rgba(95,111,108,0.1)' };
+                          const tc = typeColors[entry.action_type] ?? { color: '#8BA5A0', bg: 'rgba(95,111,108,0.1)' };
                           return (
                             <div key={entry.id} style={{ padding: '12px 0', borderBottom: idx < autoLog.length - 1 ? '1px solid var(--line)' : 'none', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                               <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 5, background: tc.bg, color: tc.color, flexShrink: 0, marginTop: 1, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>

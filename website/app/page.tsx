@@ -107,15 +107,15 @@ function CrewPhoneMini() {
     }}>
       <div style={{ background: '#050608', height: '100%', borderRadius: 16, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '6px 8px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: 7, color: '#9AAAA7' }}>9:41</span>
+          <span style={{ fontSize: 7, color: '#B8CECA' }}>9:41</span>
           <div style={{ width: 6, height: 6, borderRadius: 3, background: '#34D399' }} />
         </div>
         <div style={{ padding: '4px 10px 8px' }}>
-          <div style={{ fontSize: 7, color: '#9AAAA7' }}>Hello,</div>
+          <div style={{ fontSize: 7, color: '#B8CECA' }}>Hello,</div>
           <div style={{ fontSize: 11, fontWeight: 700, color: '#E6F0EE', letterSpacing: '-0.02em' }}>Jake</div>
         </div>
         <div style={{ margin: '0 8px', background: '#0a0d10', borderRadius: 8, border: '1.5px solid rgba(45,225,201,0.2)', padding: '8px 10px' }}>
-          <div style={{ fontSize: 7, color: '#9AAAA7', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 3 }}>On Job</div>
+          <div style={{ fontSize: 7, color: '#B8CECA', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 3 }}>On Job</div>
           <div style={{ fontSize: 10, fontWeight: 700, color: '#E6F0EE', marginBottom: 1 }}>JOB-2841</div>
           <div style={{ fontSize: 8, color: '#5EEAD4' }}>Door Frames · 1h 22m</div>
         </div>
@@ -140,7 +140,7 @@ function SupervisorDashMini() {
           <CommandIcon size={10} />
         </div>
         {[TrackIcon, CostIcon, DamageIcon, InvIcon].map((Ic, i) => (
-          <div key={i} style={{ color: '#5F6F6C' }}><Ic size={10} /></div>
+          <div key={i} style={{ color: '#8BA5A0' }}><Ic size={10} /></div>
         ))}
       </div>
       <div style={{ flex: 1, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, overflow: 'hidden' }}>
@@ -157,13 +157,13 @@ function SupervisorDashMini() {
               border: `1px solid rgba(94,234,212,0.08)`,
               borderTopWidth: 2, borderTopColor: k.color,
             }}>
-              <div style={{ fontSize: 7, color: '#5F6F6C', marginBottom: 2 }}>{k.label}</div>
+              <div style={{ fontSize: 7, color: '#8BA5A0', marginBottom: 2 }}>{k.label}</div>
               <div style={{ fontSize: 14, fontWeight: 700, color: k.color }}>{k.val}</div>
             </div>
           ))}
         </div>
         <div style={{ flex: 1, background: '#08090d', borderRadius: 8, border: '1px solid rgba(94,234,212,0.08)', padding: '8px 10px', overflow: 'hidden' }}>
-          <div style={{ fontSize: 8, fontWeight: 700, color: '#5F6F6C', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>Active Crew</div>
+          <div style={{ fontSize: 8, fontWeight: 700, color: '#8BA5A0', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>Active Crew</div>
           {[
             { name: 'Marcus T.', job: 'JOB-2841 · Door Frames', badge: 'RUN',    color: '#34D399', pct: 70 },
             { name: 'Ana R.',    job: 'JOB-2839 · Drawer Fronts',badge: 'QC',    color: '#5EEAD4', pct: 82 },
@@ -176,7 +176,7 @@ function SupervisorDashMini() {
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 9, fontWeight: 700, color: '#E6F0EE' }}>{r.name}</div>
-                <div style={{ fontSize: 8, color: '#5F6F6C', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.job}</div>
+                <div style={{ fontSize: 8, color: '#8BA5A0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.job}</div>
                 <div style={{ height: 3, background: 'rgba(94,234,212,0.08)', borderRadius: 2, marginTop: 3 }}>
                   <div style={{ height: '100%', width: `${r.pct}%`, background: r.color, borderRadius: 2 }} />
                 </div>
@@ -311,7 +311,7 @@ function ScanMock() {
         padding: 5, boxShadow: '0 20px 50px rgba(0,0,0,0.5), 0 0 40px rgba(45,225,201,0.1)',
       }}>
         <div style={{ background: '#0a0d10', height: '100%', borderRadius: 16, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          <div style={{ padding: '8px 10px', fontSize: 8, color: '#9AAAA7', display: 'flex', justifyContent: 'space-between' }}>
+          <div style={{ padding: '8px 10px', fontSize: 8, color: '#B8CECA', display: 'flex', justifyContent: 'space-between' }}>
             <span>9:41</span><span>5G</span>
           </div>
           <div style={{ flex: 1, margin: '0 10px', borderRadius: 10, border: '1px dashed rgba(94,234,212,0.3)', position: 'relative', background: '#020303', overflow: 'hidden' }}>
@@ -329,7 +329,7 @@ function ScanMock() {
               }} />
             ))}
           </div>
-          <div style={{ padding: '8px 10px', fontSize: 9, color: '#9AAAA7', textAlign: 'center' }}>Identifying part…</div>
+          <div style={{ padding: '8px 10px', fontSize: 9, color: '#B8CECA', textAlign: 'center' }}>Identifying part…</div>
         </div>
       </div>
       <div style={{ flex: 1 }}>
@@ -341,7 +341,7 @@ function ScanMock() {
         </div>
         {[['Work Order','JOB-2841'],['Stage','Production'],['Confidence','98.2%']].map(([l,v]) => (
           <div key={l} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: 12 }}>
-            <span style={{ color: '#9AAAA7' }}>{l}</span>
+            <span style={{ color: '#B8CECA' }}>{l}</span>
             <span style={{ color: l === 'Confidence' ? '#5EEAD4' : '#E6F0EE', fontFamily: 'var(--font-mono)' }}>{v}</span>
           </div>
         ))}
@@ -362,7 +362,7 @@ function TimeTrackMock() {
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
-          <div style={{ fontSize: 10, color: '#9AAAA7', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Marcus T. · Tuesday</div>
+          <div style={{ fontSize: 10, color: '#B8CECA', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Marcus T. · Tuesday</div>
           <div style={{ fontSize: 17, color: '#E6F0EE', fontWeight: 700, marginTop: 3, letterSpacing: '-0.02em' }}>8h 04m logged · 100% accounted</div>
         </div>
         <div style={{ fontSize: 11, color: '#5EEAD4', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -377,7 +377,7 @@ function TimeTrackMock() {
         <div style={{ flex: 2.4, background: 'rgba(52,211,153,0.5)', display: 'grid', placeItems: 'center', fontSize: 10, color: '#001917', fontWeight: 700 }}>JOB-2843</div>
         <div style={{ flex: 0.4, background: 'rgba(251,191,36,0.4)' }} />
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', fontSize: 9, color: '#5F6F6C', fontFamily: 'var(--font-mono)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', fontSize: 9, color: '#8BA5A0', fontFamily: 'var(--font-mono)' }}>
         {['6:00','7:00','9:00','10:30','12:00','13:00','15:00'].map((t) => <span key={t}>{t}</span>)}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
@@ -388,7 +388,7 @@ function TimeTrackMock() {
           ['14:31','Damage Report', 'JOB-2843 · photo + note',  '#F87171'],
         ].map(([t,ev,det,c], i) => (
           <div key={i} style={{ display: 'grid', gridTemplateColumns: '56px 110px 1fr', gap: 10, fontSize: 12, alignItems: 'center', padding: '6px 0', borderTop: i===0 ? 'none' : '1px solid var(--line)' }}>
-            <span style={{ color: '#9AAAA7', fontFamily: 'var(--font-mono)' }}>{t}</span>
+            <span style={{ color: '#B8CECA', fontFamily: 'var(--font-mono)' }}>{t}</span>
             <span style={{ color: c, fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 700 }}>{ev}</span>
             <span style={{ color: '#E6F0EE' }}>{det}</span>
           </div>
@@ -411,7 +411,7 @@ function AIBriefMock() {
             <SparkIcon size={14} />
           </div>
           <div>
-            <div style={{ fontSize: 10, color: '#9AAAA7', letterSpacing: '0.1em', textTransform: 'uppercase' }}>AI Morning Brief</div>
+            <div style={{ fontSize: 10, color: '#B8CECA', letterSpacing: '0.1em', textTransform: 'uppercase' }}>AI Morning Brief</div>
             <div style={{ fontSize: 13, color: '#E6F0EE', fontWeight: 700 }}>Tuesday · 6:00 AM</div>
           </div>
         </div>
@@ -518,7 +518,7 @@ function Intel() {
             <div style={{ position: 'relative', minHeight: 280, border: '1px solid var(--line-strong)', borderRadius: 14, background: '#06080a', padding: 24, overflow: 'hidden' }}>
               <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 30% 40%, rgba(45,225,201,0.18), transparent 50%)' }} />
               <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <div style={{ fontSize: 10, color: '#9AAAA7', letterSpacing: '0.12em', textTransform: 'uppercase' }}>Bid Calibration · 90 days</div>
+                <div style={{ fontSize: 10, color: '#B8CECA', letterSpacing: '0.12em', textTransform: 'uppercase' }}>Bid Calibration · 90 days</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'baseline', gap: 8 }}>
                   <div style={{ fontSize: 13, color: '#E6F0EE' }}>Estimate accuracy</div>
                   <div style={{ fontSize: 32, color: '#5EEAD4', fontWeight: 700, letterSpacing: '-0.02em' }}>+18.4%</div>
@@ -536,7 +536,7 @@ function Intel() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginTop: 8 }}>
                   {[['Days','90'],['Jobs','184'],['Hours','11.2k']].map(([l,v]) => (
                     <div key={l} style={{ padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 8 }}>
-                      <div style={{ fontSize: 9, color: '#9AAAA7', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{l}</div>
+                      <div style={{ fontSize: 9, color: '#B8CECA', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{l}</div>
                       <div style={{ fontSize: 18, color: '#E6F0EE', fontWeight: 700, marginTop: 3, letterSpacing: '-0.02em' }}>{v}</div>
                     </div>
                   ))}

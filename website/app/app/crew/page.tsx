@@ -59,6 +59,13 @@ type PartLog = {
   created_at: string;
 };
 
+type Job = {
+  id: string;
+  job_number: string;
+  job_name: string | null;
+  status: string;
+};
+
 type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'message' | 'switchDept' | 'editName' | 'buildTimer' | 'parts' | null;
 type ClockStep = 'lookup' | 'clockin' | 'clockout';
 type BuildTimerStep = 'form' | 'summary';
@@ -94,7 +101,7 @@ function fileTypeBadge(fileName: string | null): { label: string; color: string;
     jpeg: { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
   };
   const t = map[ext];
-  return t ?? { label: ext.toUpperCase() || 'FILE', color: '#5F6F6C', bg: 'rgba(95,111,108,0.1)' };
+  return t ?? { label: ext.toUpperCase() || 'FILE', color: '#8BA5A0', bg: 'rgba(95,111,108,0.1)' };
 }
 
 // ── Small UI pieces ────────────────────────────────────────────────────────────
@@ -230,6 +237,9 @@ export default function CrewPage() {
   const [dmgDept,         setDmgDept]         = useState('');
   const [dmgPhoto,        setDmgPhoto]        = useState<File | null>(null);
   const [dmgPhotoPreview, setDmgPhotoPreview] = useState<string | null>(null);
+  const [dmgScanStep,     setDmgScanStep]     = useState<'camera' | 'preview'>('camera');
+  const [dmgShowDetails,  setDmgShowDetails]  = useState(false);
+  const [dmgFlash,        setDmgFlash]        = useState(false);
 
   // Plans modal
   const [drawings,     setDrawings]     = useState<Drawing[]>([]);
@@ -271,6 +281,11 @@ export default function CrewPage() {
   const [qcActioning,    setQcActioning]    = useState<Record<string, boolean>>({});
   const [partPhoto,        setPartPhoto]        = useState<File | null>(null);
   const [partPhotoPreview, setPartPhotoPreview] = useState<string | null>(null);
+  const [partScanStep,     setPartScanStep]     = useState<'camera' | 'preview'>('camera');
+  const [partShowDetails,  setPartShowDetails]  = useState(false);
+  const [partFlash,        setPartFlash]        = useState(false);
+  const [jobs,             setJobs]             = useState<Job[]>([]);
+  const [partJobId,        setPartJobId]        = useState('');
 
   // Message modal
   const [msgDept, setMsgDept] = useState('');
@@ -442,6 +457,8 @@ export default function CrewPage() {
     setDmgDept(crewDept);
     setDmgPhoto(null);
     setDmgPhotoPreview(null);
+    setDmgScanStep('camera');
+    setDmgShowDetails(false);
     setModal('damage');
   }
 
@@ -528,13 +545,21 @@ export default function CrewPage() {
     setPartsMode('log');
     setPartName('');
     setPartJobNum('');
+    setPartJobId('');
     setPartDept(crewDept);
     setPartStatus('In Progress');
     setPartNextDept('');
     setPartNotes('');
     setPartPhoto(null);
     setPartPhotoPreview(null);
+    setPartScanStep('camera');
+    setPartShowDetails(false);
     setModal('parts');
+    // Fetch jobs for dropdown (best-effort)
+    if (tenant) {
+      supabase.from('jobs').select('id, job_number, job_name, status').eq('tenant_id', tenant.id).eq('status', 'active').order('created_at', { ascending: false })
+        .then(({ data }) => { if (data) setJobs(data as Job[]); });
+    }
     if (crewDept && tenant) {
       setQcLoading(true);
       try {
@@ -804,9 +829,7 @@ export default function CrewPage() {
   // ── Damage handler ──────────────────────────────────────────────────────────
 
   async function handleDamageSubmit() {
-    const what = dmgWhat.trim();
-    const dept = dmgDept.trim();
-    if (!what || !dept || saving) return;
+    if (saving) return;
     setSaving(true);
     try {
       let photoUrl: string | null = null;
@@ -814,8 +837,9 @@ export default function CrewPage() {
         try { photoUrl = await uploadPhoto(dmgPhoto, 'damage-photos'); }
         catch (_) { /* photo upload failed — continue without it */ }
       }
+      const dept = dmgDept.trim() || crewDept || 'Unknown';
       const { error } = await supabase.from('damage_reports').insert({
-        part_name: what,
+        part_name: dmgWhat.trim() || 'Damage report',
         dept,
         notes:     null,
         photo_url: photoUrl,
@@ -825,7 +849,8 @@ export default function CrewPage() {
       if (error) throw error;
       saveIdentity(crewName, dept);
       closeModal();
-      showToast('Damage reported ✓');
+      setDmgFlash(true);
+      setTimeout(() => setDmgFlash(false), 2000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Insert failed';
       showToast(msg, true);
@@ -909,8 +934,7 @@ export default function CrewPage() {
   // ── Parts / QC handlers ────────────────────────────────────────────────────
 
   async function handlePartSubmit() {
-    const name = partName.trim();
-    if (!name || !partDept || saving) return;
+    if (saving) return;
     setSaving(true);
     try {
       let photoUrl: string | null = null;
@@ -918,10 +942,14 @@ export default function CrewPage() {
         try { photoUrl = await uploadPhoto(partPhoto, 'part-photos'); }
         catch (_) { /* photo upload failed — continue without it */ }
       }
+      // Resolve job number — from DB job selection or manual entry
+      const resolvedJobNum = partJobId
+        ? (jobs.find((j) => j.id === partJobId)?.job_number ?? null)
+        : (partJobNum.trim() || null);
       const payload: Record<string, unknown> = {
-        part_name:   name,
-        job_number:  partJobNum.trim() || null,
-        dept:        partDept,
+        part_name:   partName.trim() || 'Part',
+        job_number:  resolvedJobNum,
+        dept:        partDept || crewDept || 'Unknown',
         status:      partStatus,
         next_dept:   partStatus === 'Moving to Next Stage' ? (partNextDept || null) : null,
         notes:       partNotes.trim() || null,
@@ -932,7 +960,8 @@ export default function CrewPage() {
       const { error } = await supabase.from('parts_log').insert(payload);
       if (error) throw error;
       closeModal();
-      showToast('Part logged ✓');
+      setPartFlash(true);
+      setTimeout(() => setPartFlash(false), 2000);
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Insert failed', true);
     } finally {
@@ -1027,7 +1056,7 @@ export default function CrewPage() {
       label: 'Report Damage',
       color: '#F87171', bg: 'rgba(248,113,113,0.08)',
       onClick: openDamage,
-      icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>,
+      icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>,
     },
     {
       label: 'View Plans',
@@ -1048,10 +1077,10 @@ export default function CrewPage() {
       icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
     },
     {
-      label: 'Log Part / QC',
+      label: 'Scan Part / QC',
       color: '#60A5FA', bg: 'rgba(96,165,250,0.08)',
       onClick: openParts,
-      icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-4 0v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>,
+      icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>,
     },
     ...(crewDept === 'Craftsman' ? ([
       {
@@ -1501,60 +1530,62 @@ export default function CrewPage() {
       {/* ── Damage Modal ─────────────────────────────────────────────────────── */}
       {modal === 'damage' && (
         <ModalOverlay onClose={closeModal} title="Report Damage">
-          <Field label="What happened? *">
-            <textarea
-              className="form-input"
-              placeholder="Describe the damage — what part, what happened…"
-              value={dmgWhat}
-              onChange={(e) => setDmgWhat(e.target.value)}
-              rows={4}
-              style={{ resize: 'vertical', minHeight: 100 }}
-              autoFocus
-            />
-          </Field>
-          <Field label="Department *">
-            <input className="form-input" placeholder="e.g. Finish, Trim, Install…" value={dmgDept} onChange={(e) => setDmgDept(e.target.value)} />
-          </Field>
-
-          {/* Photo upload */}
-          <Field label="Photo (optional)">
-            {dmgPhotoPreview ? (
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                <img src={dmgPhotoPreview} alt="preview" style={{ width: 80, height: 60, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--line)', flexShrink: 0 }} />
-                <button
-                  type="button"
-                  onClick={() => { setDmgPhoto(null); setDmgPhotoPreview(null); }}
-                  style={{ background: 'none', border: '1px solid var(--line)', borderRadius: 6, padding: '4px 10px', fontSize: 12, color: 'var(--ink-mute)', cursor: 'pointer' }}
-                >
-                  Remove
-                </button>
+          {dmgScanStep === 'camera' ? (
+            /* ── Step 1: Camera ── */
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18, padding: '8px 0 4px' }}>
+              {/* Viewfinder */}
+              <div style={{ position: 'relative', width: '100%', maxWidth: 300, aspectRatio: '4/3', background: '#07090A', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ position: 'absolute', top: 14, left: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '3px 0 0 0' }} />
+                <div style={{ position: 'absolute', top: 14, right: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 3px 0 0' }} />
+                <div style={{ position: 'absolute', bottom: 14, left: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '0 0 0 3px' }} />
+                <div style={{ position: 'absolute', bottom: 14, right: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 0 3px 0' }} />
+                <svg width={44} height={44} viewBox="0 0 24 24" fill="none" stroke="rgba(94,234,212,0.25)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
               </div>
-            ) : (
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 8, fontSize: 13, color: 'var(--ink-mute)', cursor: 'pointer' }}>
-                <span>📷</span> Add Photo
-                <input
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  style={{ display: 'none' }}
+              <p style={{ fontSize: 12, color: 'var(--ink-mute)', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em', margin: 0 }}>Point camera at damage</p>
+              <label style={{ width: 62, height: 62, borderRadius: '50%', background: '#F87171', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 0 0 5px rgba(248,113,113,0.18)', flexShrink: 0 }}>
+                <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#050608" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
                   onChange={(e) => {
                     const file = e.target.files?.[0] ?? null;
-                    setDmgPhoto(file);
-                    setDmgPhotoPreview(file ? URL.createObjectURL(file) : null);
-                  }}
-                />
+                    if (file) { setDmgPhoto(file); setDmgPhotoPreview(URL.createObjectURL(file)); setDmgScanStep('preview'); }
+                  }} />
               </label>
-            )}
-          </Field>
-
-          <button
-            className="btn btn-primary"
-            style={{ width: '100%', justifyContent: 'center', marginTop: 4, background: '#F87171', boxShadow: 'none', opacity: (!dmgWhat.trim() || !dmgDept.trim() || saving) ? 0.5 : 1 }}
-            onClick={handleDamageSubmit}
-            disabled={!dmgWhat.trim() || !dmgDept.trim() || saving}
-          >
-            {saving ? 'Submitting…' : 'Submit Report'}
-          </button>
+            </div>
+          ) : (
+            /* ── Step 2: Preview + submit ── */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                <img src={dmgPhotoPreview!} alt="damage" style={{ width: 100, height: 75, objectFit: 'cover', borderRadius: 10, border: '1px solid var(--line)', flexShrink: 0 }} />
+                <button type="button"
+                  onClick={() => { setDmgPhoto(null); setDmgPhotoPreview(null); setDmgScanStep('camera'); }}
+                  style={{ background: 'none', border: '1px solid var(--line)', borderRadius: 6, padding: '4px 12px', fontSize: 12, color: 'var(--ink-mute)', cursor: 'pointer', marginTop: 4 }}>
+                  Retake
+                </button>
+              </div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button className="btn btn-primary"
+                  style={{ flex: 1, justifyContent: 'center', background: '#F87171', boxShadow: 'none', opacity: saving ? 0.5 : 1 }}
+                  onClick={handleDamageSubmit} disabled={saving}>
+                  {saving ? 'Submitting…' : 'Submit Report'}
+                </button>
+                {!dmgShowDetails && (
+                  <button type="button" className="btn btn-ghost" style={{ flexShrink: 0 }} onClick={() => setDmgShowDetails(true)}>
+                    Add Details
+                  </button>
+                )}
+              </div>
+              {dmgShowDetails && (
+                <>
+                  <Field label="Description (optional)">
+                    <textarea className="form-input" placeholder="Describe the damage…" value={dmgWhat} onChange={(e) => setDmgWhat(e.target.value)} rows={3} style={{ resize: 'vertical' }} />
+                  </Field>
+                  <Field label="Department (optional)">
+                    <input className="form-input" placeholder="e.g. Finish, Trim, Install…" value={dmgDept} onChange={(e) => setDmgDept(e.target.value)} />
+                  </Field>
+                </>
+              )}
+            </div>
+          )}
         </ModalOverlay>
       )}
 
@@ -1854,105 +1885,85 @@ export default function CrewPage() {
             ))}
           </div>
 
-          {/* ── LOG PART mode ── */}
+          {/* ── LOG PART mode — camera-first ── */}
           {partsMode === 'log' && (
             <>
-              <Field label="Part name / description *">
-                <input
-                  className="form-input"
-                  placeholder="e.g. Cabinet face frame, drawer box…"
-                  value={partName}
-                  onChange={(e) => setPartName(e.target.value)}
-                  autoFocus
-                />
-              </Field>
-              <Field label="Job number">
-                <input
-                  className="form-input"
-                  placeholder="e.g. P-26-1001"
-                  value={partJobNum}
-                  onChange={(e) => setPartJobNum(e.target.value)}
-                />
-              </Field>
-              <Field label="Department *">
-                <select className="form-input" value={partDept} onChange={(e) => setPartDept(e.target.value)} style={{ cursor: 'pointer' }}>
-                  <option value="">Select department…</option>
-                  <option value="Production">Production</option>
-                  <option value="Assembly">Assembly</option>
-                  <option value="Finishing">Finishing</option>
-                  <option value="Craftsman">Craftsman</option>
-                </select>
-              </Field>
-              <Field label="Status">
-                <select className="form-input" value={partStatus} onChange={(e) => setPartStatus(e.target.value)} style={{ cursor: 'pointer' }}>
-                  <option value="In Progress">In Progress</option>
-                  <option value="QC Check">QC Check</option>
-                  <option value="Passed QC">Passed QC</option>
-                  <option value="Failed QC / Rework">Failed QC / Rework</option>
-                  <option value="Moving to Next Stage">Moving to Next Stage</option>
-                </select>
-              </Field>
-              {partStatus === 'Moving to Next Stage' && (
-                <Field label="Next department">
-                  <select className="form-input" value={partNextDept} onChange={(e) => setPartNextDept(e.target.value)} style={{ cursor: 'pointer' }}>
-                    <option value="">Select next dept…</option>
-                    <option value="Production">Production</option>
-                    <option value="Assembly">Assembly</option>
-                    <option value="Finishing">Finishing</option>
-                    <option value="Craftsman">Craftsman</option>
-                  </select>
-                </Field>
-              )}
-              <Field label="Notes (optional)">
-                <textarea
-                  className="form-input"
-                  placeholder="Any additional details…"
-                  value={partNotes}
-                  onChange={(e) => setPartNotes(e.target.value)}
-                  rows={3}
-                  style={{ resize: 'vertical' }}
-                />
-              </Field>
-
-              {/* Photo upload */}
-              <Field label="Photo (optional)">
-                {partPhotoPreview ? (
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                    <img src={partPhotoPreview} alt="preview" style={{ width: 80, height: 60, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--line)', flexShrink: 0 }} />
-                    <button
-                      type="button"
-                      onClick={() => { setPartPhoto(null); setPartPhotoPreview(null); }}
-                      style={{ background: 'none', border: '1px solid var(--line)', borderRadius: 6, padding: '4px 10px', fontSize: 12, color: 'var(--ink-mute)', cursor: 'pointer' }}
-                    >
-                      Remove
-                    </button>
+              {partScanStep === 'camera' ? (
+                /* Step 1: Camera */
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18, padding: '4px 0' }}>
+                  <div style={{ position: 'relative', width: '100%', maxWidth: 300, aspectRatio: '4/3', background: '#07090A', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <div style={{ position: 'absolute', top: 14, left: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '3px 0 0 0' }} />
+                    <div style={{ position: 'absolute', top: 14, right: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 3px 0 0' }} />
+                    <div style={{ position: 'absolute', bottom: 14, left: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '0 0 0 3px' }} />
+                    <div style={{ position: 'absolute', bottom: 14, right: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 0 3px 0' }} />
+                    <svg width={44} height={44} viewBox="0 0 24 24" fill="none" stroke="rgba(94,234,212,0.25)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
                   </div>
-                ) : (
-                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 8, fontSize: 13, color: 'var(--ink-mute)', cursor: 'pointer' }}>
-                    <span>📷</span> Add Photo
-                    <input
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      style={{ display: 'none' }}
+                  <p style={{ fontSize: 12, color: 'var(--ink-mute)', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em', margin: 0 }}>Point camera at part</p>
+                  <label style={{ width: 62, height: 62, borderRadius: '50%', background: '#5EEAD4', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 0 0 5px rgba(94,234,212,0.18)', flexShrink: 0 }}>
+                    <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#050608" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                    <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
                       onChange={(e) => {
                         const file = e.target.files?.[0] ?? null;
-                        setPartPhoto(file);
-                        setPartPhotoPreview(file ? URL.createObjectURL(file) : null);
-                      }}
-                    />
+                        if (file) { setPartPhoto(file); setPartPhotoPreview(URL.createObjectURL(file)); setPartScanStep('preview'); }
+                      }} />
                   </label>
-                )}
-              </Field>
+                </div>
+              ) : (
+                /* Step 2: Preview + submit */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                    <img src={partPhotoPreview!} alt="part" style={{ width: 100, height: 75, objectFit: 'cover', borderRadius: 10, border: '1px solid var(--line)', flexShrink: 0 }} />
+                    <button type="button"
+                      onClick={() => { setPartPhoto(null); setPartPhotoPreview(null); setPartScanStep('camera'); }}
+                      style={{ background: 'none', border: '1px solid var(--line)', borderRadius: 6, padding: '4px 12px', fontSize: 12, color: 'var(--ink-mute)', cursor: 'pointer', marginTop: 4 }}>
+                      Retake
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <button className="btn btn-primary"
+                      style={{ flex: 1, justifyContent: 'center', background: '#60A5FA', boxShadow: 'none', opacity: saving ? 0.5 : 1 }}
+                      onClick={handlePartSubmit} disabled={saving}>
+                      {saving ? 'Logging…' : 'Submit'}
+                    </button>
+                    {!partShowDetails && (
+                      <button type="button" className="btn btn-ghost" style={{ flexShrink: 0 }} onClick={() => setPartShowDetails(true)}>
+                        Add Details
+                      </button>
+                    )}
+                  </div>
 
-              <button
-                className="btn btn-primary"
-                style={{ width: '100%', justifyContent: 'center', marginTop: 4, background: '#60A5FA', boxShadow: 'none', opacity: (!partName.trim() || !partDept || saving) ? 0.5 : 1 }}
-                onClick={handlePartSubmit}
-                disabled={!partName.trim() || !partDept || saving}
-              >
-                {saving ? 'Logging…' : 'Log Part'}
-              </button>
+                  {partShowDetails && (
+                    <>
+                      <Field label="Job">
+                        <select className="form-input" value={partJobId} onChange={(e) => setPartJobId(e.target.value)} style={{ cursor: 'pointer' }}>
+                          <option value="">No job selected</option>
+                          <option disabled>── Shop ──</option>
+                          <option value="__shop_maint__">Shop Maintenance</option>
+                          <option value="__machine_maint__">Machine Maintenance</option>
+                          <option value="__non_billable__">Non-Billable</option>
+                          <option value="__warranty__">Warranty / Repair</option>
+                          {jobs.length > 0 && <option disabled>── Jobs ──</option>}
+                          {jobs.map((j) => (
+                            <option key={j.id} value={j.id}>{j.job_number}{j.job_name ? ` — ${j.job_name}` : ''}</option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Field label="Status">
+                        <select className="form-input" value={partStatus} onChange={(e) => setPartStatus(e.target.value)} style={{ cursor: 'pointer' }}>
+                          <option value="In Progress">In Progress</option>
+                          <option value="QC Check">QC Check</option>
+                          <option value="Passed QC">Passed QC</option>
+                          <option value="Failed QC / Rework">Failed QC / Rework</option>
+                          <option value="Moving to Next Stage">Moving to Next Stage</option>
+                        </select>
+                      </Field>
+                      <Field label="Notes (optional)">
+                        <input className="form-input" placeholder="Any details…" value={partNotes} onChange={(e) => setPartNotes(e.target.value)} />
+                      </Field>
+                    </>
+                  )}
+                </div>
+              )}
             </>
           )}
 
@@ -2015,6 +2026,16 @@ export default function CrewPage() {
       )}
 
       {toast && <Toast msg={toast.msg} error={toast.error} />}
+
+      {/* ── Success flash overlays ── */}
+      {(dmgFlash || partFlash) && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(5,6,8,0.88)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, pointerEvents: 'none' }}>
+          <div style={{ background: '#052E16', border: '1px solid #34D399', borderRadius: 16, padding: '22px 40px', display: 'flex', alignItems: 'center', gap: 14 }}>
+            <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            <span style={{ fontSize: 18, fontWeight: 700, color: '#34D399' }}>{partFlash ? 'Part Logged' : 'Damage Reported'}</span>
+          </div>
+        </div>
+      )}
     </>
   );
 }
