@@ -3,6 +3,7 @@ import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
+import { getTenantId } from './tenant';
 
 // expo-notifications has no web implementation — guard all native calls
 if (Platform.OS !== 'web') {
@@ -71,10 +72,11 @@ export async function registerForPushNotifications(userName, userDept) {
   }
 
   // Upsert into device_tokens — update name/dept if token already registered
+  const tenantId = await getTenantId();
   const { error } = await supabase
     .from('device_tokens')
     .upsert(
-      { token, name: userName, dept: userDept },
+      { token, name: userName, dept: userDept, ...(tenantId && { tenant_id: tenantId }) },
       { onConflict: 'token' }
     );
 

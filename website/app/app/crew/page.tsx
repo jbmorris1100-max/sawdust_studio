@@ -497,9 +497,12 @@ export default function CrewPage() {
     // 3. Re-fetch messages — the initial load was capped at 50 rows across all
     //    departments, so messages for the newly selected dept may not be loaded yet
     await reloadMessages();
-    // 4. Best-effort: sync device_tokens push token row
+    // 4. Best-effort: sync device_tokens push token row for this tenant only
     try {
-      await supabase.from('device_tokens').update({ dept: newDept }).eq('name', crewName);
+      await supabase.from('device_tokens')
+        .update({ dept: newDept })
+        .eq('name', crewName)
+        .eq('tenant_id', tenant!.id);
     } catch (_) {}
     closeModal();
     showToast(`Department changed to ${newDept} ✓`);
