@@ -5,6 +5,7 @@ import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
 import { useSession } from '@/lib/useSession';
 import { trialDaysLeft } from '@/lib/auth';
+import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -98,10 +99,11 @@ type Job = {
   job_number: string;
   job_name: string | null;
   status: string;
+  source?: string | null;
   created_at: string;
 };
 
-type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai';
+type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations';
 
 type AiMode = 'learn' | 'assist' | 'autonomous';
 
@@ -367,7 +369,7 @@ export default function SupervisorPage() {
         supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('time_clock').select('id, worker_name, clock_in, clock_out, notes, job_number, total_hours').eq('tenant_id', tenant.id).eq('status', 'craftsman_build').order('clock_in', { ascending: false }).limit(50),
         supabase.from('parts_log').select('*').eq('tenant_id', tenant.id).not('status', 'in', '("Passed QC")').order('created_at', { ascending: false }).limit(100),
-        supabase.from('jobs').select('id, job_number, job_name, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
+        supabase.from('jobs').select('id, job_number, job_name, status, source, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
       ]);
       if (plansRes.data)  setPlans(plansRes.data as JobDrawing[]);
       if (sopsRes.data)   setSops(sopsRes.data as SopItem[]);
@@ -966,13 +968,14 @@ export default function SupervisorPage() {
   const days = trialDaysLeft(tenant?.trial_ends_at ?? null);
 
   const tabs: { key: Tab; label: string; count?: number }[] = [
-    { key: 'overview',  label: 'Overview' },
-    { key: 'messages',  label: 'Messages',  count: messages.length },
-    { key: 'needs',     label: 'Inventory', count: openNeeds.length },
-    { key: 'damage',    label: 'Damage',    count: openDamage.length },
-    { key: 'plans',     label: 'Plans',     count: plans.length > 0 ? plans.length : undefined },
-    { key: 'sops',      label: 'SOPs',      count: sops.length > 0 ? sops.length : undefined },
-    { key: 'ai',        label: 'AI' },
+    { key: 'overview',      label: 'Overview' },
+    { key: 'messages',      label: 'Messages',    count: messages.length },
+    { key: 'needs',         label: 'Inventory',   count: openNeeds.length },
+    { key: 'damage',        label: 'Damage',      count: openDamage.length },
+    { key: 'plans',         label: 'Plans',       count: plans.length > 0 ? plans.length : undefined },
+    { key: 'sops',          label: 'SOPs',        count: sops.length > 0 ? sops.length : undefined },
+    { key: 'ai',            label: 'AI' },
+    { key: 'integrations',  label: 'Integrations' },
   ];
 
   // ── Thread computation for Messages tab ────────────────────────────────────
@@ -1295,9 +1298,10 @@ export default function SupervisorPage() {
                 ) : (
                   jobs.filter((j) => j.status === 'active').map((j) => (
                     <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 20px', borderBottom: '1px solid var(--line)' }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)', marginRight: 10 }}>{j.job_number}</span>
+                      <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{j.job_number}</span>
                         {j.job_name && <span style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{j.job_name}</span>}
+                        <SourceBadge source={j.source} />
                       </div>
                       <button
                         onClick={() => { void handleDeleteJob(j.id); }}
@@ -2269,6 +2273,18 @@ export default function SupervisorPage() {
                 </>
               )}
             </div>
+          )}
+
+          {/* ── Integrations tab ─────────────────────────────────────────── */}
+          {tab === 'integrations' && tenant && (
+            <IntegrationsTab
+              tenantId={tenant.id}
+              showToast={showToast}
+              jobs={jobs}
+              setJobs={setJobs}
+              plans={plans}
+              setPlans={setPlans}
+            />
           )}
 
         </main>
