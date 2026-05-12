@@ -21,21 +21,8 @@ import { supabase } from '../lib/supabase';
 import { postWorkOrderNote, getWorkOrdersByProjectNumber } from '../lib/innergy';
 import { getTenantId } from '../lib/tenant';
 
-// ── Design tokens ─────────────────────────────────────────────
-const C = {
-  bg:          '#07090F',
-  surface:     '#0D1117',
-  input:       '#111620',
-  border:      '#1A2535',
-  text:        '#FFFFFF',
-  muted:       '#2D8A94',
-  accent:      '#00C5CC',
-  accentDark:  '#0AAFB8',
-  // Bubbles
-  bubbleIn:    '#1e1e1e',
-  bubbleOwn:   '#00C5CC',
-  bubbleSup:   '#00C5CC',
-};
+import { T } from '../lib/theme';
+const C = { ...T, bubbleIn: T.input, bubbleOwn: T.accent, bubbleSup: T.accent };
 
 // ── Helpers ───────────────────────────────────────────────────
 const formatTime = (iso) =>
@@ -141,7 +128,7 @@ function SwipeableMessageRow({ onDelete, children }) {
     <View style={{ overflow: 'hidden' }}>
       <View style={{
         position: 'absolute', right: 0, top: 0, bottom: 0,
-        width: DELETE_WIDTH, backgroundColor: '#ef4444',
+        width: DELETE_WIDTH, backgroundColor: C.danger,
         justifyContent: 'center', alignItems: 'center',
       }}>
         <TouchableOpacity
@@ -225,8 +212,16 @@ export default function MessagesScreen({ route }) {
   }, [userName, userDept]);
 
   const deleteMessage = useCallback(async (id) => {
-    setMessages((prev) => prev.filter((m) => m.id !== id));
-    await supabase.from('messages').delete().eq('id', id);
+    console.log('[deleteMessage] id:', id);
+    try {
+      const { error, count } = await supabase.from('messages').delete({ count: 'exact' }).eq('id', id);
+      console.log('[deleteMessage] result:', { error: error?.message ?? null, count });
+      if (error) { console.error('[deleteMessage] error:', error.message); return; }
+      if (count === 0) { console.warn('[deleteMessage] blocked — 0 rows deleted (check RLS on messages)'); return; }
+      setMessages((prev) => prev.filter((m) => m.id !== id));
+    } catch (err) {
+      console.error('[deleteMessage] failed:', err);
+    }
   }, []);
 
   useEffect(() => {
@@ -558,6 +553,6 @@ const styles = StyleSheet.create({
     marginBottom: 1,
   },
   sendBtnDisabled: {
-    backgroundColor: C.border,
+    backgroundColor: C.surface,
   },
 });

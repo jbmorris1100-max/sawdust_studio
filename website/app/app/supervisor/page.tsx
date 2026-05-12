@@ -706,41 +706,39 @@ export default function SupervisorPage() {
   // ── Message delete ──────────────────────────────────────────────────────────
 
   async function handleDeleteMessage(id: string) {
-    const backup = messages.find((m) => m.id === id);
-    setMessages((prev) => prev.filter((m) => m.id !== id));
+    console.log('[handleDeleteMessage] id:', id);
     try {
-      const { error } = await supabase.from('messages').delete().eq('id', id);
+      const { error, count } = await supabase.from('messages').delete({ count: 'exact' }).eq('id', id);
+      console.log('[handleDeleteMessage] result:', { error: error?.message ?? null, count });
       if (error) throw error;
+      if (count === 0) throw new Error('Delete blocked — no rows affected (missing RLS DELETE policy on messages)');
+      setMessages((prev) => prev.filter((m) => m.id !== id));
     } catch (err: unknown) {
-      if (backup) {
-        setMessages((prev) =>
-          [backup, ...prev].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-        );
-      }
       const msg = err instanceof Error ? err.message : 'Delete failed';
+      console.error('[handleDeleteMessage] failed:', msg);
       showToast(msg, true);
     }
   }
 
   async function handleDeleteThread(deptKey: string, label: string) {
     if (!window.confirm(`Delete all ${label} messages? This cannot be undone.`)) return;
-    const backup = messages.filter((m) => (m.dept ?? '__broadcast__') === deptKey);
-    setMessages((prev) => prev.filter((m) => (m.dept ?? '__broadcast__') !== deptKey));
-    setOpenThread(null);
+    console.log('[handleDeleteThread] dept:', deptKey, 'tenant:', tenant?.id);
     try {
-      let query = supabase.from('messages').delete().eq('tenant_id', tenant!.id);
+      let query = supabase.from('messages').delete({ count: 'exact' }).eq('tenant_id', tenant!.id);
       if (deptKey === '__broadcast__') {
         query = query.is('dept', null);
       } else {
         query = query.eq('dept', deptKey);
       }
-      const { error } = await query;
+      const { error, count } = await query;
+      console.log('[handleDeleteThread] result:', { error: error?.message ?? null, count });
       if (error) throw error;
+      if (count === 0) throw new Error('Delete blocked — no rows affected (missing RLS DELETE policy on messages)');
+      setMessages((prev) => prev.filter((m) => (m.dept ?? '__broadcast__') !== deptKey));
+      setOpenThread(null);
     } catch (err: unknown) {
-      setMessages((prev) =>
-        [...backup, ...prev].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-      );
       const msg = err instanceof Error ? err.message : 'Delete failed';
+      console.error('[handleDeleteThread] failed:', msg);
       showToast(msg, true);
     }
   }
