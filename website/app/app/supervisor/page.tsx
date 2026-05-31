@@ -341,6 +341,14 @@ export default function SupervisorPage() {
   const [resCost,       setResCost]       = useState('');
   const [resSubmitting, setResSubmitting] = useState(false);
 
+  // Supervisor inventory form
+  const [supInvItem,    setSupInvItem]    = useState('');
+  const [supInvDept,    setSupInvDept]    = useState('Production');
+  const [supInvQty,     setSupInvQty]     = useState(1);
+  const [supInvJobNum,  setSupInvJobNum]  = useState('');
+  const [supInvNotes,   setSupInvNotes]   = useState('');
+  const [supInvSaving,  setSupInvSaving]  = useState(false);
+
   // Toast
   const [toast,     setToast]     = useState<{ msg: string; error?: boolean } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -740,6 +748,50 @@ export default function SupervisorPage() {
       const msg = err instanceof Error ? err.message : 'Delete failed';
       console.error('[handleDeleteThread] failed:', msg);
       showToast(msg, true);
+    }
+  }
+
+  // ── Supervisor inventory submit ──────────────────────────────────────────────
+
+  async function handleSupInventorySubmit() {
+    const item = supInvItem.trim();
+    if (!item || supInvSaving) return;
+    setSupInvSaving(true);
+    const optimisticId = crypto.randomUUID();
+    const optimistic: InventoryNeed = {
+      id: optimisticId,
+      item,
+      dept: supInvDept,
+      job_number: supInvJobNum.trim() || null,
+      qty: supInvQty,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    };
+    setNeeds((prev) => [optimistic, ...prev]);
+    try {
+      const { data, error } = await supabase.from('inventory_needs').insert({
+        item,
+        dept: supInvDept,
+        qty: supInvQty,
+        status: 'pending',
+        tenant_id: tenant!.id,
+        ...(supInvJobNum.trim() && { job_number: supInvJobNum.trim() }),
+        ...(supInvNotes.trim() && { notes: supInvNotes.trim() }),
+      }).select('id, item, dept, job_number, qty, status, created_at').single();
+      if (error) throw error;
+      setNeeds((prev) => prev.map((n) => n.id === optimisticId ? (data as InventoryNeed) : n));
+      setSupInvItem('');
+      setSupInvDept('Production');
+      setSupInvQty(1);
+      setSupInvJobNum('');
+      setSupInvNotes('');
+      showToast('Inventory need logged ✓');
+    } catch (err: unknown) {
+      setNeeds((prev) => prev.filter((n) => n.id !== optimisticId));
+      const msg = err instanceof Error ? err.message : 'Insert failed';
+      showToast(msg, true);
+    } finally {
+      setSupInvSaving(false);
     }
   }
 
@@ -1702,6 +1754,56 @@ export default function SupervisorPage() {
 
           {/* ── Inventory tab ─────────────────────────────────────────────────── */}
           {tab === 'needs' && (
+            <>
+            <div className="portal-card" style={{ padding: '20px 24px' }}>
+              <div style={{ marginBottom: 14, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
+                Log Inventory Need
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                <input
+                  placeholder="Item description *"
+                  value={supInvItem}
+                  onChange={(e) => setSupInvItem(e.target.value)}
+                  style={{ gridColumn: '1 / -1', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
+                />
+                <select
+                  value={supInvDept}
+                  onChange={(e) => setSupInvDept(e.target.value)}
+                  style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
+                >
+                  {['Production', 'Assembly', 'Finishing', 'Craftsman', 'All Departments'].map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  min={1}
+                  value={supInvQty}
+                  onChange={(e) => setSupInvQty(Math.max(1, parseInt(e.target.value) || 1))}
+                  style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
+                  placeholder="Qty"
+                />
+                <input
+                  placeholder="Job # (optional)"
+                  value={supInvJobNum}
+                  onChange={(e) => setSupInvJobNum(e.target.value)}
+                  style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
+                />
+                <input
+                  placeholder="Notes (optional)"
+                  value={supInvNotes}
+                  onChange={(e) => setSupInvNotes(e.target.value)}
+                  style={{ gridColumn: '1 / -1', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
+                />
+              </div>
+              <button
+                onClick={handleSupInventorySubmit}
+                disabled={!supInvItem.trim() || supInvSaving}
+                style={{ padding: '9px 20px', borderRadius: 8, background: supInvItem.trim() && !supInvSaving ? '#2DE1C9' : 'var(--line)', color: supInvItem.trim() && !supInvSaving ? '#001a0d' : 'var(--ink-mute)', border: 'none', fontWeight: 700, fontSize: 13, cursor: supInvItem.trim() && !supInvSaving ? 'pointer' : 'default' }}
+              >
+                {supInvSaving ? 'Saving…' : 'Log Inventory Need'}
+              </button>
+            </div>
             <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)', fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
                 Inventory Needs
@@ -1752,6 +1854,7 @@ export default function SupervisorPage() {
                 </table>
               )}
             </div>
+            </>
           )}
 
           {/* ── Damage tab ────────────────────────────────────────────────────── */}
