@@ -349,6 +349,14 @@ export default function SupervisorPage() {
   const [supInvNotes,   setSupInvNotes]   = useState('');
   const [supInvSaving,  setSupInvSaving]  = useState(false);
 
+  // Supervisor damage form
+  const [supDmgDesc,    setSupDmgDesc]    = useState('');
+  const [supDmgDept,    setSupDmgDept]    = useState('Production');
+  const [supDmgJobNum,  setSupDmgJobNum]  = useState('');
+  const [supDmgPhoto,   setSupDmgPhoto]   = useState<File | null>(null);
+  const [supDmgPreview, setSupDmgPreview] = useState<string | null>(null);
+  const [supDmgSaving,  setSupDmgSaving]  = useState(false);
+
   // Toast
   const [toast,     setToast]     = useState<{ msg: string; error?: boolean } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -792,6 +800,75 @@ export default function SupervisorPage() {
       showToast(msg, true);
     } finally {
       setSupInvSaving(false);
+    }
+  }
+
+  // ── Supervisor damage submit ────────────────────────────────────────────────
+
+  function handleSupDmgPhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    setSupDmgPhoto(file);
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (ev) => setSupDmgPreview(ev.target?.result as string);
+      reader.readAsDataURL(file);
+    } else {
+      setSupDmgPreview(null);
+    }
+  }
+
+  async function handleSupDamageSubmit() {
+    const desc = supDmgDesc.trim();
+    if (!desc || supDmgSaving) return;
+    setSupDmgSaving(true);
+    const optimisticId = crypto.randomUUID();
+    const optimistic: DamageReport = {
+      id: optimisticId,
+      part_name: desc,
+      job_id: supDmgJobNum.trim() || null,
+      dept: supDmgDept,
+      notes: null,
+      photo_url: supDmgPreview,
+      status: 'open',
+      created_at: new Date().toISOString(),
+      resolution_type: null,
+      resolution_notes: null,
+      resolved_by: null,
+      resolution_cost: null,
+      resolved_at: null,
+    };
+    setDamage((prev) => [optimistic, ...prev]);
+    try {
+      let photoUrl: string | null = null;
+      if (supDmgPhoto) {
+        const ext = supDmgPhoto.name.split('.').pop() ?? 'jpg';
+        const path = `${tenant!.id}/${Date.now()}.${ext}`;
+        const { error: uploadErr } = await supabase.storage.from('damage-photos').upload(path, supDmgPhoto, { upsert: true });
+        if (uploadErr) throw uploadErr;
+        const { data: { publicUrl } } = supabase.storage.from('damage-photos').getPublicUrl(path);
+        photoUrl = publicUrl;
+      }
+      const { data, error } = await supabase.from('damage_reports').insert({
+        part_name: desc,
+        dept: supDmgDept,
+        status: 'open',
+        tenant_id: tenant!.id,
+        ...(supDmgJobNum.trim() && { job_id: supDmgJobNum.trim() }),
+        ...(photoUrl && { photo_url: photoUrl }),
+      }).select('id, part_name, job_id, dept, notes, photo_url, status, created_at').single();
+      if (error) throw error;
+      setDamage((prev) => prev.map((d) => d.id === optimisticId ? (data as DamageReport) : d));
+      setSupDmgDesc('');
+      setSupDmgDept('Production');
+      setSupDmgJobNum('');
+      setSupDmgPhoto(null);
+      setSupDmgPreview(null);
+      showToast('Damage report submitted ✓');
+    } catch (err: unknown) {
+      setDamage((prev) => prev.filter((d) => d.id !== optimisticId));
+      showToast(err instanceof Error ? err.message : 'Insert failed', true);
+    } finally {
+      setSupDmgSaving(false);
     }
   }
 
@@ -1859,6 +1936,57 @@ export default function SupervisorPage() {
 
           {/* ── Damage tab ────────────────────────────────────────────────────── */}
           {tab === 'damage' && (
+            <>
+            <div className="portal-card" style={{ padding: '20px 24px', marginBottom: 10 }}>
+              <div style={{ marginBottom: 14, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
+                Report Damage
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <textarea
+                  placeholder="Describe the damage..."
+                  value={supDmgDesc}
+                  onChange={(e) => setSupDmgDesc(e.target.value)}
+                  rows={3}
+                  style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13, resize: 'vertical', fontFamily: 'inherit' }}
+                />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <select
+                    value={supDmgDept}
+                    onChange={(e) => setSupDmgDept(e.target.value)}
+                    style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
+                  >
+                    {['Production', 'Assembly', 'Finishing', 'Craftsman'].map((d) => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                  <input
+                    placeholder="Job # (optional)"
+                    value={supDmgJobNum}
+                    onChange={(e) => setSupDmgJobNum(e.target.value)}
+                    style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
+                  />
+                </div>
+                <div>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={handleSupDmgPhotoChange}
+                    style={{ fontSize: 13, color: 'var(--ink-dim)' }}
+                  />
+                  {supDmgPreview && (
+                    <img src={supDmgPreview} alt="preview" style={{ marginTop: 8, width: 120, height: 90, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--line)', display: 'block' }} />
+                  )}
+                </div>
+                <button
+                  onClick={handleSupDamageSubmit}
+                  disabled={!supDmgDesc.trim() || supDmgSaving}
+                  style={{ padding: '9px 20px', borderRadius: 8, background: supDmgDesc.trim() && !supDmgSaving ? '#F87171' : 'var(--line)', color: supDmgDesc.trim() && !supDmgSaving ? '#fff' : 'var(--ink-mute)', border: 'none', fontWeight: 700, fontSize: 13, cursor: supDmgDesc.trim() && !supDmgSaving ? 'pointer' : 'default', alignSelf: 'flex-start' }}
+                >
+                  {supDmgSaving ? 'Submitting…' : 'Report Damage'}
+                </button>
+              </div>
+            </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {dataLoading ? (
                 <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
@@ -1906,6 +2034,7 @@ export default function SupervisorPage() {
                 })
               )}
             </div>
+            </>
           )}
           {/* ── Plans tab ────────────────────────────────────────────────────── */}
           {tab === 'plans' && (
