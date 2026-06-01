@@ -104,6 +104,21 @@ const getWebDeviceId = () => {
 const load = (k, d=[]) => { try { const v=localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const sv   = (k, v)    => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
+// ── Message read-state helpers ─────────────────────────────────────────────────
+const TENANT_ID  = "inlineiq";
+const msgReadKey = name => `read_${TENANT_ID}_${name}`;
+const computeUnreadCount = (msgs, readSt) => {
+  const latest = {};
+  msgs.forEach(m => {
+    if (m.sender_name === "Supervisor") return;
+    if (!latest[m.sender_name] || m.created_at >= latest[m.sender_name].created_at)
+      latest[m.sender_name] = m;
+  });
+  return Object.values(latest).filter(m =>
+    !readSt[m.sender_name] || String(m.id) !== readSt[m.sender_name]
+  ).length;
+};
+
 // Shared styles
 const CS  = { background:"#141414", border:"1px solid #222", borderRadius:6, padding:"12px 16px", marginBottom:8 };
 const CS2 = { background:"#111",    border:"1px solid #222", borderRadius:6, padding:"14px 16px", marginBottom:10 };
@@ -179,8 +194,10 @@ function App() {
   const [unreadNeeds,   setUnreadNeeds]   = useState(0);
   const [unreadDmg,     setUnreadDmg]     = useState(0);
   const [activeThread,  setActiveThread]  = useState(null); // { name, dept } | null
-  const msgListRef    = useRef(null);
-  const activeViewRef = useRef("brief");
+  const [readState,     setReadState]     = useState({});   // name → last-read msg id
+  const msgListRef      = useRef(null);
+  const activeViewRef   = useRef("brief");
+  const activeThreadRef = useRef(null);
 
   // ── Supabase: initial fetch + real-time subscriptions ─────────────────────
   useEffect(() => {
@@ -196,11 +213,24 @@ function App() {
     ]).then(([ni, dr, ms, so, sv, tc, dr2]) => {
       if (ni.data)  setMiss(ni.data);
       if (dr.data)  setDamageRpts(dr.data);
-      if (ms.data)  setMessages(ms.data);
+      if (ms.data) {
+        setMessages(ms.data);
+        const initRead = {};
+        ms.data.forEach(m => {
+          if (m.sender_name === "Supervisor") return;
+          const stored = localStorage.getItem(msgReadKey(m.sender_name));
+          if (stored) initRead[m.sender_name] = stored;
+        });
+        setReadState(initRead);
+        setUnread(computeUnreadCount(ms.data, initRead));
+      }
       if (so.data)  setSops(so.data);
       if (sv.data)  setSopViews(sv.data);
       if (tc.data)  { setTcToday(tc.data); console.log("[supervisor] time_clock fetch →", tc.data.length, "records for", today(), tc.data); }
       if (dr2.data) setDrawings(dr2.data);
+      setSbReady(true);
+    }).catch(err => {
+      console.error("[supervisor] initial fetch failed", err);
       setSbReady(true);
     });
 
@@ -239,8 +269,17 @@ function App() {
           if (p.some(m => m.id === payload.new.id)) return p;
           return [...p, payload.new];
         });
-        // only badge for incoming crew messages, not supervisor's own sends
-        if (payload.new.sender_name !== "Supervisor") setUnread(n => n + 1);
+        if (payload.new.sender_name !== "Supervisor") {
+          const curThread = activeThreadRef.current;
+          if (curThread && curThread.name === payload.new.sender_name) {
+            // Thread is open — mark as read immediately
+            const mid = String(payload.new.id);
+            localStorage.setItem(msgReadKey(payload.new.sender_name), mid);
+            setReadState(prev => ({ ...prev, [payload.new.sender_name]: mid }));
+          } else {
+            setUnread(n => n + 1);
+          }
+        }
       })
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "messages" }, payload => {
         setMessages(p => p.filter(m => m.id !== payload.old.id));
@@ -311,7 +350,21 @@ function App() {
     }
   }, [messages, view]);
 
-  const openMessages = () => { setView("messages"); setUnread(0); activeViewRef.current = "messages"; };
+  const openMessages = () => { setView("messages"); activeViewRef.current = "messages"; };
+
+  const openThread = thread => {
+    setActiveThread({name: thread.name, dept: thread.dept});
+    activeThreadRef.current = {name: thread.name, dept: thread.dept};
+    const crewMsgs = messages.filter(m => m.sender_name === thread.name);
+    let newLastId = readState[thread.name] || null;
+    if (crewMsgs.length > 0) {
+      const latest = crewMsgs.reduce((a, b) => a.created_at > b.created_at ? a : b);
+      newLastId = String(latest.id);
+      localStorage.setItem(msgReadKey(thread.name), newLastId);
+      setReadState(prev => ({ ...prev, [thread.name]: newLastId }));
+    }
+    setUnread(computeUnreadCount(messages, { ...readState, [thread.name]: newLastId }));
+  };
 
   // ── localStorage setters (supervisor-local) ───────────────────────────────
   const UJ = u => { setJobs(u);   sv(K.j,  u); };
@@ -462,7 +515,7 @@ function App() {
     const body = `${emoji} QC ${result.toUpperCase()} — Job #${qcJob.jobId} (${qcType})` +
       (qcN ? `\n${qcN}` : "") +
       (parts.length > 0 ? `\nParts verified: ${parts.filter(p=>partChecks[p.uid]?.checked).length}/${parts.length}` : "");
-    await sb.from("messages").insert({ sender_name:"Supervisor", dept:"QC", body });
+    try { await sb.from("messages").insert({ sender_name:"Supervisor", dept:"QC", body }); } catch (e) {}
 
     // AI auto-capture — log this QC check as a learning data point
     const _now = new Date();
@@ -486,43 +539,83 @@ function App() {
   // ── Missing parts → Supabase inventory_needs ─────────────────────────────
   const addMiss = async () => {
     if (!nm.part.trim()) return;
-    const { data, error } = await sb.from("inventory_needs")
-      .insert({
-        item:   nm.part.trim(),
-        dept:   nm.stage,
-        job_id: nm.jobId.trim() || null,
-        qty:    Number(nm.qty) || 1,
-        status: "pending",
-      })
-      .select().single();
-    if (!error && data) setMiss(p => [data, ...p]);
-    setNm({jobId:"",part:"",qty:1,stage:"Cutting",notes:""}); setShowAM(false);
+    try {
+      const { data, error } = await sb.from("inventory_needs")
+        .insert({
+          item:   nm.part.trim(),
+          dept:   nm.stage,
+          job_id: nm.jobId.trim() || null,
+          qty:    Number(nm.qty) || 1,
+          status: "pending",
+        })
+        .select().single();
+      if (error) throw error;
+      setMiss(p => [data, ...p]);
+      setNm({jobId:"",part:"",qty:1,stage:"Cutting",notes:""}); setShowAM(false);
+    } catch (e) {
+      showToastMsg("Failed to log — please try again");
+    }
   };
 
   const resolveMiss = async id => {
+    const prev = miss.slice();
     setMiss(p => p.map(m => m.id === id ? { ...m, status:"received" } : m));
-    await sb.from("inventory_needs").update({ status:"received" }).eq("id", id);
+    try {
+      const { error } = await sb.from("inventory_needs").update({ status:"received" }).eq("id", id);
+      if (error) throw error;
+    } catch (e) {
+      setMiss(prev);
+      showToastMsg("Update failed — please try again");
+    }
   };
 
   const deleteMiss = async id => {
+    const prev = miss.slice();
     setMiss(p => p.filter(m => m.id !== id));
-    await sb.from("inventory_needs").delete().eq("id", id);
+    try {
+      const { error } = await sb.from("inventory_needs").delete().eq("id", id);
+      if (error) throw error;
+    } catch (e) {
+      setMiss(prev);
+      showToastMsg("Delete failed — please try again");
+    }
   };
 
   // ── Damage reports: status update + resolution ────────────────────────────
   const updateDamageStatus = async (id, status) => {
+    const prev = damageRpts.slice();
     setDamageRpts(p => p.map(d => d.id === id ? { ...d, status } : d));
-    await sb.from("damage_reports").update({ status }).eq("id", id);
+    try {
+      const { error } = await sb.from("damage_reports").update({ status }).eq("id", id);
+      if (error) throw error;
+    } catch (e) {
+      setDamageRpts(prev);
+      showToastMsg("Update failed — please try again");
+    }
   };
 
   const archiveDamage = async id => {
+    const prev = damageRpts.slice();
     setDamageRpts(p => p.map(d => d.id === id ? { ...d, archived: true } : d));
-    await sb.from("damage_reports").update({ archived: true }).eq("id", id);
+    try {
+      const { error } = await sb.from("damage_reports").update({ archived: true }).eq("id", id);
+      if (error) throw error;
+    } catch (e) {
+      setDamageRpts(prev);
+      showToastMsg("Archive failed — please try again");
+    }
   };
 
   const deleteMessage = async id => {
+    const prev = messages.slice();
     setMessages(p => p.filter(m => m.id !== id));
-    await sb.from("messages").delete().eq("id", id);
+    try {
+      const { error } = await sb.from("messages").delete().eq("id", id);
+      if (error) throw error;
+    } catch (e) {
+      setMessages(prev);
+      showToastMsg("Delete failed — please try again");
+    }
   };
 
   const submitResolution = async () => {
@@ -535,12 +628,20 @@ function App() {
       resolved_at:      new Date().toISOString(),
       status:           "resolved",
     };
+    const prev = damageRpts.slice();
     setDamageRpts(p => p.map(d => d.id === resolveModal.id ? { ...d, ...fields } : d));
-    await sb.from("damage_reports").update(fields).eq("id", resolveModal.id);
-    setResolving(false);
-    setResolveModal(null);
-    setResNotes("");
-    showToastMsg("Damage report resolved");
+    try {
+      const { error } = await sb.from("damage_reports").update(fields).eq("id", resolveModal.id);
+      if (error) throw error;
+      setResolveModal(null);
+      setResNotes("");
+      showToastMsg("Damage report resolved");
+    } catch (e) {
+      setDamageRpts(prev);
+      showToastMsg("Save failed — please try again");
+    } finally {
+      setResolving(false);
+    }
   };
 
   // ── Standup → localStorage + Supabase messages ────────────────────────────
@@ -555,7 +656,7 @@ function App() {
       nsd.issues     && `Open issues: ${nsd.issues}`,
       nsd.notes      && `Notes: ${nsd.notes}`,
     ].filter(Boolean).join("\n");
-    await sb.from("messages").insert({ sender_name:"Supervisor", dept:"Management", body });
+    try { await sb.from("messages").insert({ sender_name:"Supervisor", dept:"Management", body }); } catch (e) {}
 
     setNsd({date:today(),priorities:"",crew:"",issues:"",notes:""}); setShowSD(false);
   };
@@ -730,22 +831,30 @@ function App() {
     if (!name) return;
     setSupLoginLoading(true);
     setSupLoginError("");
-    const deviceId = getWebDeviceId();
-    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const { data: activeSessions } = await sb.from("supervisor_sessions")
-      .select("name, device_id").eq("is_active", true).gte("logged_in_at", cutoff);
-    const conflict = activeSessions?.find(s => s.device_id !== deviceId);
-    if (conflict) {
-      setSupLoginError("Supervisor already logged in as " + conflict.name + ". Only one session is allowed at a time.");
+    try {
+      const deviceId = getWebDeviceId();
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const { data: activeSessions, error: sessionErr } = await sb.from("supervisor_sessions")
+        .select("name, device_id").eq("is_active", true).gte("logged_in_at", cutoff);
+      if (sessionErr) throw sessionErr;
+      const conflict = activeSessions?.find(s => s.device_id !== deviceId);
+      if (conflict) {
+        setSupLoginError("Supervisor already logged in as " + conflict.name + ". Only one session is allowed at a time.");
+        setSupLoginLoading(false);
+        return;
+      }
+      const { error: insertErr } = await sb.from("supervisor_sessions").insert({ name, device_id: deviceId, is_active: true });
+      if (insertErr) throw insertErr;
+      try { await sb.from("login_log").insert({ worker_name: name, dept: "Management", role: "supervisor", device_id: deviceId, app_version: "web" }); } catch (e) {}
+      localStorage.setItem("supervisor_name", name);
+      setSupervisorName(name);
+      setSupLoginName("");
+    } catch (e) {
+      setSupLoginError("Login failed — please try again.");
+      console.error("[supervisor] login error", e);
+    } finally {
       setSupLoginLoading(false);
-      return;
     }
-    await sb.from("supervisor_sessions").insert({ name, device_id: deviceId, is_active: true });
-    try { await sb.from("login_log").insert({ worker_name: name, dept: "Management", role: "supervisor", device_id: deviceId, app_version: "web" }); } catch (e) {}
-    localStorage.setItem("supervisor_name", name);
-    setSupervisorName(name);
-    setSupLoginName("");
-    setSupLoginLoading(false);
   };
 
   const supervisorLogout = async () => {
@@ -832,14 +941,19 @@ function App() {
 
   const deletePlan = async (drawing) => {
     if (!confirm(`Delete "${drawing.label}"? This cannot be undone.`)) return;
-    const url  = drawing.file_url || "";
-    const path = url.split("/job-plans/")[1];
-    if (path) {
-      await sb.storage.from("job-plans").remove([decodeURIComponent(path)]);
+    try {
+      const url  = drawing.file_url || "";
+      const path = url.split("/job-plans/")[1];
+      if (path) {
+        await sb.storage.from("job-plans").remove([decodeURIComponent(path)]);
+      }
+      const { error } = await sb.from("job_drawings").delete().eq("id", drawing.id);
+      if (error) throw error;
+      setDrawings(p => p.filter(d => d.id !== drawing.id));
+      showToastMsg("Plan deleted");
+    } catch (e) {
+      showToastMsg("Delete failed — please try again");
     }
-    await sb.from("job_drawings").delete().eq("id", drawing.id);
-    setDrawings(p => p.filter(d => d.id !== drawing.id));
-    showToastMsg("Plan deleted");
   };
 
   // ── SOPs ──────────────────────────────────────────────────────────────────
@@ -878,15 +992,23 @@ function App() {
       file_type:   fileType,
       updated_at:  new Date().toISOString(),
     };
+    let saveError = null;
     if (editSopId) {
       const { data, error } = await sb.from("sops").update(payload).eq("id", editSopId).select().single();
       if (!error && data) setSops(p => p.map(s => s.id === editSopId ? data : s));
+      else saveError = error;
     } else {
       const { data, error } = await sb.from("sops").insert({ ...payload, created_by: "Supervisor" }).select().single();
       if (!error && data) setSops(p => [data, ...p]);
+      else saveError = error;
+    }
+    setSopUploading(false);
+    if (saveError) {
+      showToastMsg("Save failed — please try again");
+      return;
     }
     setSopMode("steps"); setSopFile(null); setSopDriveLink("");
-    setSopUploading(false); setShowSopModal(false);
+    setShowSopModal(false);
     showToastMsg("SOP saved — crew can see it immediately");
   };
 
@@ -899,8 +1021,14 @@ function App() {
         await sb.storage.from("sop-files").remove([path]);
       } catch {}
     }
-    await sb.from("sops").delete().eq("id", id);
-    setSops(p => p.filter(s => s.id !== id));
+    try {
+      const { error } = await sb.from("sops").delete().eq("id", id);
+      if (error) throw error;
+      setSops(p => p.filter(s => s.id !== id));
+      showToastMsg("SOP deleted");
+    } catch (e) {
+      showToastMsg("Delete failed — please try again");
+    }
   };
 
   // ── Derived ───────────────────────────────────────────────────────────────
@@ -1580,25 +1708,27 @@ function App() {
         threads.map(t => {
           const last = t.messages[t.messages.length-1];
           const replyCount = messages.filter(m => m.sender_name==="Supervisor" && new Date(m.created_at) >= new Date(t.messages[0]?.created_at)).length;
+          const isUnread = last && String(last.id) !== (readState[t.name] || null);
           return h("div",{
             key: t.name,
-            onClick: ()=>{ setActiveThread({name:t.name,dept:t.dept}); setUnread(0); },
+            onClick: () => openThread(t),
             style:{
               ...CS, cursor:"pointer", display:"flex", alignItems:"center",
               justifyContent:"space-between", gap:14,
-              borderLeft:"3px solid "+AM,
+              borderLeft:"3px solid "+(isUnread ? AM : "#333"),
               transition:"background .1s",
             },
             onMouseEnter: e=>e.currentTarget.style.background="#1a1a1a",
             onMouseLeave: e=>e.currentTarget.style.background=CS.background,
           },
             h("div",{style:{flex:1,minWidth:0}},
-              h("div",{style:{display:"flex",alignItems:"center",gap:10,marginBottom:5}},
-                h("span",{style:{fontWeight:500,fontSize:14,color:AM}}, t.name),
+              h("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:5}},
+                isUnread && h("span",{style:{width:8,height:8,minWidth:8,borderRadius:"50%",background:AM,display:"inline-block",flexShrink:0}}),
+                h("span",{style:{fontWeight: isUnread ? 700 : 500, fontSize:14, color:AM}}, t.name),
                 h("span",{style:{fontSize:10,color:"#555",background:"#1a1a1a",padding:"2px 8px",borderRadius:99,border:"1px solid #222"}}, t.dept),
                 replyCount>0 && h("span",{style:{fontSize:10,color:"#4ade80"}}, replyCount+" repl"+(replyCount===1?"y":"ies"))
               ),
-              last && h("div",{style:{fontSize:12,color:"#555",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+              last && h("div",{style:{fontSize:12,color: isUnread ? "#aaa" : "#555",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
                 last.body
               )
             ),
@@ -1617,7 +1747,7 @@ function App() {
       return h("div", null,
         // Thread header
         h("div",{style:{display:"flex",alignItems:"center",gap:12,marginBottom:14,paddingBottom:12,borderBottom:"1px solid #1a1a1a"}},
-          h("button",{onClick:()=>{ setActiveThread(null); setMsgBody(""); }}, "← all conversations"),
+          h("button",{onClick:()=>{ setActiveThread(null); activeThreadRef.current = null; setMsgBody(""); }}, "← all conversations"),
           h("span",{style:{fontWeight:500,color:AM,fontSize:15}}, activeThread.name),
           h("span",{style:{fontSize:11,color:"#555",background:"#1a1a1a",padding:"2px 8px",borderRadius:99,border:"1px solid #222"}}, activeThread.dept)
         ),
