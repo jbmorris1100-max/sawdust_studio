@@ -1036,7 +1036,7 @@ export default function CrewPage() {
     try {
       const { data } = await supabase
         .from('time_clock')
-        .select('id, worker_name, dept, clock_in, clock_out, status, on_break, total_break_minutes, current_dept')
+        .select('id, worker_name, dept, clock_in, clock_out, status')
         .eq('tenant_id', tenant!.id)
         .eq('worker_name', name)
         .is('clock_out', null)

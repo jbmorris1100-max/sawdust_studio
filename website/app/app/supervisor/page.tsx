@@ -72,6 +72,7 @@ type DamageReport = {
 
 type JobDrawing = {
   id: string;
+  job_number: string | null;
   job_name: string | null;
   label: string | null;
   file_url: string | null;
@@ -482,10 +483,10 @@ export default function SupervisorPage() {
     if (!tenant) return;
     try {
       const [crewRes, msgRes, needsRes, damageRes] = await Promise.all([
-        supabase.from('time_clock').select('id, worker_name, dept, clock_in, status, on_break, total_break_minutes, current_dept').eq('tenant_id', tenant.id).is('clock_out', null).order('clock_in', { ascending: true }),
+        supabase.from('time_clock').select('id, worker_name, dept, clock_in, status').eq('tenant_id', tenant.id).is('clock_out', null).order('clock_in', { ascending: true }),
         supabase.from('messages').select('id, sender_name, dept, body, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
         supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
-        supabase.from('damage_reports').select('id, part_name, job_id, dept, notes, photo_url, status, created_at, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, flag_type, assembler_name, cabinet_unit_id').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
+        supabase.from('damage_reports').select('id, part_name, job_id, dept, notes, photo_url, status, created_at, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
       ]);
       if (crewRes.data)   setActiveCrew(crewRes.data as CrewRow[]);
       if (msgRes.data)    setMessages(msgRes.data as Message[]);
@@ -494,7 +495,7 @@ export default function SupervisorPage() {
     } catch (_) {}
     try {
       const [plansRes, sopsRes, buildsRes, partsRes, jobsRes] = await Promise.all([
-        supabase.from('job_drawings').select('id, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
+        supabase.from('job_drawings').select('id, job_number, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('time_clock').select('id, worker_name, clock_in, clock_out, notes, job_number, total_hours').eq('tenant_id', tenant.id).eq('status', 'craftsman_build').order('clock_in', { ascending: false }).limit(50),
         supabase.from('parts_log').select('*').eq('tenant_id', tenant.id).not('status', 'in', '("Archived")').order('created_at', { ascending: false }).limit(100),
@@ -1123,15 +1124,16 @@ export default function SupervisorPage() {
     try {
       const ext = planFile.name.split('.').pop() ?? 'bin';
       const path = `${tenant!.id}/${Date.now()}.${ext}`;
-      const { error: uploadErr } = await supabase.storage.from('job-plans').upload(path, planFile, { upsert: true });
+      const { error: uploadErr } = await supabase.storage.from('job-drawings').upload(path, planFile, { upsert: true });
       if (uploadErr) throw uploadErr;
-      const { data: { publicUrl } } = supabase.storage.from('job-plans').getPublicUrl(path);
+      const { data: { publicUrl } } = supabase.storage.from('job-drawings').getPublicUrl(path);
       const { error: dbErr } = await supabase.from('job_drawings').insert({
-        tenant_id: tenant!.id,
-        job_name: planJobNum.trim(),
-        label: planLabel.trim() || null,
-        file_url: publicUrl,
-        file_name: planFile.name,
+        tenant_id:  tenant!.id,
+        job_number: planJobNum.trim(),
+        job_name:   planJobNum.trim(),
+        label:      planLabel.trim() || null,
+        file_url:   publicUrl,
+        file_name:  planFile.name,
         uploaded_by: 'Supervisor',
       });
       if (dbErr) throw dbErr;
@@ -1139,7 +1141,7 @@ export default function SupervisorPage() {
       setPlanJobNum('');
       setPlanLabel('');
       showToast('Plan uploaded');
-      const { data } = await supabase.from('job_drawings').select('id, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
+      const { data } = await supabase.from('job_drawings').select('id, job_number, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
       if (data) setPlans(data as JobDrawing[]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Upload failed';
@@ -1157,7 +1159,7 @@ export default function SupervisorPage() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Delete failed';
       showToast(msg, true);
-      const { data } = await supabase.from('job_drawings').select('id, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
+      const { data } = await supabase.from('job_drawings').select('id, job_number, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
       if (data) setPlans(data as JobDrawing[]);
     }
   }
@@ -2348,7 +2350,7 @@ export default function SupervisorPage() {
                   {(() => {
                     const groups: Record<string, JobDrawing[]> = {};
                     plans.forEach((p) => {
-                      const k = p.job_name || 'No Job Number';
+                      const k = p.job_number || p.job_name || 'No Job Number';
                       if (!groups[k]) groups[k] = [];
                       groups[k].push(p);
                     });

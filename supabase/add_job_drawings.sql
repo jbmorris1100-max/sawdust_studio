@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS job_drawings (
 -- Add new columns to existing table (safe if table already exists)
 ALTER TABLE job_drawings ADD COLUMN IF NOT EXISTS tenant_id    text;
 ALTER TABLE job_drawings ADD COLUMN IF NOT EXISTS job_number   text;
+ALTER TABLE job_drawings ADD COLUMN IF NOT EXISTS job_name     text;
 ALTER TABLE job_drawings ADD COLUMN IF NOT EXISTS plan_name    text;
 ALTER TABLE job_drawings ADD COLUMN IF NOT EXISTS external_url text;
 

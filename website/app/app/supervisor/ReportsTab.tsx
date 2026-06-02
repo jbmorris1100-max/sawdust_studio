@@ -444,7 +444,7 @@ function DailyLaborReport({ tenantId, showToast }: Props) {
     setLoading(true);
     supabase
       .from('time_clock')
-      .select('id, worker_name, dept, clock_in, clock_out, date, total_hours, total_break_minutes, notes, job_number, status')
+      .select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
       .eq('tenant_id', tenantId)
       .eq('date', date)
       .order('clock_in', { ascending: true })
@@ -585,7 +585,7 @@ function JobCostReport({ tenantId, showToast }: Props) {
     if (!selJob) return;
     setLoading(true);
     Promise.all([
-      supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, total_break_minutes, notes, job_number, status')
+      supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
         .eq('tenant_id', tenantId).eq('job_number', selJob).order('clock_in'),
       supabase.from('parts_log').select('id, worker_name, job_number, part_name, dept, status, notes, created_at')
         .eq('tenant_id', tenantId).eq('job_number', selJob).order('created_at'),
@@ -753,7 +753,7 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, total_break_minutes, notes, job_number, status')
+      supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
         .eq('tenant_id', tenantId).gte('date', wkStart).lte('date', wkEnd).order('clock_in'),
       supabase.from('damage_reports').select('id, part_name, dept, notes, photo_url, status, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, created_at')
         .eq('tenant_id', tenantId),
@@ -883,7 +883,7 @@ function CraftsmanBuildReport({ tenantId, showToast }: Props) {
   useEffect(() => {
     setLoading(true);
     supabase.from('time_clock')
-      .select('id, worker_name, dept, clock_in, clock_out, date, total_hours, total_break_minutes, notes, job_number, status')
+      .select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
       .eq('tenant_id', tenantId).eq('status', 'craftsman_build')
       .gte('date', start).lte('date', end).order('clock_in', { ascending: false })
       .then(({ data, error }) => {
