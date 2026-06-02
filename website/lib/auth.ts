@@ -6,6 +6,8 @@ export type Tenant = {
   subscription_status: 'trial' | 'active' | 'cancelled' | 'expired';
   trial_ends_at: string | null;
   created_at: string;
+  setup_complete: boolean | null;
+  departments: string[] | null;
 };
 
 export function trialDaysLeft(trial_ends_at: string | null): number {

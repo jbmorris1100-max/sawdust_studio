@@ -7,6 +7,7 @@ import { useSession } from '@/lib/useSession';
 import { trialDaysLeft } from '@/lib/auth';
 import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
 import ReportsTab from './ReportsTab';
+import SetupWizard from './SetupWizard';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -341,6 +342,8 @@ export default function SupervisorPage() {
   const [resCost,       setResCost]       = useState('');
   const [resSubmitting, setResSubmitting] = useState(false);
   const [moreOpen,      setMoreOpen]      = useState(false);
+  const [wizardVisible, setWizardVisible] = useState(false);
+  const wizardChecked = useRef(false);
 
   // Supervisor inventory form
   const [supInvItem,    setSupInvItem]    = useState('');
@@ -522,6 +525,20 @@ export default function SupervisorPage() {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  // ── Setup wizard check ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!tenant || wizardChecked.current) return;
+    if (tenant.setup_complete) { wizardChecked.current = true; return; }
+    wizardChecked.current = true;
+    (async () => {
+      const [{ count: jobCount }, { count: clockCount }] = await Promise.all([
+        supabase.from('jobs').select('id', { count: 'exact', head: true }).eq('tenant_id', tenant.id),
+        supabase.from('time_clock').select('id', { count: 'exact', head: true }).eq('tenant_id', tenant.id),
+      ]);
+      if ((jobCount ?? 0) === 0 && (clockCount ?? 0) === 0) setWizardVisible(true);
+    })();
+  }, [tenant]);
 
   // ── Realtime subscriptions ──────────────────────────────────────────────────
 
@@ -2987,6 +3004,10 @@ export default function SupervisorPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {wizardVisible && tenant && (
+        <SetupWizard tenant={tenant} onComplete={() => setWizardVisible(false)} />
       )}
 
       {toast && <Toast msg={toast.msg} error={toast.error} />}
