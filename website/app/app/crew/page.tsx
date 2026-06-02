@@ -1323,7 +1323,7 @@ export default function CrewPage() {
       onClick: openParts,
       icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>,
     },
-    ...(crewDept === 'Assembly' ? ([
+    ...((crewDept === 'Assembly' || crewDept === 'Production') ? ([
       {
         label: 'Assembly Scan',
         color: '#5EEAD4', bg: 'rgba(94,234,212,0.08)',
