@@ -340,6 +340,7 @@ export default function SupervisorPage() {
   const [resBy,         setResBy]         = useState('Supervisor');
   const [resCost,       setResCost]       = useState('');
   const [resSubmitting, setResSubmitting] = useState(false);
+  const [moreOpen,      setMoreOpen]      = useState(false);
 
   // Supervisor inventory form
   const [supInvItem,    setSupInvItem]    = useState('');
@@ -1265,8 +1266,8 @@ export default function SupervisorPage() {
             ))}
           </div>
 
-          {/* Tabs */}
-          <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 24 }}>
+          {/* Tabs — desktop only */}
+          <div className="hidden md:flex" style={{ gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 24 }}>
             {tabs.map(({ key, label, count }) => (
               <button
                 key={key}
@@ -2713,7 +2714,170 @@ export default function SupervisorPage() {
             <ReportsTab tenantId={tenant.id} showToast={showToast} />
           )}
 
+          {/* Mobile bottom-nav spacer — pushes content above the fixed bar */}
+          <div className="block md:hidden" style={{ height: 'calc(64px + env(safe-area-inset-bottom))' }} />
+
         </main>
+
+        {/* ── Mobile Bottom Nav ──────────────────────────────────────── */}
+        <div
+          className="flex md:hidden"
+          style={{
+            position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 50,
+            background: 'rgba(5,6,8,0.96)', backdropFilter: 'blur(14px)',
+            borderTop: '1px solid rgba(94,234,212,0.12)',
+            paddingBottom: 'env(safe-area-inset-bottom)',
+          }}
+        >
+          {(
+            [
+              { key: 'overview' as const, label: 'Home', icon: (
+                <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                  <polyline points="9 22 9 12 15 12 15 22"/>
+                </svg>
+              )},
+              { key: 'messages' as const, label: 'Messages', icon: (
+                <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+              )},
+              { key: 'needs' as const, label: 'Inventory', icon: (
+                <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                </svg>
+              )},
+              { key: 'damage' as const, label: 'Damage', icon: (
+                <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+              )},
+              { key: 'more' as const, label: 'More', icon: (
+                <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="7" height="7"/>
+                  <rect x="14" y="3" width="7" height="7"/>
+                  <rect x="14" y="14" width="7" height="7"/>
+                  <rect x="3" y="14" width="7" height="7"/>
+                </svg>
+              )},
+            ] as { key: Tab | 'more'; label: string; icon: React.ReactNode }[]
+          ).map(({ key, label, icon }) => {
+            const isMore   = key === 'more';
+            const isActive = isMore ? moreOpen : (tab === key && !moreOpen);
+            return (
+              <button
+                key={key}
+                onClick={() => {
+                  if (isMore) {
+                    setMoreOpen((o) => !o);
+                  } else {
+                    setTab(key as Tab);
+                    setOpenThread(null);
+                    setMsgBody('');
+                    setMoreOpen(false);
+                  }
+                }}
+                style={{
+                  flex: 1, display: 'flex', flexDirection: 'column',
+                  alignItems: 'center', justifyContent: 'center', gap: 3,
+                  padding: '10px 4px', background: 'none', border: 'none',
+                  cursor: 'pointer', fontFamily: 'inherit',
+                  color: isActive ? '#2DE1C9' : '#9AAAA7',
+                  transition: 'color 0.15s',
+                }}
+              >
+                {icon}
+                <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: '0.03em', lineHeight: 1 }}>{label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* ── More Drawer ────────────────────────────────────────────── */}
+        {moreOpen && (
+          <>
+            {/* Backdrop */}
+            <div
+              className="block md:hidden"
+              onClick={() => setMoreOpen(false)}
+              style={{
+                position: 'fixed', inset: 0, zIndex: 55,
+                background: 'rgba(0,0,0,0.6)',
+              }}
+            />
+            {/* Sheet */}
+            <div
+              className="flex md:hidden"
+              style={{
+                position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 56,
+                background: '#0a0d10',
+                borderTop: '1px solid rgba(94,234,212,0.15)',
+                borderTopLeftRadius: 20, borderTopRightRadius: 20,
+                paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)',
+                flexDirection: 'column',
+              }}
+            >
+              <div style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(94,234,212,0.2)', margin: '14px auto 10px' }} />
+              {(
+                [
+                  { key: 'plans' as Tab, label: 'Plans', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="16" y1="13" x2="8" y2="13"/>
+                      <line x1="16" y1="17" x2="8" y2="17"/>
+                    </svg>
+                  )},
+                  { key: 'sops' as Tab, label: 'SOPs', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                    </svg>
+                  )},
+                  { key: 'ai' as Tab, label: 'AI', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                    </svg>
+                  )},
+                  { key: 'integrations' as Tab, label: 'Integrations', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                    </svg>
+                  )},
+                  { key: 'reports' as Tab, label: 'Reports', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="20" x2="18" y2="10"/>
+                      <line x1="12" y1="20" x2="12" y2="4"/>
+                      <line x1="6" y1="20" x2="6" y2="14"/>
+                    </svg>
+                  )},
+                ] as { key: Tab; label: string; icon: React.ReactNode }[]
+              ).map(({ key, label, icon }) => (
+                <button
+                  key={key}
+                  onClick={() => { setTab(key); setOpenThread(null); setMsgBody(''); setMoreOpen(false); }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 16,
+                    width: '100%', padding: '15px 24px',
+                    background: 'none', border: 'none',
+                    borderBottom: '1px solid rgba(94,234,212,0.07)',
+                    cursor: 'pointer', fontFamily: 'inherit',
+                    fontSize: 15, fontWeight: tab === key ? 700 : 500,
+                    textAlign: 'left',
+                    color: tab === key ? '#2DE1C9' : '#9AAAA7',
+                  }}
+                >
+                  {icon}
+                  {label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
       </div>
 
       {/* ── Damage Resolution Modal ── */}
