@@ -1302,7 +1302,7 @@ export default function SupervisorPage() {
                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                        {['Name', 'Department', 'Status', 'Clocked In', 'Duration'].map((h) => (
+                        {['Name', 'Department', 'Clocked In'].map((h) => (
                           <th key={h} style={thStyle}>{h}</th>
                         ))}
                       </tr>
@@ -1312,11 +1312,7 @@ export default function SupervisorPage() {
                         <tr key={row.id} style={{ borderBottom: '1px solid var(--line)' }}>
                           <td style={tdBold}>{row.worker_name}</td>
                           <td style={tdStyle}>{row.dept}</td>
-                          <td style={tdStyle}>{row.status ?? 'active'}</td>
                           <td style={tdStyle}>{formatTime(row.clock_in)}</td>
-                          <td style={{ ...tdStyle }}>
-                            <span style={{ fontSize: 12, fontWeight: 700, color: '#2DE1C9', background: 'rgba(45,225,201,0.1)', padding: '3px 8px', borderRadius: 6 }}>{elapsed(row.clock_in)}</span>
-                          </td>
                         </tr>
                       ))}
                     </tbody>
