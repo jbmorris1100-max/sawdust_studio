@@ -902,6 +902,70 @@ export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs, pl
         </div>
       </ErpCard>
 
+      {/* ── QR Codes ── */}
+      <div className="portal-card" style={{ padding: '20px 24px' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 6 }}>
+          QR Clock-in
+        </div>
+        <p style={{ fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6, margin: '0 0 18px' }}>
+          Print QR codes to post around your shop. Workers scan to clock in and out automatically. Full QR generation coming soon.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+          {[
+            { label: 'Shop Entrance',  action: 'clock_in',  location: 'shop_entrance' },
+            { label: 'Shop Exit',      action: 'clock_out', location: 'shop_exit' },
+            { label: 'Breakroom In',   action: 'break_start', location: 'breakroom' },
+            { label: 'Breakroom Out',  action: 'break_end',   location: 'breakroom' },
+          ].map(({ label, action, location }) => {
+            const url = `${typeof window !== 'undefined' ? window.location.origin : ''}/app/scan?action=${action}&location=${location}&tenant=${tenantId}`;
+            return (
+              <div
+                key={label}
+                style={{
+                  padding: '16px', borderRadius: 12,
+                  border: '1px solid var(--line)',
+                  display: 'flex', flexDirection: 'column', gap: 10,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(94,234,212,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--teal)', flexShrink: 0 }}>
+                    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 7V5a2 2 0 0 1 2-2h2"/>
+                      <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
+                      <path d="M21 17v2a2 2 0 0 1-2 2h-2"/>
+                      <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
+                      <rect x="7" y="7" width="3" height="3"/>
+                      <rect x="14" y="7" width="3" height="3"/>
+                      <rect x="7" y="14" width="3" height="3"/>
+                    </svg>
+                  </div>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{label}</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--ink-mute)', wordBreak: 'break-all', fontFamily: 'monospace', background: 'rgba(255,255,255,0.03)', borderRadius: 6, padding: '6px 8px' }}>
+                  {url}
+                </div>
+                <button
+                  onClick={() => { void navigator.clipboard?.writeText(url); }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '7px 12px', borderRadius: 7,
+                    background: 'rgba(94,234,212,0.07)', border: '1px solid rgba(94,234,212,0.2)',
+                    color: 'var(--teal)', fontSize: 12, fontWeight: 600,
+                    cursor: 'pointer', fontFamily: 'inherit', alignSelf: 'flex-start',
+                  }}
+                >
+                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                  Copy URL
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
     </div>
   );
 }

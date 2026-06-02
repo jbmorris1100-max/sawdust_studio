@@ -18,6 +18,19 @@ type CrewRow = {
   dept: string;
   clock_in: string;
   status: string | null;
+  on_break: boolean | null;
+  total_break_minutes: number | null;
+  current_dept: string | null;
+};
+
+type ShiftEvent = {
+  id: string;
+  worker_name: string;
+  event_type: string;
+  dept: string | null;
+  previous_dept: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
 };
 
 type Message = {
@@ -267,6 +280,88 @@ function fileTypeBadge(fileName: string | null): { label: string; color: string;
   return t ?? { label: ext.toUpperCase() || 'FILE', color: '#8BA5A0', bg: 'rgba(95,111,108,0.1)' };
 }
 
+// ── ShiftTimeline ─────────────────────────────────────────────────────────────
+
+const EVENT_META: Record<string, { color: string; icon: React.ReactNode; label: string }> = {
+  clock_in:         { color: '#5EEAD4', label: 'Clocked In',        icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> },
+  clock_out:        { color: '#5EEAD4', label: 'Clocked Out',       icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> },
+  dept_switch:      { color: '#60A5FA', label: 'Dept Switch',       icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg> },
+  break_start:      { color: '#FBBF24', label: 'Break Started',     icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg> },
+  break_end:        { color: '#FBBF24', label: 'Break Ended',       icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg> },
+  part_scanned:     { color: '#34D399', label: 'Part Scanned',      icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></svg> },
+  damage_reported:  { color: '#F87171', label: 'Damage Reported',   icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> },
+  inventory_logged: { color: '#A78BFA', label: 'Inventory Logged',  icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> },
+  message_sent:     { color: '#8BA5A0', label: 'Message Sent',      icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> },
+};
+
+function ShiftTimeline({ events, clockRow, loading }: { events: ShiftEvent[] | undefined; clockRow: CrewRow; loading: boolean }) {
+  const fmtTime = (iso: string) => new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+
+  if (loading) {
+    return <div style={{ padding: '10px 0', fontSize: 12, color: 'var(--ink-mute)' }}>Loading timeline…</div>;
+  }
+  if (!events || events.length === 0) {
+    return <div style={{ padding: '10px 0', fontSize: 12, color: 'var(--ink-mute)' }}>No events logged yet for this shift.</div>;
+  }
+
+  const breakMins = events
+    .filter((e) => e.event_type === 'break_end')
+    .reduce((sum, e) => sum + ((e.metadata?.duration_minutes as number) ?? 0), 0);
+
+  const start   = new Date(clockRow.clock_in);
+  const end     = new Date();
+  const totalMs = end.getTime() - start.getTime();
+  const totalM  = Math.floor(totalMs / 60000);
+  const netM    = Math.max(0, totalM - breakMins);
+  const fmt = (m: number) => { const h = Math.floor(m / 60); const min = m % 60; return h > 0 ? `${h}h ${String(min).padStart(2,'0')}m` : `${min}m`; };
+
+  return (
+    <div style={{ paddingTop: 10 }}>
+      {events.map((ev, i) => {
+        const meta = EVENT_META[ev.event_type] ?? { color: '#8BA5A0', label: ev.event_type, icon: null };
+        return (
+          <div key={ev.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', paddingBottom: 10 }}>
+            <div style={{ fontSize: 11, color: 'var(--ink-mute)', minWidth: 62, flexShrink: 0, paddingTop: 2 }}>
+              {fmtTime(ev.created_at)}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0, gap: 0 }}>
+              <div style={{ width: 22, height: 22, borderRadius: '50%', background: `${meta.color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: meta.color, flexShrink: 0 }}>
+                {meta.icon}
+              </div>
+              {i < events.length - 1 && <div style={{ width: 1, height: 12, background: 'rgba(255,255,255,0.07)', margin: '2px 0' }} />}
+            </div>
+            <div style={{ flex: 1, minWidth: 0, paddingTop: 2 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: meta.color }}>{meta.label}</span>
+              {ev.event_type === 'clock_in' && ev.dept && (
+                <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 6 }}>{ev.dept}</span>
+              )}
+              {ev.event_type === 'dept_switch' && ev.previous_dept && (
+                <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 6 }}>{ev.previous_dept} to {ev.dept}</span>
+              )}
+              {ev.event_type === 'break_end' && (ev.metadata?.duration_minutes as number) > 0 && (
+                <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 6 }}>{ev.metadata.duration_minutes as number} min</span>
+              )}
+              {ev.event_type === 'part_scanned' && typeof ev.metadata?.cabinet_unit_label === 'string' && (
+                <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 6 }}>
+                  {ev.metadata.cabinet_unit_label}
+                  {typeof ev.metadata.job_number === 'string' ? `, Job ${ev.metadata.job_number}` : ''}
+                </span>
+              )}
+              {ev.event_type === 'inventory_logged' && typeof ev.metadata?.item === 'string' && (
+                <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 6 }}>{ev.metadata.item}</span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      <div style={{ marginTop: 6, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 11, color: 'var(--ink-mute)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <span>Total: {fmt(totalM)}</span>
+        {breakMins > 0 && <><span>Break: {fmt(breakMins)}</span><span>Productive: {fmt(netM)}</span></>}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function SupervisorPage() {
@@ -348,7 +443,10 @@ export default function SupervisorPage() {
   const [resBy,         setResBy]         = useState('Supervisor');
   const [resCost,       setResCost]       = useState('');
   const [resSubmitting, setResSubmitting] = useState(false);
-  const [moreOpen,      setMoreOpen]      = useState(false);
+  const [moreOpen,         setMoreOpen]         = useState(false);
+  const [expandedCrewId,   setExpandedCrewId]   = useState<string | null>(null);
+  const [crewTimelines,    setCrewTimelines]     = useState<Record<string, ShiftEvent[]>>({});
+  const [timelineLoading,  setTimelineLoading]  = useState<Record<string, boolean>>({});
   const [wizardVisible, setWizardVisible] = useState(false);
   const wizardChecked = useRef(false);
 
@@ -384,7 +482,7 @@ export default function SupervisorPage() {
     if (!tenant) return;
     try {
       const [crewRes, msgRes, needsRes, damageRes] = await Promise.all([
-        supabase.from('time_clock').select('id, worker_name, dept, clock_in, status').eq('tenant_id', tenant.id).is('clock_out', null).order('clock_in', { ascending: true }),
+        supabase.from('time_clock').select('id, worker_name, dept, clock_in, status, on_break, total_break_minutes, current_dept').eq('tenant_id', tenant.id).is('clock_out', null).order('clock_in', { ascending: true }),
         supabase.from('messages').select('id, sender_name, dept, body, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
         supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
         supabase.from('damage_reports').select('id, part_name, job_id, dept, notes, photo_url, status, created_at, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, flag_type, assembler_name, cabinet_unit_id').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
@@ -496,7 +594,7 @@ export default function SupervisorPage() {
         setDailyLogs((prev) => [data as DailyLog, ...prev]);
       }
       setEditingLog(false);
-      showToast('Check-in saved ✓');
+      showToast('Check-in saved');
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Save failed', true);
     } finally {
@@ -667,6 +765,31 @@ export default function SupervisorPage() {
     };
   }, [tenant]);
 
+  // ── Crew timeline ──────────────────────────────────────────────────────────
+
+  async function fetchCrewTimeline(clockId: string) {
+    if (crewTimelines[clockId] !== undefined || timelineLoading[clockId]) return;
+    setTimelineLoading((prev) => ({ ...prev, [clockId]: true }));
+    try {
+      const { data } = await supabase
+        .from('shift_events')
+        .select('id, worker_name, event_type, dept, previous_dept, metadata, created_at')
+        .eq('time_clock_id', clockId)
+        .order('created_at', { ascending: true });
+      if (data) setCrewTimelines((prev) => ({ ...prev, [clockId]: data as ShiftEvent[] }));
+    } catch (_) {}
+    setTimelineLoading((prev) => ({ ...prev, [clockId]: false }));
+  }
+
+  function toggleCrewTimeline(clockId: string) {
+    if (expandedCrewId === clockId) {
+      setExpandedCrewId(null);
+    } else {
+      setExpandedCrewId(clockId);
+      void fetchCrewTimeline(clockId);
+    }
+  }
+
   // ── Job handlers ────────────────────────────────────────────────────────────
 
   async function handleAddJob() {
@@ -683,7 +806,7 @@ export default function SupervisorPage() {
       if (error) throw error;
       setNewJobNum('');
       setNewJobName('');
-      showToast('Job added ✓');
+      showToast('Job added');
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Insert failed', true);
     } finally {
@@ -733,7 +856,7 @@ export default function SupervisorPage() {
       }).select('id, sender_name, dept, body, created_at').single();
       if (error) throw error;
       setMessages((prev) => prev.map((m) => m.id === optimistic.id ? data as Message : m));
-      showToast('Message sent ✓');
+      showToast('Message sent');
     } catch (err: unknown) {
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setMsgBody(body);
@@ -818,7 +941,7 @@ export default function SupervisorPage() {
       setSupInvQty(1);
       setSupInvJobNum('');
       setSupInvNotes('');
-      showToast('Inventory need logged ✓');
+      showToast('Inventory need logged');
     } catch (err: unknown) {
       setNeeds((prev) => prev.filter((n) => n.id !== optimisticId));
       const msg = err instanceof Error ? err.message : 'Insert failed';
@@ -891,7 +1014,7 @@ export default function SupervisorPage() {
       setSupDmgJobNum('');
       setSupDmgPhoto(null);
       setSupDmgPreview(null);
-      showToast('Damage report submitted ✓');
+      showToast('Damage report submitted');
     } catch (err: unknown) {
       setDamage((prev) => prev.filter((d) => d.id !== optimisticId));
       showToast(err instanceof Error ? err.message : 'Insert failed', true);
@@ -909,7 +1032,7 @@ export default function SupervisorPage() {
     try {
       const { error } = await supabase.from('inventory_needs').update({ status }).eq('id', id);
       if (error) throw error;
-      showToast(`Marked as ${status} ✓`);
+      showToast(`Marked as ${status}`);
       if (status === 'received' && tenant) {
         callAnalytics(tenant.id, 'inventory_fulfilled', { dept: prev?.dept ?? null });
       }
@@ -949,7 +1072,7 @@ export default function SupervisorPage() {
         resolved_at:      new Date().toISOString(),
       }).eq('id', id);
       if (error) throw error;
-      showToast('Damage report resolved ✓');
+      showToast('Damage report resolved');
       if (tenant && prev) {
         const createdAt = (prev as DamageReport).created_at;
         const daysOpen  = createdAt ? Math.round((Date.now() - new Date(createdAt).getTime()) / 86400000) : null;
@@ -965,7 +1088,7 @@ export default function SupervisorPage() {
         const { error: fallbackErr } = await supabase
           .from('damage_reports').update({ status: 'resolved' }).eq('id', id);
         if (fallbackErr) throw fallbackErr;
-        showToast('Resolved ✓ — run damage_resolution.sql to save full details');
+        showToast('Resolved — run damage_resolution.sql to save full details');
       } catch (err2: unknown) {
         if (prev) setDamage((ds) => ds.map((d) => d.id === id ? prev : d));
         showToast(err2 instanceof Error ? err2.message : 'Update failed', true);
@@ -982,7 +1105,7 @@ export default function SupervisorPage() {
     try {
       const { error } = await supabase.from('damage_reports').update({ status }).eq('id', id);
       if (error) throw error;
-      showToast(`Marked as ${status} ✓`);
+      showToast(`Marked as ${status}`);
     } catch (err: unknown) {
       if (prev) setDamage((ds) => ds.map((d) => d.id === id ? prev : d));
       const msg = err instanceof Error ? err.message : 'Update failed';
@@ -1015,7 +1138,7 @@ export default function SupervisorPage() {
       setPlanFile(null);
       setPlanJobNum('');
       setPlanLabel('');
-      showToast('Plan uploaded ✓');
+      showToast('Plan uploaded');
       const { data } = await supabase.from('job_drawings').select('id, job_name, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
       if (data) setPlans(data as JobDrawing[]);
     } catch (err: unknown) {
@@ -1061,7 +1184,7 @@ export default function SupervisorPage() {
       setSopFile(null);
       setSopTitle('');
       setSopDept('');
-      showToast('SOP uploaded ✓');
+      showToast('SOP uploaded');
       const { data } = await supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
       if (data) setSops(data as SopItem[]);
     } catch (err: unknown) {
@@ -1114,7 +1237,7 @@ export default function SupervisorPage() {
       if (nextDept !== undefined) update.next_dept = nextDept;
       const { error } = await supabase.from('parts_log').update(update).eq('id', partId);
       if (error) throw error;
-      showToast('✓ Status updated');
+      showToast('Status updated');
       if (tenant && (newStatus === 'Passed QC' || newStatus === 'Failed QC / Rework')) {
         const part = snapshot.find((p) => p.id === partId);
         callAnalytics(tenant.id, 'qc_result', {
@@ -1333,18 +1456,50 @@ export default function SupervisorPage() {
                       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                         <thead>
                           <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                            {['Name', 'Department', 'Clocked In'].map((h) => (
+                            {['Name', 'Department', 'Clocked In', ''].map((h) => (
                               <th key={h} style={thStyle}>{h}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody>
                           {activeCrew.map((row) => (
-                            <tr key={row.id} style={{ borderBottom: '1px solid var(--line)' }}>
-                              <td style={tdBold}>{row.worker_name}</td>
-                              <td style={tdStyle}>{row.dept}</td>
-                              <td style={tdStyle}>{formatTime(row.clock_in)}</td>
-                            </tr>
+                            <>
+                              <tr key={row.id} style={{ borderBottom: expandedCrewId === row.id ? 'none' : '1px solid var(--line)' }}>
+                                <td style={tdBold}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    {row.worker_name}
+                                    {row.on_break && (
+                                      <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.15)', color: '#FBBF24', whiteSpace: 'nowrap' }}>ON BREAK</span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td style={tdStyle}>{row.current_dept || row.dept}</td>
+                                <td style={tdStyle}>{formatTime(row.clock_in)}</td>
+                                <td style={{ ...tdStyle, textAlign: 'right' }}>
+                                  <button
+                                    onClick={() => toggleCrewTimeline(row.id)}
+                                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex', alignItems: 'center' }}
+                                    title="View shift timeline"
+                                  >
+                                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                                      style={{ transition: 'transform 0.2s', transform: expandedCrewId === row.id ? 'rotate(180deg)' : 'none' }}>
+                                      <polyline points="6 9 12 15 18 9"/>
+                                    </svg>
+                                  </button>
+                                </td>
+                              </tr>
+                              {expandedCrewId === row.id && (
+                                <tr key={`${row.id}-timeline`} style={{ borderBottom: '1px solid var(--line)' }}>
+                                  <td colSpan={4} style={{ padding: '4px 20px 16px' }}>
+                                    <ShiftTimeline
+                                      events={crewTimelines[row.id]}
+                                      clockRow={row}
+                                      loading={!!timelineLoading[row.id]}
+                                    />
+                                  </td>
+                                </tr>
+                              )}
+                            </>
                           ))}
                         </tbody>
                       </table>
@@ -1352,12 +1507,39 @@ export default function SupervisorPage() {
                     {/* Mobile — cards */}
                     <div className="crew-cards-wrap">
                       {activeCrew.map((row) => (
-                        <div key={row.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid var(--line)' }}>
-                          <div>
-                            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{row.worker_name}</div>
-                            <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{row.dept}</div>
+                        <div key={row.id} style={{ borderBottom: '1px solid var(--line)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{row.worker_name}</div>
+                                {row.on_break && (
+                                  <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.15)', color: '#FBBF24' }}>ON BREAK</span>
+                                )}
+                              </div>
+                              <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{row.current_dept || row.dept}</div>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-dim)' }}>{formatTime(row.clock_in)}</div>
+                              <button
+                                onClick={() => toggleCrewTimeline(row.id)}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }}
+                              >
+                                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                                  style={{ transition: 'transform 0.2s', transform: expandedCrewId === row.id ? 'rotate(180deg)' : 'none' }}>
+                                  <polyline points="6 9 12 15 18 9"/>
+                                </svg>
+                              </button>
+                            </div>
                           </div>
-                          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-dim)' }}>{formatTime(row.clock_in)}</div>
+                          {expandedCrewId === row.id && (
+                            <div style={{ padding: '0 16px 14px' }}>
+                              <ShiftTimeline
+                                events={crewTimelines[row.id]}
+                                clockRow={row}
+                                loading={!!timelineLoading[row.id]}
+                              />
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -2605,7 +2787,7 @@ export default function SupervisorPage() {
                         cursor: 'pointer', fontFamily: 'inherit',
                       }}
                     >
-                      {autoSettings.allPaused ? '▶  Resume All' : '⏸  Pause All'}
+                      {autoSettings.allPaused ? 'Resume All' : 'Pause All'}
                     </button>
                   </div>
 

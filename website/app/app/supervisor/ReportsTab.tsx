@@ -12,6 +12,7 @@ type ClockEntry = {
   clock_out: string | null;
   date: string | null;
   total_hours: number | null;
+  total_break_minutes: number | null;
   notes: string | null;
   job_number: string | null;
   status: string | null;
@@ -244,6 +245,13 @@ function timePct(isoTime: string): number {
 
 function segColor(e: ClockEntry): string {
   if (e.status === 'craftsman_build') return '#A78BFA';
+  const deptColors: Record<string, string> = {
+    Assembly:   '#5EEAD4',
+    Production: '#2DE1C9',
+    Finishing:  '#A78BFA',
+    Craftsman:  '#FBBF24',
+  };
+  if (e.dept && deptColors[e.dept]) return deptColors[e.dept];
   if (e.job_number) return '#2DE1C9';
   return '#FBBF24';
 }
@@ -286,8 +294,9 @@ function WorkerTimeline({ entries, workerName }: { entries: ClockEntry[]; worker
             <span style={{ color: 'var(--ink-mute)' }}>{pct}% accounted</span>
           </span>
           {pct >= 100 && (
-            <span style={{ fontSize: 10, color: '#34D399', background: 'rgba(52,211,153,0.12)', padding: '2px 8px', borderRadius: 20, fontWeight: 700 }}>
-              ✓ Auto-tracked
+            <span style={{ fontSize: 10, color: '#34D399', background: 'rgba(52,211,153,0.12)', padding: '2px 8px', borderRadius: 20, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Auto-tracked
             </span>
           )}
           <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="2" strokeLinecap="round"
@@ -435,7 +444,7 @@ function DailyLaborReport({ tenantId, showToast }: Props) {
     setLoading(true);
     supabase
       .from('time_clock')
-      .select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
+      .select('id, worker_name, dept, clock_in, clock_out, date, total_hours, total_break_minutes, notes, job_number, status')
       .eq('tenant_id', tenantId)
       .eq('date', date)
       .order('clock_in', { ascending: true })
@@ -512,6 +521,8 @@ function DailyLaborReport({ tenantId, showToast }: Props) {
                 <SortTh label="Clock In" col="clock_in" sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <th style={thSt}>Clock Out</th>
                 <SortTh label="Hours"    col="hours"    sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
+                <th style={thSt}>Break</th>
+                <th style={thSt}>Net Hrs</th>
                 <SortTh label="Job #"    col="job"      sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <th style={thSt}>Type</th>
               </tr>
@@ -528,6 +539,8 @@ function DailyLaborReport({ tenantId, showToast }: Props) {
                       <td style={tdSt}>{fmtTime(e.clock_in)}</td>
                       <td style={tdSt}>{e.clock_out ? fmtTime(e.clock_out) : <span style={{ color: '#2DE1C9' }}>Active</span>}</td>
                       <td style={tdSt}>{toHHMM(e.total_hours ?? calcHours(e.clock_in, e.clock_out))}</td>
+                      <td style={tdSt}>{e.total_break_minutes ? `${e.total_break_minutes}m` : '—'}</td>
+                      <td style={tdSt}>{(() => { const h = e.total_hours ?? calcHours(e.clock_in, e.clock_out); const b = (e.total_break_minutes ?? 0) / 60; return toHHMM(Math.max(0, h - b)); })()}</td>
                       <td style={tdSt}>{e.job_number ? <code style={{ fontSize: 12 }}>{e.job_number}</code> : '—'}</td>
                       <td style={tdSt}><StatusPill status={e.status ?? 'active'} /></td>
                     </tr>
@@ -535,7 +548,7 @@ function DailyLaborReport({ tenantId, showToast }: Props) {
                   <tr style={{ background: 'rgba(45,225,201,0.04)', borderTop: '2px solid var(--line)' }}>
                     <td style={{ ...tdBold, color: 'var(--teal)' }} colSpan={4}>Total</td>
                     <td style={{ ...tdBold, color: 'var(--teal)' }}>{toHHMM(totalHours)}</td>
-                    <td colSpan={2} />
+                    <td colSpan={4} />
                   </tr>
                 </>
               )}
@@ -572,7 +585,7 @@ function JobCostReport({ tenantId, showToast }: Props) {
     if (!selJob) return;
     setLoading(true);
     Promise.all([
-      supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
+      supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, total_break_minutes, notes, job_number, status')
         .eq('tenant_id', tenantId).eq('job_number', selJob).order('clock_in'),
       supabase.from('parts_log').select('id, worker_name, job_number, part_name, dept, status, notes, created_at')
         .eq('tenant_id', tenantId).eq('job_number', selJob).order('created_at'),
@@ -740,7 +753,7 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
+      supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, total_break_minutes, notes, job_number, status')
         .eq('tenant_id', tenantId).gte('date', wkStart).lte('date', wkEnd).order('clock_in'),
       supabase.from('damage_reports').select('id, part_name, dept, notes, photo_url, status, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, created_at')
         .eq('tenant_id', tenantId),
@@ -842,7 +855,7 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
               {title} ({items.length})
             </div>
             {items.length === 0
-              ? <div style={{ fontSize: 12, color: '#34D399' }}>All clear ✓</div>
+              ? <div style={{ fontSize: 12, color: '#34D399', display: 'flex', alignItems: 'center', gap: 5 }}>All clear <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
               : items.map((r) => (
                 <div key={(r as { id: string }).id} style={{ fontSize: 12, color: 'var(--ink-dim)', padding: '5px 0', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span>{getLabel(r as never)}</span>
@@ -870,7 +883,7 @@ function CraftsmanBuildReport({ tenantId, showToast }: Props) {
   useEffect(() => {
     setLoading(true);
     supabase.from('time_clock')
-      .select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
+      .select('id, worker_name, dept, clock_in, clock_out, date, total_hours, total_break_minutes, notes, job_number, status')
       .eq('tenant_id', tenantId).eq('status', 'craftsman_build')
       .gte('date', start).lte('date', end).order('clock_in', { ascending: false })
       .then(({ data, error }) => {

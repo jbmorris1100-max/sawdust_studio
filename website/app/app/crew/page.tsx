@@ -15,6 +15,9 @@ type TimeEntry = {
   clock_in: string;
   clock_out: string | null;
   status: string | null;
+  on_break: boolean | null;
+  total_break_minutes: number | null;
+  current_dept: string | null;
 };
 
 type Message = {
@@ -91,6 +94,33 @@ type AssemblyScanPart = {
   status: string;
   flag_type: string | null;
 };
+
+// ── Shift event logger (fire-and-forget) ─────────────────────────────────────
+
+async function logShiftEvent(params: {
+  tenantId: string;
+  timeClockId: string | null;
+  workerName: string;
+  eventType: string;
+  dept: string | null;
+  previousDept?: string | null;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  if (!params.timeClockId) return;
+  try {
+    await supabase.from('shift_events').insert({
+      tenant_id:     params.tenantId,
+      time_clock_id: params.timeClockId,
+      worker_name:   params.workerName,
+      event_type:    params.eventType,
+      dept:          params.dept,
+      previous_dept: params.previousDept ?? null,
+      metadata:      params.metadata ?? {},
+    });
+  } catch (e) {
+    console.error('[shift_event]', e);
+  }
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -309,6 +339,15 @@ export default function CrewPage() {
   const [jobs,             setJobs]             = useState<Job[]>([]);
   const [partJobId,        setPartJobId]        = useState('');
 
+  // Active time clock tracking
+  const [activeTimeClockId, setActiveTimeClockId] = useState<string | null>(null);
+
+  // Break tracking
+  const [onBreak,        setOnBreak]        = useState(false);
+  const [breakStartTime, setBreakStartTime] = useState<string | null>(null);
+  const [breakTick,      setBreakTick]      = useState(0);
+  const [breakSaving,    setBreakSaving]    = useState(false);
+
   // Assembly Scan modal state
   const [assemblyScanStep,      setAssemblyScanStep]      = useState<AssemblyScanStep>('scan');
   const [assemblyScanInput,     setAssemblyScanInput]     = useState('');
@@ -345,7 +384,7 @@ export default function CrewPage() {
   const [replyBody,   setReplyBody]   = useState('');
   const [replySaving, setReplySaving] = useState(false);
 
-  // Load localStorage identity + restore any in-progress craftsman build timer
+  // Load localStorage identity + restore in-progress timers
   useEffect(() => {
     const n = localStorage.getItem('crew_name') ?? '';
     const d = localStorage.getItem('crew_dept') ?? '';
@@ -363,6 +402,15 @@ export default function CrewPage() {
       setBuildMatType(type);
       setBuildJob(job || null);
     }
+    // Restore active clock-in and break state
+    const activeId   = localStorage.getItem('active_time_clock_id');
+    const breakStart = localStorage.getItem('break_start_time');
+    const onBreakVal = localStorage.getItem('on_break');
+    if (activeId) setActiveTimeClockId(activeId);
+    if (onBreakVal === 'true' && breakStart) {
+      setOnBreak(true);
+      setBreakStartTime(breakStart);
+    }
   }, []);
 
   // Tick every second while a build timer is running
@@ -371,6 +419,13 @@ export default function CrewPage() {
     const iv = setInterval(() => setTimerTick((t) => t + 1), 1000);
     return () => clearInterval(iv);
   }, [buildStart]);
+
+  // Tick every second while on break
+  useEffect(() => {
+    if (!onBreak) return;
+    const iv = setInterval(() => setBreakTick((t) => t + 1), 1000);
+    return () => clearInterval(iv);
+  }, [onBreak]);
 
   // Load page data — fetch all tenant messages and filter client-side by dept
   useEffect(() => {
@@ -535,15 +590,25 @@ export default function CrewPage() {
     // 3. Re-fetch messages — the initial load was capped at 50 rows across all
     //    departments, so messages for the newly selected dept may not be loaded yet
     await reloadMessages();
-    // 4. Best-effort: sync device_tokens push token row for this tenant only
+    // Sync device_tokens
     try {
       await supabase.from('device_tokens')
         .update({ dept: newDept })
         .eq('name', crewName)
         .eq('tenant_id', tenant!.id);
     } catch (_) {}
+    // Update current_dept on active clock row
+    const tcId = activeTimeClockId;
+    if (tcId) {
+      try { await supabase.from('time_clock').update({ current_dept: newDept }).eq('id', tcId); } catch (_) {}
+      void logShiftEvent({
+        tenantId: tenant!.id, timeClockId: tcId,
+        workerName: crewName, eventType: 'dept_switch',
+        dept: newDept, previousDept: crewDept || null,
+      });
+    }
     closeModal();
-    showToast(`Department changed to ${newDept} ✓`);
+    showToast(`Department changed to ${newDept}`);
   }
 
   function openEditName() {
@@ -569,7 +634,7 @@ export default function CrewPage() {
         await reloadClock();
       }
       closeModal();
-      showToast('Name updated ✓');
+      showToast('Name updated');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Update failed';
       showToast(msg, true);
@@ -803,6 +868,17 @@ export default function CrewPage() {
         if (error) throw error;
       }
 
+      void logShiftEvent({
+        tenantId: tenant!.id, timeClockId: activeTimeClockId,
+        workerName: crewName || 'Crew', eventType: 'part_scanned',
+        dept: crewDept,
+        metadata: {
+          cabinet_unit_label: assemblyScanUnit!.unit_label,
+          job_number: assemblyScanUnit!.job_number,
+          parts_count: assemblyScanParts.length,
+          flags_count: flaggedEntries.length,
+        },
+      });
       setAssemblyScanDone(true);
       setTimeout(() => {
         setAssemblyScanDone(false);
@@ -894,7 +970,7 @@ export default function CrewPage() {
       setBuildMatType(bmMatType);
       setBuildJob(bmJobNum.trim() || null);
       closeModal();
-      showToast('Build timer started ✓');
+      showToast('Build timer started');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Start failed';
       console.error('[BuildTimer] fatal error:', err);
@@ -960,7 +1036,7 @@ export default function CrewPage() {
     try {
       const { data } = await supabase
         .from('time_clock')
-        .select('id, worker_name, dept, clock_in, clock_out, status')
+        .select('id, worker_name, dept, clock_in, clock_out, status, on_break, total_break_minutes, current_dept')
         .eq('tenant_id', tenant!.id)
         .eq('worker_name', name)
         .is('clock_out', null)
@@ -996,22 +1072,83 @@ export default function CrewPage() {
         status:      'active',
         tenant_id:   tenant!.id,
       };
-      console.log('[clock-in] inserting:', payload);
-      const { error } = await supabase.from('time_clock').insert(payload);
-      if (error) {
-        console.error('[clock-in] error:', error);
-        throw error;
-      }
+      const { data: insertedRow, error } = await supabase
+        .from('time_clock').insert({ ...payload, current_dept: dept }).select('id').single();
+      if (error) throw error;
+      const clockId = (insertedRow as { id: string }).id;
+      localStorage.setItem('active_time_clock_id', clockId);
+      setActiveTimeClockId(clockId);
+      void logShiftEvent({
+        tenantId: tenant!.id, timeClockId: clockId,
+        workerName: name, eventType: 'clock_in', dept,
+      });
       saveIdentity(name, dept);
       await reloadClock();
       closeModal();
-      showToast(`${name} clocked in ✓`);
+      showToast(`${name} clocked in`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error('[clock-in] caught:', err);
       showToast(msg, true);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleBreakStart() {
+    if (!openEntry || breakSaving) return;
+    setBreakSaving(true);
+    try {
+      const now = new Date().toISOString();
+      await supabase.from('time_clock').update({ on_break: true, break_start: now }).eq('id', openEntry.id);
+      void logShiftEvent({
+        tenantId: tenant!.id,
+        timeClockId: activeTimeClockId ?? openEntry.id,
+        workerName: openEntry.worker_name,
+        eventType: 'break_start',
+        dept: crewDept || openEntry.dept,
+      });
+      setOnBreak(true);
+      setBreakStartTime(now);
+      localStorage.setItem('on_break', 'true');
+      localStorage.setItem('break_start_time', now);
+      closeModal();
+      showToast('Break started');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Failed', true);
+    } finally {
+      setBreakSaving(false);
+    }
+  }
+
+  async function handleBreakEnd() {
+    if (!openEntry || breakSaving || !breakStartTime) return;
+    setBreakSaving(true);
+    try {
+      const duration = Math.max(1, Math.floor((Date.now() - new Date(breakStartTime).getTime()) / 60000));
+      const now = new Date().toISOString();
+      const existing = openEntry.total_break_minutes ?? 0;
+      await supabase.from('time_clock').update({
+        on_break: false, break_end: now,
+        total_break_minutes: existing + duration,
+      }).eq('id', openEntry.id);
+      void logShiftEvent({
+        tenantId: tenant!.id,
+        timeClockId: activeTimeClockId ?? openEntry.id,
+        workerName: openEntry.worker_name,
+        eventType: 'break_end',
+        dept: crewDept || openEntry.dept,
+        metadata: { duration_minutes: duration },
+      });
+      setOnBreak(false);
+      setBreakStartTime(null);
+      localStorage.removeItem('on_break');
+      localStorage.removeItem('break_start_time');
+      closeModal();
+      showToast(`Break ended — ${duration} min`);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Failed', true);
+    } finally {
+      setBreakSaving(false);
     }
   }
 
@@ -1019,12 +1156,59 @@ export default function CrewPage() {
     if (!openEntry || saving) return;
     setSaving(true);
     try {
-      const now = new Date().toISOString();
-      const { error } = await supabase.from('time_clock').update({ clock_out: now }).eq('id', openEntry.id);
+      // Auto-end break if active
+      let extraBreakMins = 0;
+      if (onBreak && breakStartTime) {
+        extraBreakMins = Math.max(1, Math.floor((Date.now() - new Date(breakStartTime).getTime()) / 60000));
+        const existing = openEntry.total_break_minutes ?? 0;
+        await supabase.from('time_clock').update({
+          on_break: false, break_end: new Date().toISOString(),
+          total_break_minutes: existing + extraBreakMins,
+        }).eq('id', openEntry.id);
+        void logShiftEvent({
+          tenantId: tenant!.id,
+          timeClockId: activeTimeClockId ?? openEntry.id,
+          workerName: openEntry.worker_name,
+          eventType: 'break_end',
+          dept: crewDept || openEntry.dept,
+          metadata: { duration_minutes: extraBreakMins },
+        });
+        setOnBreak(false);
+        setBreakStartTime(null);
+        localStorage.removeItem('on_break');
+        localStorage.removeItem('break_start_time');
+      }
+
+      const now        = new Date().toISOString();
+      const totalMs    = Date.now() - new Date(openEntry.clock_in).getTime();
+      const totalHours = totalMs / 3_600_000;
+      const totalBreakMins = (openEntry.total_break_minutes ?? 0) + extraBreakMins;
+      const netHours   = totalHours - totalBreakMins / 60;
+
+      const { error } = await supabase.from('time_clock').update({
+        clock_out: now, on_break: false,
+        total_hours: Math.round(netHours * 10000) / 10000,
+      }).eq('id', openEntry.id);
       if (error) throw error;
+
+      void logShiftEvent({
+        tenantId: tenant!.id,
+        timeClockId: activeTimeClockId ?? openEntry.id,
+        workerName: openEntry.worker_name,
+        eventType: 'clock_out',
+        dept: openEntry.current_dept ?? openEntry.dept,
+        metadata: {
+          total_hours: Math.round(totalHours * 100) / 100,
+          total_break_minutes: totalBreakMins,
+          net_productive_hours: Math.round(netHours * 100) / 100,
+        },
+      });
+
+      localStorage.removeItem('active_time_clock_id');
+      setActiveTimeClockId(null);
       await reloadClock();
       closeModal();
-      showToast(`${openEntry.worker_name} clocked out ✓`);
+      showToast(`${openEntry.worker_name} clocked out`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Update failed';
       showToast(msg, true);
@@ -1050,9 +1234,14 @@ export default function CrewPage() {
         tenant_id: tenant!.id,
       });
       if (error) throw error;
+      void logShiftEvent({
+        tenantId: tenant!.id, timeClockId: activeTimeClockId,
+        workerName: crewName, eventType: 'inventory_logged',
+        dept: dept || crewDept, metadata: { item, job_number: invJobNum.trim() || null },
+      });
       saveIdentity(crewName, dept);
       closeModal();
-      showToast('Inventory need logged ✓');
+      showToast('Inventory need logged');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Insert failed';
       showToast(msg, true);
@@ -1145,6 +1334,11 @@ export default function CrewPage() {
         tenant_id: tenant!.id,
       });
       if (error) throw error;
+      void logShiftEvent({
+        tenantId: tenant!.id, timeClockId: activeTimeClockId,
+        workerName: crewName, eventType: 'damage_reported',
+        dept: dept || crewDept, metadata: { description: dmgWhat.trim() || 'Damage report' },
+      });
       saveIdentity(crewName, dept);
       closeModal();
       setDmgFlash(true);
@@ -1183,6 +1377,11 @@ export default function CrewPage() {
         .single();
       if (error) throw error;
       setMessages((prev) => prev.map((m) => m.id === optimisticId ? (data as Message) : m));
+      void logShiftEvent({
+        tenantId: tenant!.id, timeClockId: activeTimeClockId,
+        workerName: crewName || 'Crew', eventType: 'message_sent',
+        dept: crewDept, metadata: { dept_target: dept },
+      });
     } catch (err: unknown) {
       setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
       const msg = err instanceof Error ? err.message : 'Send failed';
@@ -1237,7 +1436,7 @@ export default function CrewPage() {
     try {
       const { error } = await supabase.from('parts_log').update({ status: newStatus }).eq('id', id);
       if (error) throw error;
-      showToast(newStatus === 'Passed QC' ? 'Part approved ✓' : 'Marked for rework ✓');
+      showToast(newStatus === 'Passed QC' ? 'Part approved' : 'Marked for rework');
     } catch (err: unknown) {
       try {
         const { data } = await supabase.from('parts_log').select('*').eq('id', id).single();
@@ -1690,22 +1889,83 @@ export default function CrewPage() {
 
           {clockStep === 'clockout' && openEntry && (
             <>
-              <div style={{ padding: '16px', borderRadius: 12, background: 'rgba(45,225,201,0.05)', border: '1px solid rgba(45,225,201,0.15)', marginBottom: 24 }}>
+              <style>{`@keyframes breakPulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
+              <div style={{ padding: '16px', borderRadius: 12, background: 'rgba(45,225,201,0.05)', border: '1px solid rgba(45,225,201,0.15)', marginBottom: 18 }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{openEntry.worker_name}</div>
                 <div style={{ fontSize: 13, color: 'var(--ink-dim)', marginTop: 4 }}>{openEntry.dept}</div>
-                <div style={{ fontSize: 13, color: '#2DE1C9', marginTop: 6 }}>Clocked in since {formatTime(openEntry.clock_in)} · {formatDate(openEntry.clock_in)}</div>
+                <div style={{ fontSize: 13, color: '#2DE1C9', marginTop: 6 }}>Clocked in since {formatTime(openEntry.clock_in)}</div>
               </div>
-              <div style={{ display: 'flex', gap: 10 }}>
-                <button className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setClockStep('lookup')}>Back</button>
-                <button
-                  className="btn btn-primary"
-                  style={{ flex: 2, justifyContent: 'center', opacity: saving ? 0.5 : 1 }}
-                  onClick={handleClockOut}
-                  disabled={saving}
-                >
-                  {saving ? 'Clocking Out…' : 'Clock Out'}
-                </button>
-              </div>
+
+              {/* Break status */}
+              {onBreak && breakStartTime && (
+                <div style={{ padding: '12px 16px', borderRadius: 10, background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#FBBF24', animation: 'breakPulse 1.5s ease-in-out infinite', flexShrink: 0 }} />
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#FBBF24' }}>On Break</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: '#FBBF24', fontVariantNumeric: 'tabular-nums' }}>
+                      {fmtElapsed(breakStartTime)}
+                      <span style={{ display: 'none' }}>{breakTick}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Action buttons */}
+              {onBreak ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <button
+                    className="btn btn-primary"
+                    style={{ width: '100%', justifyContent: 'center', opacity: breakSaving ? 0.5 : 1 }}
+                    onClick={() => void handleBreakEnd()}
+                    disabled={breakSaving}
+                  >
+                    {breakSaving ? 'Ending…' : 'End Break'}
+                  </button>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <button className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setClockStep('lookup')}>Back</button>
+                    <button
+                      className="btn btn-ghost"
+                      style={{ flex: 2, justifyContent: 'center', opacity: (saving || breakSaving) ? 0.5 : 1, color: '#F87171', borderColor: 'rgba(248,113,113,0.3)' }}
+                      onClick={() => void handleClockOut()}
+                      disabled={saving || breakSaving}
+                    >
+                      {saving ? 'Clocking Out…' : 'Clock Out'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <button className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setClockStep('lookup')}>Back</button>
+                    <button
+                      className="btn btn-primary"
+                      style={{ flex: 2, justifyContent: 'center', opacity: saving ? 0.5 : 1 }}
+                      onClick={() => void handleClockOut()}
+                      disabled={saving}
+                    >
+                      {saving ? 'Clocking Out…' : 'Clock Out'}
+                    </button>
+                  </div>
+                  <button
+                    style={{
+                      width: '100%', padding: '10px 0', borderRadius: 10,
+                      background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)',
+                      color: '#FBBF24', fontSize: 13, fontWeight: 700, cursor: breakSaving ? 'not-allowed' : 'pointer',
+                      fontFamily: 'inherit', opacity: breakSaving ? 0.5 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    }}
+                    onClick={() => void handleBreakStart()}
+                    disabled={breakSaving}
+                  >
+                    <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="7" width="20" height="14" rx="2"/>
+                      <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
+                      <line x1="12" y1="12" x2="12" y2="16"/>
+                      <line x1="10" y1="14" x2="14" y2="14"/>
+                    </svg>
+                    {breakSaving ? 'Starting…' : 'Start Break'}
+                  </button>
+                </div>
+              )}
             </>
           )}
         </ModalOverlay>
@@ -2182,7 +2442,7 @@ export default function CrewPage() {
                 <div style={{ textAlign: 'center', padding: '32px 0', fontSize: 13, color: 'var(--ink-mute)' }}>Loading parts…</div>
               ) : partsQcList.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '32px 0' }}>
-                  <div style={{ fontSize: 32, marginBottom: 12 }}>✓</div>
+                  <svg width={32} height={32} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: 12 }}><polyline points="20 6 9 17 4 12"/></svg>
                   <div style={{ fontSize: 15, fontWeight: 700, color: '#34D399', marginBottom: 6 }}>All clear</div>
                   <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>
                     No parts awaiting QC{crewDept ? ` in ${crewDept}` : ''}.
@@ -2214,14 +2474,16 @@ export default function CrewPage() {
                           disabled={!!qcActioning[p.id]}
                           style={{ flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 700, borderRadius: 8, border: '1px solid rgba(52,211,153,0.4)', background: 'rgba(52,211,153,0.08)', color: '#34D399', cursor: qcActioning[p.id] ? 'not-allowed' : 'pointer', opacity: qcActioning[p.id] ? 0.5 : 1, fontFamily: 'inherit' }}
                         >
-                          ✓ Approve
+                          <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline', marginRight: 5, verticalAlign: 'middle' }}><polyline points="20 6 9 17 4 12"/></svg>
+                          Approve
                         </button>
                         <button
                           onClick={() => handleQcAction(p.id, 'Failed QC / Rework')}
                           disabled={!!qcActioning[p.id]}
-                          style={{ flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 700, borderRadius: 8, border: '1px solid rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.08)', color: '#F87171', cursor: qcActioning[p.id] ? 'not-allowed' : 'pointer', opacity: qcActioning[p.id] ? 0.5 : 1, fontFamily: 'inherit' }}
+                          style={{ flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 700, borderRadius: 8, border: '1px solid rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.08)', color: '#F87171', cursor: qcActioning[p.id] ? 'not-allowed' : 'pointer', opacity: qcActioning[p.id] ? 0.5 : 1, fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
                         >
-                          ✗ Rework
+                          <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                          Rework
                         </button>
                       </div>
                     </div>
