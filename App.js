@@ -4,13 +4,14 @@ import {
   Text, View, StyleSheet, TouchableOpacity,
   TextInput, SafeAreaView, StatusBar,
   KeyboardAvoidingView, Platform, Alert,
-  Modal, FlatList,
+  Modal, FlatList, ActivityIndicator,
 } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { HomeIcon, MessagesIcon, InventoryIcon, DamageIcon, MoreIcon } from './src/components/NavIcon';
 
 import { supabase } from './src/lib/supabase';
 import { registerForPushNotifications } from './src/lib/notifications';
@@ -30,6 +31,7 @@ import SupervisorApp      from './src/screens/SupervisorApp';
 import OnboardingScreen   from './src/screens/OnboardingScreen';
 import OnboardingFlow     from './src/screens/OnboardingFlow';
 import CraftsmanHomeScreen from './src/screens/CraftsmanHomeScreen';
+import MoreScreen         from './src/screens/MoreScreen';
 import TrialExpiredScreen, { TrialExpiredBanner } from './src/screens/TrialExpiredScreen';
 
 const Tab           = createBottomTabNavigator();
@@ -53,26 +55,27 @@ async function getDeviceId() {
 }
 
 const DEPT_COLORS = {
-  Production: { bg: '#172554', text: '#93c5fd' },
-  Assembly:   { bg: '#052e16', text: '#86efac' },
-  Finishing:  { bg: '#431407', text: '#fdba74' },
-  Craftsman:  { bg: '#500724', text: '#f9a8d4' },
+  Production: { bg: 'rgba(94,234,212,0.08)',  text: '#5EEAD4' },
+  Assembly:   { bg: 'rgba(52,211,153,0.08)',  text: '#34D399' },
+  Finishing:  { bg: 'rgba(251,191,36,0.08)',  text: '#FBBF24' },
+  Craftsman:  { bg: 'rgba(167,139,250,0.08)', text: '#A78BFA' },
 };
 
 // ── Colors ────────────────────────────────────────────────────
 const C = {
-  bg:       '#07090F',
-  surface:  '#0D1117',
-  input:    '#111620',
-  border:   '#1A2535',
-  text:     '#FFFFFF',
-  muted:    '#2D8A94',
-  tabBar:   '#07090F',
-  active:   '#00C5CC',
-  inactive: '#2D8A94',
-  badge:    '#FF4444',
-  blue:     '#3b82f6',
-  pink:     '#f9a8d4',
+  bg:       '#050608',
+  surface:  '#0a0d10',
+  input:    '#0f1418',
+  border:   'rgba(94,234,212,0.12)',
+  text:     '#E6F0EE',
+  muted:    '#9AAAA7',
+  tabBar:   '#050608',
+  active:   '#2DE1C9',
+  inactive: '#9AAAA7',
+  badge:    '#F87171',
+  accent:   '#2DE1C9',
+  danger:   '#F87171',
+  violet:   '#A78BFA',
 };
 
 function TabButton({ children, onPress, accessibilityState, style }) {
@@ -89,6 +92,23 @@ function TabButton({ children, onPress, accessibilityState, style }) {
 function RolePicker({ onSelect, tenant }) {
   const [pickingSupervisor, setPickingSupervisor] = useState(false);
   const [name, setName] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [loginError, setLoginError] = useState('');
+
+  const handleSupervisorGo = async () => {
+    if (loading || !name.trim()) return;
+    console.log('[supervisor login] button pressed, name:', name.trim());
+    setLoginError('');
+    setLoading(true);
+    try {
+      await onSelect('supervisor', name.trim());
+    } catch (e) {
+      console.error('[supervisor login] error:', e);
+      setLoginError('Login failed — please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <SafeAreaView style={rp.safe}>
@@ -100,25 +120,25 @@ function RolePicker({ onSelect, tenant }) {
         {!pickingSupervisor ? (
           <>
             <TouchableOpacity style={rp.roleCard} onPress={() => onSelect('crew')} activeOpacity={0.8}>
-              <View style={[rp.roleIcon, { backgroundColor: C.active + '22' }]}>
+              <View style={[rp.roleIcon, { backgroundColor: 'rgba(45,225,201,0.1)' }]}>
                 <Ionicons name="construct-outline" size={30} color={C.active} />
               </View>
               <View style={rp.roleText}>
                 <Text style={rp.roleTitle}>I'm Crew</Text>
                 <Text style={rp.roleDesc}>Log inventory, scan parts, report damage, send messages</Text>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={C.border} />
+              <Ionicons name="chevron-forward" size={18} color={C.muted} />
             </TouchableOpacity>
 
             <TouchableOpacity style={[rp.roleCard, rp.roleCardSup]} onPress={() => setPickingSupervisor(true)} activeOpacity={0.8}>
-              <View style={[rp.roleIcon, { backgroundColor: C.blue + '22' }]}>
-                <Ionicons name="shield-checkmark-outline" size={30} color={C.blue} />
+              <View style={[rp.roleIcon, { backgroundColor: 'rgba(167,139,250,0.1)' }]}>
+                <Ionicons name="shield-checkmark-outline" size={30} color={C.violet} />
               </View>
               <View style={rp.roleText}>
-                <Text style={[rp.roleTitle, { color: C.blue }]}>I'm Supervisor</Text>
+                <Text style={[rp.roleTitle, { color: C.violet }]}>I'm Supervisor</Text>
                 <Text style={rp.roleDesc}>Monitor crew, manage inventory, reply to messages</Text>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={C.border} />
+              <Ionicons name="chevron-forward" size={18} color={C.muted} />
             </TouchableOpacity>
           </>
         ) : (
@@ -128,15 +148,21 @@ function RolePicker({ onSelect, tenant }) {
               style={rp.input} placeholder="e.g. Mike Torres"
               placeholderTextColor={C.muted} value={name}
               onChangeText={setName} autoFocus
+              returnKeyType="go"
+              onSubmitEditing={handleSupervisorGo}
             />
+            {!!loginError && <Text style={rp.errorText}>{loginError}</Text>}
             <TouchableOpacity
-              style={[rp.goBtn, !name.trim() && rp.goBtnDisabled]}
-              onPress={() => onSelect('supervisor', name.trim())}
-              disabled={!name.trim()} activeOpacity={0.85}
+              style={[rp.goBtn, (!name.trim() || loading) && rp.goBtnDisabled]}
+              onPress={handleSupervisorGo}
+              disabled={!name.trim() || loading}
+              activeOpacity={0.85}
             >
-              <Text style={rp.goBtnText}>Enter Supervisor Dashboard</Text>
+              {loading
+                ? <ActivityIndicator size="small" color="#001917" />
+                : <Text style={rp.goBtnText}>Enter Supervisor Dashboard</Text>}
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => { setPickingSupervisor(false); setName(''); }} style={rp.backBtn}>
+            <TouchableOpacity onPress={() => { setPickingSupervisor(false); setName(''); setLoginError(''); }} style={rp.backBtn}>
               <Ionicons name="arrow-back" size={16} color={C.muted} style={{ marginRight: 5 }} />
               <Text style={rp.backBtnText}>Back</Text>
             </TouchableOpacity>
@@ -155,7 +181,7 @@ function CraftsmanNavigator({ userName, userDept, unreadCount, setUnreadCount })
       screenOptions={{
         headerShown: false,
         tabBarStyle: styles.tabBar,
-        tabBarActiveTintColor:   C.pink,
+        tabBarActiveTintColor:   C.violet,
         tabBarInactiveTintColor: C.inactive,
         tabBarShowLabel: false,
       }}
@@ -166,9 +192,7 @@ function CraftsmanNavigator({ userName, userDept, unreadCount, setUnreadCount })
         initialParams={params}
         options={{
           tabBarButton: (props) => <TabButton {...props} />,
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'checkmark-circle' : 'checkmark-circle-outline'} size={size} color={color} />
-          ),
+          tabBarIcon: ({ color }) => <HomeIcon color={color} />,
         }}
       />
       <CraftsmanTab.Screen
@@ -177,9 +201,7 @@ function CraftsmanNavigator({ userName, userDept, unreadCount, setUnreadCount })
         initialParams={params}
         options={{
           tabBarButton: (props) => <TabButton {...props} />,
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'cube' : 'cube-outline'} size={size} color={color} />
-          ),
+          tabBarIcon: ({ color }) => <InventoryIcon color={color} />,
         }}
       />
       <CraftsmanTab.Screen
@@ -188,9 +210,7 @@ function CraftsmanNavigator({ userName, userDept, unreadCount, setUnreadCount })
         initialParams={params}
         options={{
           tabBarButton: (props) => <TabButton {...props} />,
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'warning' : 'warning-outline'} size={size} color={color} />
-          ),
+          tabBarIcon: ({ color }) => <DamageIcon color={color} />,
         }}
       />
       <CraftsmanTab.Screen
@@ -199,9 +219,7 @@ function CraftsmanNavigator({ userName, userDept, unreadCount, setUnreadCount })
         initialParams={params}
         options={{
           tabBarButton: (props) => <TabButton {...props} />,
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'chatbubble-ellipses' : 'chatbubble-ellipses-outline'} size={size} color={color} />
-          ),
+          tabBarIcon: ({ color }) => <MessagesIcon color={color} />,
           tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
           tabBarBadgeStyle: styles.nativeBadge,
         }}
@@ -230,21 +248,7 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount }) {
         initialParams={{ ...params, onClearUnread: () => setUnreadCount(0) }}
         options={{
           tabBarButton: (props) => <TabButton {...props} />,
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'home' : 'home-outline'} size={size} color={color} />
-          ),
-        }}
-      />
-      <Tab.Screen
-        name="ScanPart"
-        component={PartsScreen}
-        initialParams={params}
-        options={{
-          title: 'Parts',
-          tabBarButton: (props) => <TabButton {...props} />,
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'scan' : 'scan-outline'} size={size} color={color} />
-          ),
+          tabBarIcon: ({ color }) => <HomeIcon color={color} />,
         }}
       />
       <Tab.Screen
@@ -253,9 +257,7 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount }) {
         initialParams={params}
         options={{
           tabBarButton: (props) => <TabButton {...props} />,
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'cube' : 'cube-outline'} size={size} color={color} />
-          ),
+          tabBarIcon: ({ color }) => <InventoryIcon color={color} />,
         }}
       />
       <Tab.Screen
@@ -264,9 +266,7 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount }) {
         initialParams={params}
         options={{
           tabBarButton: (props) => <TabButton {...props} />,
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'warning' : 'warning-outline'} size={size} color={color} />
-          ),
+          tabBarIcon: ({ color }) => <DamageIcon color={color} />,
         }}
       />
       <Tab.Screen
@@ -275,35 +275,39 @@ function CrewNavigator({ userName, userDept, unreadCount, setUnreadCount }) {
         initialParams={params}
         options={{
           tabBarButton: (props) => <TabButton {...props} />,
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'chatbubble-ellipses' : 'chatbubble-ellipses-outline'} size={size} color={color} />
-          ),
+          tabBarIcon: ({ color }) => <MessagesIcon color={color} />,
           tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
           tabBarBadgeStyle: styles.nativeBadge,
         }}
         listeners={{ tabPress: () => setUnreadCount(0) }}
       />
       <Tab.Screen
-        name="SOPs"
-        component={SOPsScreen}
+        name="More"
+        component={MoreScreen}
         initialParams={params}
         options={{
           tabBarButton: (props) => <TabButton {...props} />,
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'book' : 'book-outline'} size={size} color={color} />
-          ),
+          tabBarIcon: ({ color }) => <MoreIcon color={color} />,
         }}
+      />
+      {/* Hidden tabs — reachable from MoreScreen */}
+      <Tab.Screen
+        name="ScanPart"
+        component={PartsScreen}
+        initialParams={params}
+        options={{ title: 'Parts', tabBarButton: () => null }}
+      />
+      <Tab.Screen
+        name="SOPs"
+        component={SOPsScreen}
+        initialParams={params}
+        options={{ tabBarButton: () => null }}
       />
       <Tab.Screen
         name="Plans"
         component={PlansScreen}
         initialParams={params}
-        options={{
-          tabBarButton: (props) => <TabButton {...props} />,
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'document-text' : 'document-text-outline'} size={size} color={color} />
-          ),
-        }}
+        options={{ tabBarButton: () => null }}
       />
       {/* Alias for backward-compat navigation */}
       <Tab.Screen
@@ -416,82 +420,106 @@ export default function App() {
   }, [role, userName]);
 
   const handleRoleSelect = async (selectedRole, name) => {
-    const deviceId = await getDeviceId();
+    console.log('[handleRoleSelect] role:', selectedRole, 'name:', name);
+    try {
+      const deviceId = await getDeviceId();
 
-    if (selectedRole === 'supervisor' && name) {
-      const cutoff = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+      if (selectedRole === 'supervisor' && name) {
+        const cutoff = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
 
-      // Clear any stale sessions from this same device so it can always re-enter
-      await supabase.from('supervisor_sessions')
-        .update({ is_active: false, logged_out_at: new Date().toISOString() })
-        .eq('device_id', deviceId).eq('is_active', true).catch(() => {});
+        // Clear any stale sessions from this same device so it can always re-enter
+        try {
+          await supabase.from('supervisor_sessions')
+            .update({ is_active: false, logged_out_at: new Date().toISOString() })
+            .eq('device_id', deviceId).eq('is_active', true);
+        } catch (_) {}
 
-      // Block only if a DIFFERENT device has an active supervisor session
-      const { data: otherSessions } = await supabase
-        .from('supervisor_sessions').select('name, device_id')
-        .neq('device_id', deviceId)
-        .eq('is_active', true).gte('logged_in_at', cutoff);
+        // Block only if a DIFFERENT device has an active supervisor session
+        const { data: otherSessions, error: sessErr } = await supabase
+          .from('supervisor_sessions').select('name, device_id')
+          .neq('device_id', deviceId)
+          .eq('is_active', true).gte('logged_in_at', cutoff);
+        if (sessErr) console.warn('[handleRoleSelect] sessions query error:', sessErr);
 
-      if (otherSessions?.length > 0) {
-        const other = otherSessions[0];
-        Alert.alert(
-          'Supervisor Active on Another Device',
-          `${other.name} is currently logged in as supervisor on another device.`,
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Force Login',
-              style: 'destructive',
-              onPress: async () => {
-                await supabase.from('supervisor_sessions')
-                  .update({ is_active: false, logged_out_at: new Date().toISOString() })
-                  .eq('is_active', true).catch(() => {});
-                await supabase.from('supervisor_sessions').insert({ name, device_id: deviceId, is_active: true });
-                await AsyncStorage.setItem(STORAGE.NAME, name);
-                setUserName(name); setUserDept('Management');
-                registerForPushNotifications(name, 'Supervisor').catch(console.warn);
-                await Promise.all([
-                  AsyncStorage.setItem(STORAGE.ROLE, selectedRole),
-                  AsyncStorage.setItem(STORAGE.VERSION, '2'),
-                ]);
-                await supabase.from('login_log').insert({
-                  worker_name: name, dept: 'Management', role: 'supervisor',
-                  device_id: deviceId, app_version: '2',
-                }).catch(console.warn);
-                setRole(selectedRole);
+        if (otherSessions?.length > 0) {
+          const other = otherSessions[0];
+          Alert.alert(
+            'Supervisor Active on Another Device',
+            `${other.name} is currently logged in as supervisor on another device.`,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Force Login',
+                style: 'destructive',
+                onPress: async () => {
+                  try {
+                    await supabase.from('supervisor_sessions')
+                      .update({ is_active: false, logged_out_at: new Date().toISOString() })
+                      .eq('is_active', true);
+                    await supabase.from('supervisor_sessions').insert({ name, device_id: deviceId, is_active: true });
+                  } catch (_) {}
+                  await AsyncStorage.setItem(STORAGE.NAME, name);
+                  setUserName(name); setUserDept('Management');
+                  registerForPushNotifications(name, 'Supervisor').catch(console.warn);
+                  await Promise.all([
+                    AsyncStorage.setItem(STORAGE.ROLE, selectedRole),
+                    AsyncStorage.setItem(STORAGE.VERSION, '2'),
+                  ]);
+                  try {
+                    await supabase.from('login_log').insert({
+                      worker_name: name, dept: 'Management', role: 'supervisor',
+                      device_id: deviceId, app_version: '2',
+                    });
+                  } catch (_) {}
+                  setRole(selectedRole);
+                },
               },
-            },
-          ]
-        );
-        return;
+            ]
+          );
+          return;
+        }
+
+        try {
+          await supabase.from('supervisor_sessions').insert({ name, device_id: deviceId, is_active: true });
+        } catch (e) {
+          console.warn('[handleRoleSelect] session insert error (non-fatal):', e);
+        }
+        await AsyncStorage.setItem(STORAGE.NAME, name);
+        setUserName(name); setUserDept('Management');
+        registerForPushNotifications(name, 'Supervisor').catch(console.warn);
       }
 
-      await supabase.from('supervisor_sessions').insert({ name, device_id: deviceId, is_active: true });
-      await AsyncStorage.setItem(STORAGE.NAME, name);
-      setUserName(name); setUserDept('Management');
-      registerForPushNotifications(name, 'Supervisor').catch(console.warn);
-    }
+      await Promise.all([
+        AsyncStorage.setItem(STORAGE.ROLE, selectedRole),
+        AsyncStorage.setItem(STORAGE.VERSION, '2'),
+      ]);
 
-    await Promise.all([
-      AsyncStorage.setItem(STORAGE.ROLE, selectedRole),
-      AsyncStorage.setItem(STORAGE.VERSION, '2'),
-    ]);
-
-    if (selectedRole === 'crew' && !name) {
-      const storedName = await AsyncStorage.getItem(STORAGE.NAME);
-      if (!storedName) {
-        setRole('crew'); setShowOnboarding(true); return;
+      if (selectedRole === 'crew' && !name) {
+        const storedName = await AsyncStorage.getItem(STORAGE.NAME);
+        if (!storedName) {
+          setRole('crew'); setShowOnboarding(true); return;
+        }
+        const storedDept = await AsyncStorage.getItem(STORAGE.DEPT);
+        if (storedName) setUserName(storedName);
+        if (storedDept) setUserDept(storedDept);
       }
-      const storedDept = await AsyncStorage.getItem(STORAGE.DEPT);
-      if (storedName) setUserName(storedName);
-      if (storedDept) setUserDept(storedDept);
+
+      const displayName = name || (await AsyncStorage.getItem(STORAGE.NAME)) || 'Unknown';
+      const dept = selectedRole === 'supervisor' ? 'Management' : (await AsyncStorage.getItem(STORAGE.DEPT)) || '';
+      try {
+        await supabase.from('login_log').insert({ worker_name: displayName, dept, role: selectedRole, device_id: deviceId, app_version: '2' });
+      } catch (_) {}
+
+      console.log('[handleRoleSelect] calling setRole:', selectedRole);
+      setRole(selectedRole);
+    } catch (e) {
+      console.error('[handleRoleSelect] unexpected error:', e);
+      // Last-resort: still try to set the role so the user isn't stuck
+      try {
+        await AsyncStorage.setItem(STORAGE.ROLE, selectedRole);
+      } catch (_) {}
+      setRole(selectedRole);
     }
-
-    const displayName = name || (await AsyncStorage.getItem(STORAGE.NAME)) || 'Unknown';
-    const dept = selectedRole === 'supervisor' ? 'Management' : (await AsyncStorage.getItem(STORAGE.DEPT)) || '';
-    await supabase.from('login_log').insert({ worker_name: displayName, dept, role: selectedRole, device_id: deviceId, app_version: '2' }).catch(console.warn);
-
-    setRole(selectedRole);
   };
 
   // Full sign-out: clears name, dept, role
@@ -526,7 +554,13 @@ export default function App() {
     try {
       const d = typeof tenant.departments === 'string'
         ? JSON.parse(tenant.departments) : tenant.departments;
-      return Array.isArray(d) && d.length > 0 ? d : defaults;
+      if (!Array.isArray(d) || d.length === 0) return defaults;
+      // Always include all four standard departments
+      const merged = [...d];
+      for (const dep of defaults) {
+        if (!merged.includes(dep)) merged.push(dep);
+      }
+      return merged;
     } catch { return defaults; }
   }, [tenant]);
 
@@ -568,6 +602,7 @@ export default function App() {
   }, []);
 
   const handleFullOnboardingComplete = useCallback((tenantData, name, userRole) => {
+    console.log('[App] handleFullOnboardingComplete called, name:', name, 'role:', userRole);
     setTenant(tenantData);
     setShowFullOnboarding(false);
     setUserName(name);
@@ -578,6 +613,7 @@ export default function App() {
 
   // Show full onboarding for new installs
   if (showFullOnboarding) {
+    console.log('[App] rendering OnboardingFlow (showFullOnboarding=true)');
     return (
       <SafeAreaProvider>
         <OnboardingFlow onComplete={handleFullOnboardingComplete} />
@@ -693,7 +729,7 @@ const styles = StyleSheet.create({
   },
   tabAccent: {
     position: 'absolute', top: 0, left: 10, right: 10,
-    height: 2.5, backgroundColor: '#00C5CC',
+    height: 2.5, backgroundColor: '#2DE1C9',
     borderBottomLeftRadius: 2, borderBottomRightRadius: 2,
   },
   nativeBadge: { backgroundColor: '#FF4444', fontSize: 10, fontWeight: '700' },
@@ -702,40 +738,41 @@ const styles = StyleSheet.create({
 const dpStyles = StyleSheet.create({
   overlay:  { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
   box: {
-    backgroundColor: '#0D1117', borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    backgroundColor: '#0a0d10', borderTopLeftRadius: 24, borderTopRightRadius: 24,
     paddingHorizontal: 24, paddingTop: 16, paddingBottom: 40,
   },
-  handle:    { width: 36, height: 4, borderRadius: 2, backgroundColor: '#1A2535', alignSelf: 'center', marginBottom: 18 },
-  title:     { fontSize: 20, fontWeight: '800', color: '#fff', letterSpacing: -0.3, marginBottom: 16 },
+  handle:    { width: 36, height: 4, borderRadius: 2, backgroundColor: 'rgba(94,234,212,0.2)', alignSelf: 'center', marginBottom: 18 },
+  title:     { fontSize: 20, fontWeight: '800', color: '#E6F0EE', letterSpacing: -0.3, marginBottom: 16 },
   option: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingVertical: 13, paddingHorizontal: 14, borderRadius: 12, marginBottom: 6,
-    backgroundColor: '#111620', borderWidth: 1.5, borderColor: '#1A2535',
+    backgroundColor: '#0f1418', borderWidth: 1.5, borderColor: 'rgba(94,234,212,0.12)',
   },
-  optionText:      { color: '#2D8A94', fontSize: 15, fontWeight: '500' },
-  confirmBtn:      { marginTop: 18, backgroundColor: '#00C5CC', borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
+  optionText:      { color: '#9AAAA7', fontSize: 15, fontWeight: '500' },
+  confirmBtn:      { marginTop: 18, backgroundColor: '#2DE1C9', borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
   confirmBtnDisabled: { opacity: 0.35 },
-  confirmBtnText:  { color: '#000', fontSize: 16, fontWeight: '700' },
+  confirmBtnText:  { color: '#001917', fontSize: 16, fontWeight: '700' },
   cancelBtn:       { alignItems: 'center', paddingTop: 14 },
-  cancelText:      { color: '#2D8A94', fontSize: 14 },
+  cancelText:      { color: '#9AAAA7', fontSize: 14 },
 });
 
 const rp = StyleSheet.create({
-  safe:      { flex: 1, backgroundColor: C.bg },
+  safe:      { flex: 1, backgroundColor: '#050608' },
   container: { flex: 1, paddingHorizontal: 24, justifyContent: 'center', alignItems: 'center' },
-  heading:   { fontSize: 28, fontWeight: '800', color: C.text, letterSpacing: -0.5, marginBottom: 32, marginTop: 24 },
-  roleCard:  { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: C.surface, borderRadius: 18, borderWidth: 1, borderColor: '#222', padding: 18, marginBottom: 12, width: '100%' },
-  roleCardSup: { borderColor: C.blue + '30' },
+  heading:   { fontSize: 28, fontWeight: '800', color: '#E6F0EE', letterSpacing: -0.5, marginBottom: 32, marginTop: 24 },
+  roleCard:  { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: '#0a0d10', borderRadius: 18, borderWidth: 1, borderColor: 'rgba(94,234,212,0.12)', padding: 18, marginBottom: 12, width: '100%' },
+  roleCardSup: { borderColor: 'rgba(167,139,250,0.2)' },
   roleIcon:  { width: 52, height: 52, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
   roleText:  { flex: 1 },
-  roleTitle: { fontSize: 17, fontWeight: '700', color: C.text, marginBottom: 4 },
-  roleDesc:  { fontSize: 12, color: C.muted, lineHeight: 17 },
+  roleTitle: { fontSize: 17, fontWeight: '700', color: '#E6F0EE', marginBottom: 4 },
+  roleDesc:  { fontSize: 12, color: '#9AAAA7', lineHeight: 17 },
   nameBox:   { marginTop: 8, width: '100%' },
-  fieldLabel:{ fontSize: 10, fontWeight: '700', color: C.muted, letterSpacing: 0.9, marginBottom: 10 },
-  input:     { backgroundColor: C.input, borderRadius: 14, borderWidth: 1.5, borderColor: C.border, color: C.text, fontSize: 17, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 16 },
-  goBtn:     { backgroundColor: C.blue, borderRadius: 14, paddingVertical: 17, alignItems: 'center', marginBottom: 14 },
+  fieldLabel:{ fontSize: 10, fontWeight: '700', color: '#9AAAA7', letterSpacing: 0.9, marginBottom: 10 },
+  input:     { backgroundColor: '#0f1418', borderRadius: 14, borderWidth: 1.5, borderColor: 'rgba(94,234,212,0.12)', color: '#E6F0EE', fontSize: 17, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 16 },
+  goBtn:     { backgroundColor: '#2DE1C9', borderRadius: 14, paddingVertical: 17, alignItems: 'center', marginBottom: 14 },
   goBtnDisabled: { opacity: 0.35 },
-  goBtnText:     { color: '#fff', fontSize: 16, fontWeight: '700' },
+  goBtnText:     { color: '#001917', fontSize: 16, fontWeight: '700' },
+  errorText: { color: '#F87171', fontSize: 13, marginBottom: 10, textAlign: 'center' },
   backBtn:   { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingVertical: 8 },
-  backBtnText: { color: C.muted, fontSize: 14 },
+  backBtnText: { color: '#9AAAA7', fontSize: 14 },
 });
