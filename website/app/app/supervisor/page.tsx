@@ -1224,7 +1224,7 @@ export default function SupervisorPage() {
   return (
     <>
       <BgLayers />
-      <div style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <div className="app-shell" style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
         {/* Nav */}
         <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', height: 64, display: 'flex', alignItems: 'center', padding: '0 32px', justifyContent: 'space-between' }}>
@@ -1247,7 +1247,7 @@ export default function SupervisorPage() {
 
         {isTrial && <TrialBanner days={days} />}
 
-        <main style={{ flex: 1, padding: '40px 24px', maxWidth: 1100, margin: '0 auto', width: '100%' }}>
+        <main style={{ flex: 1, padding: '40px 24px', maxWidth: 1100, margin: '0 auto', width: '100%', overflowX: 'hidden' }}>
 
           {/* Header */}
           <div style={{ marginBottom: 32, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
@@ -1268,17 +1268,17 @@ export default function SupervisorPage() {
             </button>
           </div>
 
-          {/* KPI strip */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 32 }}>
+          {/* KPI strip — 2×2 on mobile, 4×1 on desktop */}
+          <div className="kpi-grid" style={{ gap: 12, marginBottom: 32 }}>
             {[
               { label: 'Crew Clocked In',      value: dataLoading ? '—' : String(activeCrew.length),  color: '#2DE1C9' },
               { label: 'Messages',              value: dataLoading ? '—' : String(messages.length),    color: '#5EEAD4' },
               { label: 'Open Inventory Needs',  value: dataLoading ? '—' : String(openNeeds.length),   color: '#FBBF24' },
               { label: 'Open Damage Reports',   value: dataLoading ? '—' : String(openDamage.length),  color: '#F87171' },
             ].map(({ label, value, color }) => (
-              <div key={label} className="portal-card" style={{ padding: '20px 24px' }}>
+              <div key={label} className="portal-card kpi-card">
                 <div className="portal-stat-value" style={{ color }}>{value}</div>
-                <div className="portal-stat-label" style={{ marginTop: 6 }}>{label}</div>
+                <div className="portal-stat-label">{label}</div>
               </div>
             ))}
           </div>
@@ -1316,24 +1316,41 @@ export default function SupervisorPage() {
                 ) : activeCrew.length === 0 ? (
                   <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>No crew currently clocked in.</div>
                 ) : (
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                        {['Name', 'Department', 'Clocked In'].map((h) => (
-                          <th key={h} style={thStyle}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
+                  <>
+                    {/* Desktop — table */}
+                    <div className="crew-table-wrap">
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid var(--line)' }}>
+                            {['Name', 'Department', 'Clocked In'].map((h) => (
+                              <th key={h} style={thStyle}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {activeCrew.map((row) => (
+                            <tr key={row.id} style={{ borderBottom: '1px solid var(--line)' }}>
+                              <td style={tdBold}>{row.worker_name}</td>
+                              <td style={tdStyle}>{row.dept}</td>
+                              <td style={tdStyle}>{formatTime(row.clock_in)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {/* Mobile — cards */}
+                    <div className="crew-cards-wrap">
                       {activeCrew.map((row) => (
-                        <tr key={row.id} style={{ borderBottom: '1px solid var(--line)' }}>
-                          <td style={tdBold}>{row.worker_name}</td>
-                          <td style={tdStyle}>{row.dept}</td>
-                          <td style={tdStyle}>{formatTime(row.clock_in)}</td>
-                        </tr>
+                        <div key={row.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid var(--line)' }}>
+                          <div>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{row.worker_name}</div>
+                            <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{row.dept}</div>
+                          </div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-dim)' }}>{formatTime(row.clock_in)}</div>
+                        </div>
                       ))}
-                    </tbody>
-                  </table>
+                    </div>
+                  </>
                 )}
               </div>
 
