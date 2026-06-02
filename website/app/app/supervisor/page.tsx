@@ -8,6 +8,7 @@ import { trialDaysLeft } from '@/lib/auth';
 import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
 import ReportsTab from './ReportsTab';
 import SetupWizard from './SetupWizard';
+import AssemblyTab from './AssemblyTab';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -51,6 +52,9 @@ type DamageReport = {
   resolved_by: string | null;
   resolution_cost: number | null;
   resolved_at: string | null;
+  flag_type: string | null;
+  assembler_name: string | null;
+  cabinet_unit_id: string | null;
 };
 
 type JobDrawing = {
@@ -105,7 +109,7 @@ type Job = {
   created_at: string;
 };
 
-type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports';
+type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'assembly';
 
 type AiMode = 'learn' | 'assist' | 'autonomous';
 
@@ -334,6 +338,9 @@ export default function SupervisorPage() {
   const [briefError,   setBriefError]   = useState<string | null>(null);
   const briefAutoRun   = useRef(false);
 
+  // Damage filter tab
+  const [damageFilter, setDamageFilter] = useState<'all' | 'damaged' | 'missing' | 'wrong_part'>('all');
+
   // Resolution modal
   const [resolvingId,   setResolvingId]   = useState<string | null>(null);
   const [resType,       setResType]       = useState('Repaired in shop');
@@ -380,7 +387,7 @@ export default function SupervisorPage() {
         supabase.from('time_clock').select('id, worker_name, dept, clock_in, status').eq('tenant_id', tenant.id).is('clock_out', null).order('clock_in', { ascending: true }),
         supabase.from('messages').select('id, sender_name, dept, body, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
         supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
-        supabase.from('damage_reports').select('id, part_name, job_id, dept, notes, photo_url, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
+        supabase.from('damage_reports').select('id, part_name, job_id, dept, notes, photo_url, status, created_at, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, flag_type, assembler_name, cabinet_unit_id').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
       ]);
       if (crewRes.data)   setActiveCrew(crewRes.data as CrewRow[]);
       if (msgRes.data)    setMessages(msgRes.data as Message[]);
@@ -849,6 +856,9 @@ export default function SupervisorPage() {
       photo_url: supDmgPreview,
       status: 'open',
       created_at: new Date().toISOString(),
+      flag_type: null,
+      assembler_name: null,
+      cabinet_unit_id: null,
       resolution_type: null,
       resolution_notes: null,
       resolved_by: null,
@@ -1181,6 +1191,7 @@ export default function SupervisorPage() {
 
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: 'overview',      label: 'Overview' },
+    { key: 'assembly',      label: 'Assembly' },
     { key: 'messages',      label: 'Messages',    count: messages.length },
     { key: 'needs',         label: 'Inventory',   count: openNeeds.length },
     { key: 'damage',        label: 'Damage',      count: openDamage.length },
@@ -1968,6 +1979,29 @@ export default function SupervisorPage() {
           {/* ── Damage tab ────────────────────────────────────────────────────── */}
           {tab === 'damage' && (
             <>
+            {/* Filter tabs */}
+            <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 16 }}>
+              {([
+                { key: 'all',        label: 'All' },
+                { key: 'damaged',    label: 'Damage' },
+                { key: 'missing',    label: 'Missing Parts' },
+                { key: 'wrong_part', label: 'Wrong Part' },
+              ] as { key: typeof damageFilter; label: string }[]).map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setDamageFilter(key)}
+                  style={{
+                    padding: '8px 14px', fontSize: 12, fontWeight: 600,
+                    color: damageFilter === key ? 'var(--teal)' : 'var(--ink-mute)',
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    borderBottom: damageFilter === key ? '2px solid var(--teal)' : '2px solid transparent',
+                    marginBottom: -1, fontFamily: 'inherit', transition: 'color 0.15s', whiteSpace: 'nowrap',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <div className="portal-card" style={{ padding: '20px 24px', marginBottom: 10 }}>
               <div style={{ marginBottom: 14, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
                 Report Damage
@@ -2023,11 +2057,27 @@ export default function SupervisorPage() {
                 <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
               ) : damage.length === 0 ? (
                 <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No damage reports logged.</div>
-              ) : (
-                damage.map((d) => {
+              ) : (() => {
+                const filtered = damage.filter((d) => {
+                  if (damageFilter === 'all') return true;
+                  if (damageFilter === 'damaged')    return d.flag_type === 'damaged'    || (!d.flag_type && d.status !== null);
+                  if (damageFilter === 'missing')    return d.flag_type === 'missing';
+                  if (damageFilter === 'wrong_part') return d.flag_type === 'wrong_part';
+                  return true;
+                });
+                if (filtered.length === 0) {
+                  return <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No reports match this filter.</div>;
+                }
+                return filtered.map((d) => {
                   const s = (d.status ?? 'open').toLowerCase();
                   const isOpen = !['resolved', 'closed'].includes(s);
                   const busy = actioning[d.id];
+                  const flagColors: Record<string, { c: string; bg: string }> = {
+                    damaged:    { c: '#F87171', bg: 'rgba(248,113,113,0.12)' },
+                    missing:    { c: '#FBBF24', bg: 'rgba(251,191,36,0.12)' },
+                    wrong_part: { c: '#F87171', bg: 'rgba(248,113,113,0.12)' },
+                  };
+                  const fc = d.flag_type ? (flagColors[d.flag_type] ?? null) : null;
                   return (
                     <div key={d.id} className="portal-card">
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
@@ -2035,10 +2085,16 @@ export default function SupervisorPage() {
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
                             <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{d.part_name}</span>
                             <StatusBadge status={d.status} />
+                            {fc && (
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: fc.c, background: fc.bg, textTransform: 'capitalize' }}>
+                                {(d.flag_type ?? '').replace('_', ' ')}
+                              </span>
+                            )}
                           </div>
                           <div style={{ fontSize: 12, color: 'var(--ink-mute)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                            {d.dept    && <span>{d.dept}</span>}
-                            {d.job_id  && <span>Job: {d.job_id}</span>}
+                            {d.dept           && <span>{d.dept}</span>}
+                            {d.job_id         && <span>Job: {d.job_id}</span>}
+                            {d.assembler_name && <span>by {d.assembler_name}</span>}
                             <span>{formatDate(d.created_at)}</span>
                           </div>
                           {d.notes && (
@@ -2062,8 +2118,8 @@ export default function SupervisorPage() {
                       )}
                     </div>
                   );
-                })
-              )}
+                });
+              })()}
             </div>
             </>
           )}
@@ -2727,6 +2783,15 @@ export default function SupervisorPage() {
             </div>
           )}
 
+          {/* ── Assembly tab ─────────────────────────────────────────────── */}
+          {tab === 'assembly' && tenant && (
+            <AssemblyTab
+              tenantId={tenant.id}
+              showToast={showToast}
+              jobs={jobs}
+            />
+          )}
+
           {/* ── Integrations tab ─────────────────────────────────────────── */}
           {tab === 'integrations' && tenant && (
             <IntegrationsTab
@@ -2852,6 +2917,13 @@ export default function SupervisorPage() {
               <div style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(94,234,212,0.2)', margin: '14px auto 10px' }} />
               {(
                 [
+                  { key: 'assembly' as Tab, label: 'Assembly', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="3" width="20" height="14" rx="2"/>
+                      <line x1="8" y1="21" x2="16" y2="21"/>
+                      <line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                  )},
                   { key: 'plans' as Tab, label: 'Plans', icon: (
                     <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>

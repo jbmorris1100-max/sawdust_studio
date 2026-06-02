@@ -66,9 +66,31 @@ type Job = {
   status: string;
 };
 
-type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'switchDept' | 'editName' | 'buildTimer' | 'parts' | null;
+type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'switchDept' | 'editName' | 'buildTimer' | 'parts' | 'assemblyScan' | null;
 type ClockStep = 'lookup' | 'clockin' | 'clockout';
 type BuildTimerStep = 'form' | 'summary';
+type AssemblyScanStep = 'scan' | 'checklist' | 'confirm';
+
+type AssemblyCabinetUnit = {
+  id: string;
+  unit_label: string;
+  job_number: string | null;
+  cabinet_number: string | null;
+  room_number: string | null;
+  status: string;
+};
+
+type AssemblyScanPart = {
+  id: string;
+  part_name: string;
+  material: string | null;
+  width: number | null;
+  height: number | null;
+  depth: number | null;
+  quantity: number;
+  status: string;
+  flag_type: string | null;
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -287,6 +309,21 @@ export default function CrewPage() {
   const [jobs,             setJobs]             = useState<Job[]>([]);
   const [partJobId,        setPartJobId]        = useState('');
 
+  // Assembly Scan modal state
+  const [assemblyScanStep,      setAssemblyScanStep]      = useState<AssemblyScanStep>('scan');
+  const [assemblyScanInput,     setAssemblyScanInput]     = useState('');
+  const [assemblyScanUnit,      setAssemblyScanUnit]      = useState<AssemblyCabinetUnit | null>(null);
+  const [assemblyScanParts,     setAssemblyScanParts]     = useState<AssemblyScanPart[]>([]);
+  const [assemblyScanChecked,   setAssemblyScanChecked]   = useState<Record<string, boolean>>({});
+  const [assemblyScanFlags,     setAssemblyScanFlags]     = useState<Record<string, { type: string; notes: string }>>({});
+  const [assemblyScanFlagging,  setAssemblyScanFlagging]  = useState<string | null>(null);
+  const [assemblyScanFlagType,  setAssemblyScanFlagType]  = useState('damaged');
+  const [assemblyScanFlagNotes, setAssemblyScanFlagNotes] = useState('');
+  const [assemblyScanSearching, setAssemblyScanSearching] = useState(false);
+  const [assemblyScanNotFound,  setAssemblyScanNotFound]  = useState(false);
+  const [assemblyScanConfirming,setAssemblyScanConfirming]= useState(false);
+  const [assemblyScanDone,      setAssemblyScanDone]      = useState(false);
+
   // Camera (shared between damage + parts modals — only one open at a time)
   const videoRef         = useRef<HTMLVideoElement>(null);
   const canvasRef        = useRef<HTMLCanvasElement>(null);
@@ -402,7 +439,8 @@ export default function CrewPage() {
   useEffect(() => {
     const isCamera =
       (modal === 'damage' && dmgScanStep === 'camera') ||
-      (modal === 'parts'  && partsMode === 'log' && partScanStep === 'camera');
+      (modal === 'parts'  && partsMode === 'log' && partScanStep === 'camera') ||
+      (modal === 'assemblyScan' && assemblyScanStep === 'scan');
     if (isCamera) {
       void startCamera();
     } else {
@@ -410,7 +448,7 @@ export default function CrewPage() {
     }
     return () => { stopCamera(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modal, dmgScanStep, partScanStep, partsMode]);
+  }, [modal, dmgScanStep, partScanStep, partsMode, assemblyScanStep]);
 
   const showToast = useCallback((msg: string, error = false) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -589,6 +627,192 @@ export default function CrewPage() {
         if (data) setPartsQcList(data as PartLog[]);
       } catch (_) {}
       setQcLoading(false);
+    }
+  }
+
+  function openAssemblyScan() {
+    setAssemblyScanStep('scan');
+    setAssemblyScanInput('');
+    setAssemblyScanUnit(null);
+    setAssemblyScanParts([]);
+    setAssemblyScanChecked({});
+    setAssemblyScanFlags({});
+    setAssemblyScanFlagging(null);
+    setAssemblyScanFlagType('damaged');
+    setAssemblyScanFlagNotes('');
+    setAssemblyScanNotFound(false);
+    setAssemblyScanDone(false);
+    setCameraError(null);
+    setCameraStarting(false);
+    setModal('assemblyScan');
+  }
+
+  async function handleAssemblyScanSearch() {
+    const input = assemblyScanInput.trim();
+    if (!input || assemblyScanSearching || !tenant) return;
+    setAssemblyScanSearching(true);
+    setAssemblyScanNotFound(false);
+    try {
+      let cabinetUnitId: string | null = null;
+
+      // Strategy 1: exact scan_value match
+      const { data: sv } = await supabase
+        .from('parts').select('cabinet_unit_id')
+        .eq('tenant_id', tenant.id).eq('scan_value', input)
+        .limit(1).maybeSingle();
+      if (sv) cabinetUnitId = (sv as { cabinet_unit_id: string }).cabinet_unit_id;
+
+      // Strategy 2: part_name ilike
+      if (!cabinetUnitId) {
+        const { data: pn } = await supabase
+          .from('parts').select('cabinet_unit_id')
+          .eq('tenant_id', tenant.id).ilike('part_name', `%${input}%`)
+          .limit(1).maybeSingle();
+        if (pn) cabinetUnitId = (pn as { cabinet_unit_id: string }).cabinet_unit_id;
+      }
+
+      // Strategy 3: unit_label ilike
+      if (!cabinetUnitId) {
+        const { data: ul } = await supabase
+          .from('cabinet_units').select('id')
+          .eq('tenant_id', tenant.id).ilike('unit_label', `%${input}%`)
+          .limit(1).maybeSingle();
+        if (ul) cabinetUnitId = (ul as { id: string }).id;
+      }
+
+      // Strategy 4: parse Job/Room/Cabinet format
+      if (!cabinetUnitId) {
+        const segs = input.split('/').map((s) => s.trim()).filter(Boolean);
+        if (segs.length >= 3) {
+          const [job, room, cabinet] = segs;
+          const { data: fmt } = await supabase
+            .from('cabinet_units').select('id')
+            .eq('tenant_id', tenant.id)
+            .eq('job_number', job).eq('room_number', room).eq('cabinet_number', cabinet)
+            .limit(1).maybeSingle();
+          if (fmt) cabinetUnitId = (fmt as { id: string }).id;
+        }
+      }
+
+      if (!cabinetUnitId) {
+        setAssemblyScanNotFound(true);
+        return;
+      }
+
+      // Load cabinet unit + parts
+      const [unitRes, partsRes] = await Promise.all([
+        supabase.from('cabinet_units')
+          .select('id, unit_label, job_number, cabinet_number, room_number, status')
+          .eq('id', cabinetUnitId).single(),
+        supabase.from('parts')
+          .select('id, part_name, material, width, height, depth, quantity, status, flag_type')
+          .eq('cabinet_unit_id', cabinetUnitId).order('part_name'),
+      ]);
+      if (unitRes.error) throw unitRes.error;
+
+      const unit  = unitRes.data as AssemblyCabinetUnit;
+      const parts = (partsRes.data as AssemblyScanPart[]) ?? [];
+
+      setAssemblyScanUnit(unit);
+      setAssemblyScanParts(parts);
+
+      // Mark in_assembly
+      await supabase.from('cabinet_units').update({ status: 'in_assembly' }).eq('id', cabinetUnitId);
+
+      // Set all to unchecked then animate
+      const init: Record<string, boolean> = {};
+      parts.forEach((p) => { init[p.id] = false; });
+      setAssemblyScanChecked(init);
+      setAssemblyScanStep('checklist');
+
+      parts.forEach((p, i) => {
+        setTimeout(() => {
+          setAssemblyScanChecked((prev) => ({ ...prev, [p.id]: true }));
+        }, 150 + i * 100);
+      });
+
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Search failed', true);
+    } finally {
+      setAssemblyScanSearching(false);
+    }
+  }
+
+  function handleAssemblyScanFlag(partId: string) {
+    if (assemblyScanFlagging === partId) {
+      setAssemblyScanFlagging(null);
+      return;
+    }
+    setAssemblyScanFlagging(partId);
+    setAssemblyScanFlagType('damaged');
+    setAssemblyScanFlagNotes('');
+  }
+
+  function handleAssemblyScanFlagConfirm(partId: string) {
+    setAssemblyScanFlags((prev) => ({
+      ...prev,
+      [partId]: { type: assemblyScanFlagType, notes: assemblyScanFlagNotes },
+    }));
+    setAssemblyScanChecked((prev) => ({ ...prev, [partId]: false }));
+    setAssemblyScanFlagging(null);
+  }
+
+  async function handleAssemblyScanConfirm() {
+    if (!assemblyScanUnit || assemblyScanConfirming || !tenant) return;
+    setAssemblyScanConfirming(true);
+    try {
+      const flaggedEntries = Object.entries(assemblyScanFlags);
+      const hasFlagged     = flaggedEntries.length > 0;
+
+      // Update all part statuses
+      await Promise.all(assemblyScanParts.map((p) => {
+        const flag      = assemblyScanFlags[p.id];
+        const newStatus = flag ? flag.type : (assemblyScanChecked[p.id] ? 'checked' : 'pending');
+        return supabase.from('parts').update({
+          status:      newStatus,
+          checked_at:  assemblyScanChecked[p.id] ? new Date().toISOString() : null,
+          checked_by:  crewName || null,
+          flag_type:   flag?.type   || null,
+          flag_notes:  flag?.notes  || null,
+        }).eq('id', p.id);
+      }));
+
+      // Update cabinet unit status
+      const newUnitStatus = hasFlagged ? 'flagged' : 'complete';
+      const unitUpdate: Record<string, unknown> = { status: newUnitStatus };
+      if (!hasFlagged) unitUpdate.completed_at = new Date().toISOString();
+      await supabase.from('cabinet_units').update(unitUpdate).eq('id', assemblyScanUnit.id);
+
+      // Create damage reports for flagged parts
+      if (hasFlagged) {
+        const reports = flaggedEntries.map(([partId, flag]) => {
+          const part = assemblyScanParts.find((p) => p.id === partId);
+          return {
+            part_name:       part?.part_name ?? 'Unknown part',
+            dept:            'Assembly',
+            status:          'open',
+            tenant_id:       tenant!.id,
+            flag_type:       flag.type,
+            notes:           flag.notes || null,
+            cabinet_unit_id: assemblyScanUnit!.id,
+            job_id:          assemblyScanUnit!.job_number,
+            assembler_name:  crewName || null,
+          };
+        });
+        const { error } = await supabase.from('damage_reports').insert(reports);
+        if (error) throw error;
+      }
+
+      setAssemblyScanDone(true);
+      setTimeout(() => {
+        setAssemblyScanDone(false);
+        closeModal();
+      }, 2000);
+
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Confirm failed', true);
+    } finally {
+      setAssemblyScanConfirming(false);
     }
   }
 
@@ -1099,6 +1323,22 @@ export default function CrewPage() {
       onClick: openParts,
       icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>,
     },
+    ...(crewDept === 'Assembly' ? ([
+      {
+        label: 'Assembly Scan',
+        color: '#5EEAD4', bg: 'rgba(94,234,212,0.08)',
+        onClick: openAssemblyScan,
+        icon: (
+          <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 7V5a2 2 0 0 1 2-2h2"/>
+            <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
+            <path d="M21 17v2a2 2 0 0 1-2 2h-2"/>
+            <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
+            <line x1="7" y1="12" x2="17" y2="12"/>
+          </svg>
+        ),
+      },
+    ] as { label: string; color: string; bg: string; onClick: () => void; icon: React.ReactNode }[]) : []),
     ...(crewDept === 'Craftsman' ? ([
       {
         label: buildStart ? 'Stop Build Timer' : 'Start Build Timer',
@@ -1991,6 +2231,267 @@ export default function CrewPage() {
             </>
           )}
         </ModalOverlay>
+      )}
+
+      {/* ── Assembly Scan Modal ──────────────────────────────────────────── */}
+      {modal === 'assemblyScan' && !assemblyScanDone && (
+        <div
+          style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.82)', backdropFilter: 'blur(5px)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '24px 16px', overflowY: 'auto' }}
+          onClick={(e) => { if (e.target === e.currentTarget) closeModal(); }}
+        >
+          <div style={{ background: '#0a0d10', border: '1px solid var(--line-strong)', borderRadius: 20, width: '100%', maxWidth: 500, padding: 28, display: 'flex', flexDirection: 'column', gap: 0, marginTop: 16 }}>
+            <style>{`@keyframes asmSweep{from{opacity:0;transform:scale(0.5)}to{opacity:1;transform:scale(1)}}`}</style>
+
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 22 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {assemblyScanStep === 'checklist' && assemblyScanUnit && (
+                  <button
+                    onClick={() => { setAssemblyScanStep('scan'); setAssemblyScanUnit(null); setAssemblyScanParts([]); setAssemblyScanChecked({}); setAssemblyScanFlags({}); }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: '2px 4px', display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'inherit', fontSize: 12 }}
+                  >
+                    <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+                    Back
+                  </button>
+                )}
+                <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--ink)' }}>
+                  {assemblyScanStep === 'scan' ? 'Assembly Scan' : assemblyScanUnit
+                    ? `${assemblyScanUnit.room_number ? `Room ${assemblyScanUnit.room_number} — ` : ''}${assemblyScanUnit.cabinet_number ? `Cabinet ${assemblyScanUnit.cabinet_number}` : assemblyScanUnit.unit_label}`
+                    : 'Assembly Scan'
+                  }
+                </div>
+              </div>
+              <button onClick={closeModal} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }}>
+                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+
+            {/* ── STEP 1: Scan ── */}
+            {assemblyScanStep === 'scan' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                {/* Camera viewfinder */}
+                <div style={{ position: 'relative', width: '100%', aspectRatio: '4/3', background: '#07090A', borderRadius: 12, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {!cameraError && <video ref={videoRef} autoPlay playsInline muted style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />}
+                  {cameraStarting && !cameraError && (
+                    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(7,9,10,0.75)' }}>
+                      <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>Starting camera…</span>
+                    </div>
+                  )}
+                  {cameraError && (
+                    <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 16 }}>
+                      <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="rgba(94,234,212,0.3)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></svg>
+                      <p style={{ fontSize: 11, color: 'var(--ink-mute)', textAlign: 'center', lineHeight: 1.5, margin: 0 }}>Type the label below</p>
+                    </div>
+                  )}
+                  {/* Corner brackets */}
+                  <div style={{ position: 'absolute', top: 14, left: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '3px 0 0 0', zIndex: 2 }} />
+                  <div style={{ position: 'absolute', top: 14, right: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 3px 0 0', zIndex: 2 }} />
+                  <div style={{ position: 'absolute', bottom: 14, left: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '0 0 0 3px', zIndex: 2 }} />
+                  <div style={{ position: 'absolute', bottom: 14, right: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 0 3px 0', zIndex: 2 }} />
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginBottom: 7, fontFamily: 'inherit' }}>
+                    Type part label — format: Job / Room / Cabinet / Part
+                  </div>
+                  <input
+                    className="form-input"
+                    placeholder="e.g. P-26-1001 / R1 / C3 / Left Side"
+                    value={assemblyScanInput}
+                    onChange={(e) => { setAssemblyScanInput(e.target.value); setAssemblyScanNotFound(false); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') void handleAssemblyScanSearch(); }}
+                    autoFocus
+                    style={{ width: '100%', fontSize: 15 }}
+                  />
+                  {assemblyScanNotFound && (
+                    <div style={{ marginTop: 8, fontSize: 12, color: '#F87171' }}>
+                      Part not found — check job number or ask supervisor.
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  className="btn btn-primary"
+                  style={{ width: '100%', justifyContent: 'center', opacity: (!assemblyScanInput.trim() || assemblyScanSearching) ? 0.5 : 1, fontSize: 15 }}
+                  onClick={() => void handleAssemblyScanSearch()}
+                  disabled={!assemblyScanInput.trim() || assemblyScanSearching}
+                >
+                  {assemblyScanSearching ? 'Searching…' : 'Find Cabinet'}
+                </button>
+              </div>
+            )}
+
+            {/* ── STEP 2/3: Checklist + flag ── */}
+            {assemblyScanStep === 'checklist' && assemblyScanUnit && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                {/* Job sub-label */}
+                {assemblyScanUnit.job_number && (
+                  <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginBottom: 14 }}>Job: {assemblyScanUnit.job_number}</div>
+                )}
+
+                {/* Parts count */}
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--teal)', marginBottom: 14 }}>
+                  {Object.values(assemblyScanChecked).filter(Boolean).length - Object.keys(assemblyScanFlags).length}/{assemblyScanParts.length} parts checked
+                  {Object.keys(assemblyScanFlags).length > 0 && (
+                    <span style={{ marginLeft: 10, color: '#F87171' }}>· {Object.keys(assemblyScanFlags).length} flagged</span>
+                  )}
+                </div>
+
+                {/* Parts list */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 0, marginBottom: 20 }}>
+                  {assemblyScanParts.map((p) => {
+                    const flag    = assemblyScanFlags[p.id];
+                    const checked = assemblyScanChecked[p.id];
+                    const isFlagging = assemblyScanFlagging === p.id;
+                    const dims  = [p.width, p.height, p.depth].filter(Boolean).map((v) => `${v}"`).join(' x ');
+
+                    return (
+                      <div key={p.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                        {/* Part row */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0' }}>
+                          {/* Status icon */}
+                          <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', animation: checked && !flag ? 'asmSweep 0.2s ease-out' : undefined }}>
+                            {flag ? (
+                              flag.type === 'damaged'    ? <span style={{ color: '#F87171' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span> :
+                              flag.type === 'missing'    ? <span style={{ color: '#FBBF24' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg></span> :
+                                                           <span style={{ color: '#F87171' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span>
+                            ) : checked ? (
+                              <span style={{ color: '#34D399' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+                            ) : (
+                              <span style={{ color: '#8BA5A0' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/></svg></span>
+                            )}
+                          </div>
+
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: flag ? '#F87171' : 'var(--ink)' }}>
+                              {p.part_name}
+                              {p.quantity > 1 && <span style={{ fontWeight: 400, color: 'var(--ink-mute)', marginLeft: 6 }}>×{p.quantity}</span>}
+                            </div>
+                            {dims && <div style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{dims}</div>}
+                            {flag && (
+                              <div style={{ fontSize: 11, color: '#F87171', marginTop: 2 }}>
+                                {flag.type.replace('_', ' ')}{flag.notes ? ` — ${flag.notes}` : ''}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Flag button — only if not already flagged */}
+                          {!flag && (
+                            <button
+                              onClick={() => handleAssemblyScanFlag(p.id)}
+                              title="Flag an issue"
+                              style={{
+                                flexShrink: 0, background: isFlagging ? 'rgba(248,113,113,0.15)' : 'none',
+                                border: `1px solid ${isFlagging ? 'rgba(248,113,113,0.4)' : 'transparent'}`,
+                                borderRadius: 6, padding: 5, cursor: 'pointer',
+                                color: isFlagging ? '#F87171' : 'var(--ink-mute)',
+                                display: 'flex', transition: 'all 0.12s',
+                              }}
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+                            </button>
+                          )}
+                          {flag && (
+                            <button
+                              onClick={() => {
+                                setAssemblyScanFlags((prev) => { const n = { ...prev }; delete n[p.id]; return n; });
+                                setAssemblyScanChecked((prev) => ({ ...prev, [p.id]: true }));
+                              }}
+                              title="Remove flag"
+                              style={{ flexShrink: 0, background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 6, padding: '4px 8px', cursor: 'pointer', color: '#F87171', fontSize: 11, fontFamily: 'inherit', fontWeight: 700 }}
+                            >
+                              Unflag
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Flag options inline */}
+                        {isFlagging && (
+                          <div style={{ padding: '10px 12px 14px 30px', background: 'rgba(248,113,113,0.04)', borderRadius: 8, marginBottom: 6 }}>
+                            <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Flag type</div>
+                            <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                              {[
+                                { key: 'damaged',    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>, label: 'Damaged' },
+                                { key: 'missing',    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg>, label: 'Missing' },
+                                { key: 'wrong_part', icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>, label: 'Wrong Part' },
+                              ].map(({ key, icon, label }) => (
+                                <button
+                                  key={key}
+                                  onClick={() => setAssemblyScanFlagType(key)}
+                                  style={{
+                                    display: 'flex', alignItems: 'center', gap: 6,
+                                    padding: '7px 12px', borderRadius: 8,
+                                    border: `1px solid ${assemblyScanFlagType === key ? 'rgba(248,113,113,0.5)' : 'var(--line)'}`,
+                                    background: assemblyScanFlagType === key ? 'rgba(248,113,113,0.12)' : 'transparent',
+                                    color: assemblyScanFlagType === key ? '#F87171' : 'var(--ink-mute)',
+                                    fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                                  }}
+                                >
+                                  {icon} {label}
+                                </button>
+                              ))}
+                            </div>
+                            <input
+                              className="form-input"
+                              placeholder="Notes (optional)"
+                              value={assemblyScanFlagNotes}
+                              onChange={(e) => setAssemblyScanFlagNotes(e.target.value)}
+                              style={{ width: '100%', marginBottom: 10, fontSize: 13 }}
+                            />
+                            <div style={{ display: 'flex', gap: 8 }}>
+                              <button
+                                onClick={() => setAssemblyScanFlagging(null)}
+                                style={{ flex: 1, padding: '7px 0', borderRadius: 7, border: '1px solid var(--line)', background: 'none', color: 'var(--ink-mute)', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600 }}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={() => handleAssemblyScanFlagConfirm(p.id)}
+                                style={{ flex: 2, padding: '7px 0', borderRadius: 7, border: 'none', background: 'rgba(248,113,113,0.85)', color: '#fff', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700 }}
+                              >
+                                Flag Part
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Confirm & Done */}
+                {assemblyScanFlagging === null && (
+                  <div style={{ paddingTop: 14, borderTop: '1px solid var(--line)' }}>
+                    <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginBottom: 14 }}>
+                      {Object.keys(assemblyScanFlags).length > 0
+                        ? `Cabinet ready — ${Object.values(assemblyScanChecked).filter(Boolean).length - Object.keys(assemblyScanFlags).length} parts good, ${Object.keys(assemblyScanFlags).length} issue${Object.keys(assemblyScanFlags).length !== 1 ? 's' : ''} flagged`
+                        : `Cabinet ready — all ${assemblyScanParts.length} parts checked`
+                      }
+                    </div>
+                    <button
+                      className="btn btn-primary"
+                      style={{ width: '100%', justifyContent: 'center', fontSize: 15, opacity: assemblyScanConfirming ? 0.5 : 1 }}
+                      onClick={() => void handleAssemblyScanConfirm()}
+                      disabled={assemblyScanConfirming}
+                    >
+                      {assemblyScanConfirming ? 'Saving…' : 'Confirm & Done'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Assembly scan done flash */}
+      {assemblyScanDone && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(5,6,8,0.88)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300, pointerEvents: 'none' }}>
+          <div style={{ background: '#052E16', border: '1px solid #34D399', borderRadius: 16, padding: '22px 40px', display: 'flex', alignItems: 'center', gap: 14 }}>
+            <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            <span style={{ fontSize: 18, fontWeight: 700, color: '#34D399' }}>Cabinet logged</span>
+          </div>
+        </div>
       )}
 
       {/* Hidden canvas for video frame capture */}
