@@ -409,7 +409,7 @@ function DailyMetrics({ entries }: { entries: ClockEntry[] }) {
       <div className="portal-card" style={{ padding: '14px 18px' }}>
         <div style={{ fontSize: 11, color: 'var(--ink-mute)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 10 }}>Top Jobs</div>
         {topJobs.length === 0
-          ? <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>No job numbers logged</div>
+          ? <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>No jobs / projects logged</div>
           : topJobs.map(([job, hrs]) => (
             <div key={job} style={{ marginBottom: 6 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
@@ -491,7 +491,7 @@ function DailyLaborReport({ tenantId, showToast }: Props) {
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputSt} />
         </div>
         <ExportBtn onClick={() => downloadCSV(`daily-labor_${date}.csv`,
-          ['Worker', 'Dept', 'Clock In', 'Clock Out', 'Hours', 'Job #', 'Type', 'Notes'],
+          ['Worker', 'Dept', 'Clock In', 'Clock Out', 'Hours', 'Job / Project', 'Type', 'Notes'],
           entries.map((e) => [e.worker_name ?? '', e.dept ?? '', fmtTime(e.clock_in), e.clock_out ? fmtTime(e.clock_out) : 'Active',
             (e.total_hours ?? calcHours(e.clock_in, e.clock_out)).toFixed(2), e.job_number ?? '', e.status ?? '', e.notes ?? '']))} />
       </div>
@@ -523,7 +523,7 @@ function DailyLaborReport({ tenantId, showToast }: Props) {
                 <SortTh label="Hours"    col="hours"    sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <th style={thSt}>Break</th>
                 <th style={thSt}>Net Hrs</th>
-                <SortTh label="Job #"    col="job"      sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
+                <SortTh label="Job / Project" col="job" sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <th style={thSt}>Type</th>
               </tr>
             </thead>
@@ -830,7 +830,7 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
       <div className="portal-card" style={{ padding: '16px 20px' }}>
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Top Jobs This Week</div>
         {topJobs.length === 0
-          ? <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No job numbers logged this week.</div>
+          ? <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No jobs / projects logged this week.</div>
           : topJobs.map(([job, hrs]) => (
             <div key={job} style={{ marginBottom: 10 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -911,7 +911,7 @@ function CraftsmanBuildReport({ tenantId, showToast }: Props) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <DateRange start={start} end={end} onStart={setStart} onEnd={setEnd} />
         <ExportBtn onClick={() => downloadCSV(`craftsman-build_${start}_${end}.csv`,
-          ['Date', 'Worker', 'Material Description', 'Job #', 'Hours'],
+          ['Date', 'Worker', 'Material Description', 'Job / Project', 'Hours'],
           entries.map((e) => [e.date ?? fmtDate(e.clock_in), e.worker_name ?? '', e.notes ?? '', e.job_number ?? '', (e.total_hours ?? calcHours(e.clock_in, e.clock_out)).toFixed(2)]))} />
       </div>
 
@@ -931,7 +931,7 @@ function CraftsmanBuildReport({ tenantId, showToast }: Props) {
                 <SortTh label="Date"        col="clock_in" sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <SortTh label="Worker"      col="worker"   sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <th style={thSt}>Material Description</th>
-                <SortTh label="Job #"       col="job"      sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
+                <SortTh label="Job / Project" col="job" sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <SortTh label="Hours"       col="hours"    sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
               </tr>
             </thead>
@@ -1123,7 +1123,7 @@ function InventoryReport({ tenantId, showToast }: Props) {
           <option value="cancelled">Cancelled</option>
         </select>
         <ExportBtn onClick={() => downloadCSV(`inventory_${start}_${end}.csv`,
-          ['Date', 'Item', 'Dept', 'Qty', 'Job #', 'Status'],
+          ['Date', 'Item', 'Dept', 'Qty', 'Job / Project', 'Status'],
           rows.map((r) => [fmtDateTime(r.created_at), r.item, r.dept ?? '', r.qty ?? 1, r.job_number ?? '', r.status ?? '']))} />
       </div>
 
@@ -1150,7 +1150,7 @@ function InventoryReport({ tenantId, showToast }: Props) {
                 <SortTh label="Item"   col="item"       sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <SortTh label="Dept"   col="dept"       sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <SortTh label="Qty"    col="qty"        sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
-                <th style={thSt}>Job #</th>
+                <th style={thSt}>Job / Project</th>
                 <SortTh label="Status" col="status"     sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
               </tr>
             </thead>
@@ -1232,7 +1232,7 @@ function PartsQCReport({ tenantId, showToast }: Props) {
           <option value="On Hold">On Hold</option>
         </select>
         <ExportBtn onClick={() => downloadCSV(`parts-qc_${start}_${end}.csv`,
-          ['Date', 'Part', 'Job #', 'Dept', 'Worker', 'Status', 'Notes'],
+          ['Date', 'Part', 'Job / Project', 'Dept', 'Worker', 'Status', 'Notes'],
           rows.map((r) => [fmtDateTime(r.created_at), r.part_name, r.job_number ?? '', r.dept ?? '', r.worker_name ?? '', r.status, r.notes ?? '']))} />
       </div>
 
@@ -1252,7 +1252,7 @@ function PartsQCReport({ tenantId, showToast }: Props) {
               <tr>
                 <SortTh label="Date"   col="created_at" sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <SortTh label="Part"   col="part"       sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
-                <SortTh label="Job #"  col="job"        sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
+                <SortTh label="Job / Project" col="job" sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <SortTh label="Dept"   col="dept"       sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <SortTh label="Worker" col="worker"     sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
                 <SortTh label="Status" col="status"     sortCol={sortCol} sortDir={sortDir} onSort={onSort} />

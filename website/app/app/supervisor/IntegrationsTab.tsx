@@ -265,7 +265,7 @@ function CsvImportCard({
             <div style={{ display: 'flex', gap: 12 }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
-                  Job Number Column <span style={{ color: '#F87171' }}>*</span>
+                  Job / Project Column <span style={{ color: '#F87171' }}>*</span>
                 </label>
                 <select value={numCol} onChange={(e) => setNumCol(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
                   {headers.map((h) => <option key={h} value={h}>{h}</option>)}
@@ -285,7 +285,7 @@ function CsvImportCard({
 
           {!showMapping && (
             <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
-              Detected <strong style={{ color: 'var(--ink-dim)' }}>{rows.length} rows</strong> · Job# column: <strong style={{ color: 'var(--teal)' }}>{numCol || '—'}</strong>
+              Detected <strong style={{ color: 'var(--ink-dim)' }}>{rows.length} rows</strong> · Job / Project column: <strong style={{ color: 'var(--teal)' }}>{numCol || '—'}</strong>
               {nameCol ? <> · Name column: <strong style={{ color: 'var(--teal)' }}>{nameCol}</strong></> : null}
             </div>
           )}
@@ -864,8 +864,8 @@ export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs, pl
 
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ ...fieldWrap, width: 120, flexShrink: 0 }}>
-              <label style={labelStyle}>Job # <span style={{ color: '#F87171' }}>*</span></label>
-              <input style={inputStyle} placeholder="Job #" value={planJobNum} onChange={(e) => setPlanJobNum(e.target.value)} />
+              <label style={labelStyle}>Job / Project <span style={{ color: '#F87171' }}>*</span></label>
+              <input style={inputStyle} placeholder="Job / Project" value={planJobNum} onChange={(e) => setPlanJobNum(e.target.value)} />
             </div>
             <div style={{ ...fieldWrap, flex: 1 }}>
               <label style={labelStyle}>Label (optional)</label>

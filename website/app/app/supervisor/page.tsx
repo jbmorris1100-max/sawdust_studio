@@ -1694,7 +1694,7 @@ export default function SupervisorPage() {
                                       </div>
                                       {p.job_number && (
                                         <div>
-                                          <div style={{ fontSize: 10, color: 'var(--ink-mute)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>Job #</div>
+                                          <div style={{ fontSize: 10, color: 'var(--ink-mute)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>Job / Project</div>
                                           <div style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{p.job_number}</div>
                                         </div>
                                       )}
@@ -1811,7 +1811,7 @@ export default function SupervisorPage() {
                 <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--line)', display: 'flex', gap: 8 }}>
                   <input
                     className="form-input"
-                    placeholder="Job #"
+                    placeholder="Job / Project"
                     value={newJobNum}
                     onChange={(e) => setNewJobNum(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') { void handleAddJob(); } }}
@@ -2085,7 +2085,7 @@ export default function SupervisorPage() {
                   placeholder="Qty"
                 />
                 <input
-                  placeholder="Job # (optional)"
+                  placeholder="Job / Project (optional)"
                   value={supInvJobNum}
                   onChange={(e) => setSupInvJobNum(e.target.value)}
                   style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
@@ -2117,7 +2117,7 @@ export default function SupervisorPage() {
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                      {['Item', 'Department', 'Job #', 'Qty', 'Date', 'Status', ''].map((h) => (
+                      {['Item', 'Department', 'Job / Project', 'Qty', 'Date', 'Status', ''].map((h) => (
                         <th key={h} style={thStyle}>{h}</th>
                       ))}
                     </tr>
@@ -2207,7 +2207,7 @@ export default function SupervisorPage() {
                     ))}
                   </select>
                   <input
-                    placeholder="Job # (optional)"
+                    placeholder="Job / Project (optional)"
                     value={supDmgJobNum}
                     onChange={(e) => setSupDmgJobNum(e.target.value)}
                     style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
@@ -2312,8 +2312,8 @@ export default function SupervisorPage() {
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Upload Plan</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
                   <div>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Job Number *</label>
-                    <input className="form-input" placeholder="e.g. P-26-1001" value={planJobNum} onChange={(e) => setPlanJobNum(e.target.value)} />
+                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Job / Project *</label>
+                    <input className="form-input" placeholder="e.g. P-26-1001 or Smith Kitchen" value={planJobNum} onChange={(e) => setPlanJobNum(e.target.value)} />
                   </div>
                   <div>
                     <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Description</label>
@@ -2348,7 +2348,7 @@ export default function SupervisorPage() {
                   {(() => {
                     const groups: Record<string, JobDrawing[]> = {};
                     plans.forEach((p) => {
-                      const k = p.job_number || 'No Job Number';
+                      const k = p.job_number || 'No Job / Project';
                       if (!groups[k]) groups[k] = [];
                       groups[k].push(p);
                     });

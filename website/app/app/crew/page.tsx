@@ -1979,8 +1979,8 @@ export default function CrewPage() {
           <Field label="Department *">
             <input className="form-input" placeholder="e.g. Finish, Trim, Install…" value={invDept} onChange={(e) => setInvDept(e.target.value)} />
           </Field>
-          <Field label="Job Number (optional)">
-            <input className="form-input" placeholder="e.g. P-26-1001" value={invJobNum} onChange={(e) => setInvJobNum(e.target.value)} />
+          <Field label="Job / Project (optional)">
+            <input className="form-input" placeholder="e.g. P-26-1001 or Smith Kitchen" value={invJobNum} onChange={(e) => setInvJobNum(e.target.value)} />
           </Field>
           <button
             className="btn btn-primary"
@@ -2265,8 +2265,8 @@ export default function CrewPage() {
                   </select>
                 </Field>
               </div>
-              <Field label="Job Number (optional)">
-                <input className="form-input" placeholder="e.g. P-26-1001" value={bmJobNum} onChange={(e) => setBmJobNum(e.target.value)} />
+              <Field label="Job / Project (optional)">
+                <input className="form-input" placeholder="e.g. P-26-1001 or Smith Kitchen" value={bmJobNum} onChange={(e) => setBmJobNum(e.target.value)} />
               </Field>
               <button
                 className="btn btn-primary"
@@ -2296,7 +2296,7 @@ export default function CrewPage() {
                 </div>
                 {buildSummary.job && (
                   <div style={{ padding: '14px 16px', borderRadius: 10, background: 'rgba(45,225,201,0.05)', border: '1px solid rgba(45,225,201,0.15)' }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--ink-mute)', marginBottom: 5 }}>Job Number</div>
+                    <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--ink-mute)', marginBottom: 5 }}>Job / Project</div>
                     <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ink)' }}>{buildSummary.job}</div>
                   </div>
                 )}
@@ -2566,7 +2566,7 @@ export default function CrewPage() {
                   />
                   {assemblyScanNotFound && (
                     <div style={{ marginTop: 8, fontSize: 12, color: '#F87171' }}>
-                      Part not found — check job number or ask supervisor.
+                      Part not found — check job / project or ask supervisor.
                     </div>
                   )}
                 </div>
