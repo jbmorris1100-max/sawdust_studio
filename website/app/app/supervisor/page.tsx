@@ -476,6 +476,10 @@ export default function SupervisorPage() {
   const [planPendingId,       setPlanPendingId]       = useState<string | null>(null);
   const [planPendingJobNum,   setPlanPendingJobNum]   = useState<string>('');
   const [planParsing,         setPlanParsing]         = useState(false);
+  // AI auto-detection of CSV columns
+  const [planAiMapped,        setPlanAiMapped]        = useState(false);   // show "AI mapped…" banner
+  const [planAiMissing,       setPlanAiMissing]       = useState<string[]>([]); // required keys AI couldn't map
+  const [planCountdown,       setPlanCountdown]       = useState<number | null>(null); // auto-submit countdown
 
   // SOPs upload
   const [sopFile,       setSopFile]       = useState<File | null>(null);
@@ -1248,9 +1252,14 @@ export default function SupervisorPage() {
           setPlanCsvHeaders(headers);
           setPlanCsvRows(rows);
           setPlanColumnMap({ unit_id: '', part_name: '', room: '', material: '', width: '', height: '', depth: '' });
+          setPlanAiMapped(false);
+          setPlanAiMissing([]);
+          setPlanCountdown(null);
           setPlanPendingId((inserted as JobDrawing).id);
           setPlanPendingJobNum(planJobNum.trim());
           showToast('CSV uploaded — map the columns to build the cut list');
+          // Fire-and-forget AI auto-detection to pre-fill the mapper.
+          void runAiColumnMapping(headers, rows);
         }
         setPlanFile(null);
         setPlanLabel('');
@@ -1269,11 +1278,66 @@ export default function SupervisorPage() {
     }
   }
 
+  // Ask Claude to map CSV headers → cabinet fields, then pre-fill the dropdowns.
+  // Silent on any failure: the mapper just stays empty for manual selection.
+  async function runAiColumnMapping(headers: string[], rows: CsvRow[]) {
+    try {
+      const res = await fetch('/api/map-columns', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ headers, sampleRows: rows.slice(0, 3) }),
+      });
+      if (!res.ok) return;
+      const ai = await res.json() as Record<string, string | null>;
+
+      // Only accept values that are real headers; translate cabinet_unit_id → unit_id.
+      const pick = (v: string | null | undefined) =>
+        (typeof v === 'string' && headers.includes(v)) ? v : '';
+      const next = {
+        unit_id:   pick(ai.cabinet_unit_id),
+        part_name: pick(ai.part_name),
+        room:      pick(ai.room),
+        material:  pick(ai.material),
+        width:     pick(ai.width),
+        height:    pick(ai.height),
+        depth:     pick(ai.depth),
+      };
+
+      const missing = (['unit_id', 'part_name'] as const).filter((k) => !next[k]);
+      setPlanColumnMap(next);
+      setPlanAiMissing(missing);
+      setPlanAiMapped(true);
+      // Everything required is mapped → offer a 3s auto-submit the supervisor can cancel.
+      if (missing.length === 0) setPlanCountdown(3);
+    } catch {
+      // Fall back to the empty mapper silently — no error shown to the user.
+    }
+  }
+
+  // Drive the auto-submit countdown once the AI maps everything successfully.
+  // Each tick either decrements or, at zero, fires the parse — all inside the
+  // timeout so the effect body itself never calls setState synchronously.
+  useEffect(() => {
+    if (planCountdown === null || planCountdown <= 0) return;
+    const t = setTimeout(() => {
+      if (planCountdown <= 1) {
+        setPlanCountdown(null);
+        void handlePlanParse();
+      } else {
+        setPlanCountdown(planCountdown - 1);
+      }
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [planCountdown]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function cancelPlanMapper() {
     setPlanCsvHeaders([]);
     setPlanCsvRows([]);
     setPlanPendingId(null);
     setPlanPendingJobNum('');
+    setPlanAiMapped(false);
+    setPlanAiMissing([]);
+    setPlanCountdown(null);
   }
 
   async function handlePlanParse() {
@@ -2589,35 +2653,83 @@ export default function SupervisorPage() {
                     </div>
                     <button onClick={cancelPlanMapper} style={{ background: 'none', border: 'none', color: 'var(--ink-mute)', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit' }}>Skip</button>
                   </div>
+
+                  {/* AI mapping banner */}
+                  {planAiMapped && planAiMissing.length === 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderRadius: 8, background: 'rgba(94,234,212,0.08)', border: '1px solid rgba(94,234,212,0.3)', marginBottom: 12 }}>
+                      <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#5EEAD4" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                        <path d="M12 2l2.4 7.4H22l-6 4.6 2.3 7.4-6.3-4.6L5.7 21.4 8 14 2 9.4h7.6z"/>
+                      </svg>
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#5EEAD4' }}>AI mapped your columns — review and confirm</span>
+                    </div>
+                  )}
+                  {planAiMapped && planAiMissing.length > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderRadius: 8, background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)', marginBottom: 12 }}>
+                      <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                        <path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                      </svg>
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#FBBF24' }}>AI mapped what it could — finish the highlighted fields below</span>
+                    </div>
+                  )}
+
                   <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6 }}>
                     Match your CSV columns to cabinet fields. Cabinet / Unit ID and Part Name are required.
                   </p>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
-                    {PLAN_IMPORT_FIELDS.map(({ key, label, required }) => (
+                    {PLAN_IMPORT_FIELDS.map(({ key, label, required }) => {
+                      const amber = planAiMissing.includes(key);
+                      return (
                       <div key={key}>
-                        <label style={{ fontSize: 12, color: required ? 'var(--ink-dim)' : 'var(--ink-mute)', fontWeight: required ? 700 : 500, display: 'block', marginBottom: 4 }}>
+                        <label style={{ fontSize: 12, color: amber ? '#FBBF24' : (required ? 'var(--ink-dim)' : 'var(--ink-mute)'), fontWeight: required ? 700 : 500, display: 'block', marginBottom: 4 }}>
                           {label}{required ? ' *' : ''}
                         </label>
                         <select
                           className="form-input"
                           value={planColumnMap[key] || ''}
-                          onChange={(e) => setPlanColumnMap((prev) => ({ ...prev, [key]: e.target.value }))}
-                          style={{ width: '100%', cursor: 'pointer' }}
+                          onChange={(e) => {
+                            setPlanColumnMap((prev) => ({ ...prev, [key]: e.target.value }));
+                            // A manual edit means the supervisor is reviewing — stop any auto-submit
+                            // and clear the amber flag for the field they just resolved.
+                            setPlanCountdown(null);
+                            setPlanAiMissing((prev) => prev.filter((k) => k !== key));
+                          }}
+                          style={{ width: '100%', cursor: 'pointer', borderColor: amber ? '#FBBF24' : undefined }}
                         >
-                          <option value="">{required ? '— select column —' : '(skip)'}</option>
+                          <option value="">{amber ? 'Couldn’t detect — please select' : (required ? '— select column —' : '(skip)')}</option>
                           {planCsvHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                         </select>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
-                  <button
-                    className="btn btn-primary"
-                    style={{ opacity: (!planColumnMap.unit_id || !planColumnMap.part_name || planParsing) ? 0.5 : 1 }}
-                    onClick={handlePlanParse}
-                    disabled={!planColumnMap.unit_id || !planColumnMap.part_name || planParsing}
-                  >
-                    {planParsing ? 'Building cut list…' : `Create cabinet units & parts from ${planCsvRows.length} rows`}
-                  </button>
+                  {planCountdown !== null ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <button
+                        className="btn btn-primary"
+                        style={{ flex: 1 }}
+                        onClick={() => { setPlanCountdown(null); void handlePlanParse(); }}
+                        disabled={planParsing}
+                      >
+                        {planParsing ? 'Building cut list…' : `Auto-creating in ${planCountdown}s — create now`}
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => setPlanCountdown(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      className="btn btn-primary"
+                      style={{ opacity: (!planColumnMap.unit_id || !planColumnMap.part_name || planParsing) ? 0.5 : 1 }}
+                      onClick={handlePlanParse}
+                      disabled={!planColumnMap.unit_id || !planColumnMap.part_name || planParsing}
+                    >
+                      {planParsing ? 'Building cut list…' : `Create cabinet units & parts from ${planCsvRows.length} rows`}
+                    </button>
+                  )}
                 </div>
               )}
 
