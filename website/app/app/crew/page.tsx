@@ -31,7 +31,6 @@ type Message = {
 type Drawing = {
   id: string;
   job_number: string | null;
-  job_id: string | null;
   plan_name: string | null;
   label: string | null;
   file_url: string | null;
@@ -650,7 +649,7 @@ export default function CrewPage() {
     try {
       const { data } = await supabase
         .from('job_drawings')
-        .select('id, job_number, job_id, plan_name, label, file_url, external_url, file_name, uploaded_by, created_at')
+        .select('id, tenant_id, job_number, plan_name, label, file_url, external_url, file_name, uploaded_by, created_at')
         .eq('tenant_id', tenant!.id)
         .order('created_at', { ascending: false });
       if (data) setDrawings(data as Drawing[]);
@@ -1478,7 +1477,7 @@ export default function CrewPage() {
   // Group drawings by job number for plans modal
   const drawingGroups: Record<string, Drawing[]> = {};
   drawings.forEach((d) => {
-    const key = d.job_number || d.job_id || 'Unknown';
+    const key = d.job_number || 'Unknown';
     if (!drawingGroups[key]) drawingGroups[key] = [];
     drawingGroups[key].push(d);
   });

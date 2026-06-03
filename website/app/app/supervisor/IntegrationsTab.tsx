@@ -15,7 +15,6 @@ type Job = {
 type JobDrawing = {
   id: string;
   job_number: string | null;
-  job_name: string | null;
   label: string | null;
   file_url: string | null;
   file_name: string | null;
@@ -481,17 +480,25 @@ export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs, pl
       const { error: uploadErr } = await supabase.storage.from('job-drawings').upload(path, planFile, { upsert: true });
       if (uploadErr) throw uploadErr;
       const { data: { publicUrl } } = supabase.storage.from('job-drawings').getPublicUrl(path);
-      const { data: row, error: dbErr } = await supabase.from('job_drawings').insert({
+      const { error: dbErr } = await supabase.from('job_drawings').insert({
         tenant_id:   tenantId,
         job_number:  planJobNum.trim(),
-        job_name:    planJobNum.trim(),
         label:       planLabel.trim() || null,
         file_url:    publicUrl,
         file_name:   planFile.name,
         uploaded_by: 'Supervisor',
-      }).select().single();
+      });
       if (dbErr) throw dbErr;
-      setPlans((prev) => [row as JobDrawing, ...prev]);
+      const newRow: JobDrawing = {
+        id: crypto.randomUUID(),
+        job_number: planJobNum.trim(),
+        label: planLabel.trim() || null,
+        file_url: publicUrl,
+        file_name: planFile.name,
+        uploaded_by: 'Supervisor',
+        created_at: new Date().toISOString(),
+      };
+      setPlans((prev) => [newRow, ...prev]);
       setPlanFile(null);
       setPlanJobNum('');
       setPlanLabel('');

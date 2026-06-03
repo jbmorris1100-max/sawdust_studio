@@ -174,6 +174,8 @@ export default function AssemblyTab({ tenantId, showToast, jobs }: Props) {
 
   // ── Data load ──────────────────────────────────────────────────────────────
 
+  const [migrationNeeded, setMigrationNeeded] = useState(false);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
@@ -181,6 +183,15 @@ export default function AssemblyTab({ tenantId, showToast, jobs }: Props) {
         supabase.from('cabinet_units').select('*').eq('tenant_id', tenantId).order('created_at', { ascending: false }),
         supabase.from('parts').select('*').eq('tenant_id', tenantId).order('part_name'),
       ]);
+      // Detect "relation does not exist" — assembly_tracking.sql not yet run
+      const missingTable =
+        (unitsRes.error && (unitsRes.error as { code?: string }).code === '42P01') ||
+        (partsRes.error  && (partsRes.error  as { code?: string }).code === '42P01');
+      if (missingTable) {
+        setMigrationNeeded(true);
+        setLoading(false);
+        return;
+      }
       if (unitsRes.data) setUnits(unitsRes.data as CabinetUnit[]);
       if (partsRes.data) setAllParts(partsRes.data as AssemblyPart[]);
     } catch (err: unknown) {
@@ -245,7 +256,7 @@ export default function AssemblyTab({ tenantId, showToast, jobs }: Props) {
   }
 
   async function handleImport() {
-    if (!columnMap.unit_id || !columnMap.part_name || !importJobId || importing) return;
+    if (!columnMap.unit_id || !columnMap.part_name || !importJobId || importing || migrationNeeded) return;
     setImporting(true);
     try {
       const job = jobs.find((j) => j.id === importJobId);
@@ -391,6 +402,31 @@ export default function AssemblyTab({ tenantId, showToast, jobs }: Props) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <style>{`@keyframes flagPulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
+
+      {/* ── Migration needed banner ─────────────────────────────────────── */}
+      {migrationNeeded && (
+        <div style={{
+          padding: '18px 20px', borderRadius: 12,
+          background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.3)',
+          display: 'flex', gap: 14, alignItems: 'flex-start',
+        }}>
+          <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}>
+            <path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#FBBF24', marginBottom: 4 }}>
+              Run assembly_tracking.sql to enable this feature
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6 }}>
+              The <code style={{ fontSize: 12, background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: 4 }}>cabinet_units</code> and{' '}
+              <code style={{ fontSize: 12, background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: 4 }}>parts</code> tables
+              do not exist yet. Open the Supabase SQL Editor and run{' '}
+              <strong>supabase/assembly_tracking.sql</strong> from this repo.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Import Cutlist ───────────────────────────────────────────────── */}
       <div className="portal-card">
