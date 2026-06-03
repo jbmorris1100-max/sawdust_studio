@@ -1226,8 +1226,9 @@ export default function SupervisorPage() {
       const departments = planDepts.length ? planDepts : ['all'];
       const { data: inserted, error: dbErr } = await supabase.from('job_drawings').insert({
         tenant_id:   tenant!.id,
+        job_id:      planJobNum.trim(),          // job_id is NOT NULL — mirror the job/project value
         job_number:  planJobNum.trim(),
-        label:       planLabel.trim() || null,
+        label:       planLabel.trim() || planFile.name,  // label is NOT NULL — fall back to the file name
         file_url:    publicUrl,
         file_name:   planFile.name,
         file_type:   fileType,
@@ -2533,10 +2534,8 @@ export default function SupervisorPage() {
                   <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 7 }}>Visible to departments</label>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                     {([{ key: 'all', label: 'All Departments' }, ...PLAN_DEPTS.map((d) => ({ key: d, label: d }))]).map(({ key, label }) => {
-                      const isAll      = key === 'all';
-                      const allChecked = planDepts.includes('all');
-                      const checked    = isAll ? allChecked : planDepts.includes(key);
-                      const disabled   = !isAll && allChecked;
+                      const isAll   = key === 'all';
+                      const checked = isAll ? planDepts.includes('all') : planDepts.includes(key);
                       return (
                         <label
                           key={key}
@@ -2545,17 +2544,15 @@ export default function SupervisorPage() {
                             padding: '7px 12px', borderRadius: 8,
                             border: `1px solid ${checked ? 'rgba(94,234,212,0.4)' : 'var(--line)'}`,
                             background: checked ? 'rgba(94,234,212,0.08)' : 'transparent',
-                            color: disabled ? 'var(--ink-mute)' : checked ? 'var(--teal)' : 'var(--ink-dim)',
-                            fontSize: 13, fontWeight: 600,
-                            cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1,
+                            color: checked ? 'var(--teal)' : 'var(--ink-dim)',
+                            fontSize: 13, fontWeight: 600, cursor: 'pointer',
                           }}
                         >
                           <input
                             type="checkbox"
                             checked={checked}
-                            disabled={disabled}
                             onChange={() => togglePlanDept(key)}
-                            style={{ accentColor: '#2DE1C9', cursor: disabled ? 'not-allowed' : 'pointer' }}
+                            style={{ accentColor: '#2DE1C9', cursor: 'pointer' }}
                           />
                           {label}
                         </label>
