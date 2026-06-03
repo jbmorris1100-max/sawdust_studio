@@ -12,23 +12,11 @@ type Job = {
   source?: string | null;
 };
 
-type JobDrawing = {
-  id: string;
-  job_number: string | null;
-  label: string | null;
-  file_url: string | null;
-  file_name: string | null;
-  uploaded_by: string | null;
-  created_at: string;
-};
-
 interface Props {
   tenantId: string;
   showToast: (msg: string, error?: boolean) => void;
   jobs: Job[];
   setJobs: React.Dispatch<React.SetStateAction<Job[]>>;
-  plans: JobDrawing[];
-  setPlans: React.Dispatch<React.SetStateAction<JobDrawing[]>>;
 }
 
 type CardKey = 'innergy' | 'cv' | 'mozaik' | 'csv' | 'microvellum' | 'other' | 'plans';
@@ -332,7 +320,7 @@ function CsvImportCard({
 
 // ── Main IntegrationsTab ──────────────────────────────────────────────────────
 
-export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs, plans, setPlans }: Props) {
+export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs }: Props) {
   const [openCard, setOpenCard] = useState<CardKey | null>(null);
 
   // Data sharing opt-in
@@ -349,12 +337,6 @@ export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs, pl
   const [inSaving,    setInSaving]    = useState(false);
   const [inConnected, setInConnected] = useState(false);
   const [inTestMsg,   setInTestMsg]   = useState<{ text: string; ok: boolean } | null>(null);
-
-  // Plans upload state
-  const [planFile,      setPlanFile]      = useState<File | null>(null);
-  const [planJobNum,    setPlanJobNum]    = useState('');
-  const [planLabel,     setPlanLabel]     = useState('');
-  const [planUploading, setPlanUploading] = useState(false);
 
   // Waitlist state
   const [wlEmail,       setWlEmail]       = useState('');
@@ -466,47 +448,6 @@ export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs, pl
       showToast(err instanceof Error ? err.message : 'Save failed', true);
     } finally {
       setInSaving(false);
-    }
-  }
-
-  // ── Plans upload ───────────────────────────────────────────────────────────
-
-  async function handlePlanUpload() {
-    if (!planFile || !planJobNum.trim() || planUploading) return;
-    setPlanUploading(true);
-    try {
-      const ext  = planFile.name.split('.').pop() ?? 'bin';
-      const path = `${tenantId}/${Date.now()}.${ext}`;
-      const { error: uploadErr } = await supabase.storage.from('job-drawings').upload(path, planFile, { upsert: true });
-      if (uploadErr) throw uploadErr;
-      const { data: { publicUrl } } = supabase.storage.from('job-drawings').getPublicUrl(path);
-      const { error: dbErr } = await supabase.from('job_drawings').insert({
-        tenant_id:   tenantId,
-        job_number:  planJobNum.trim(),
-        label:       planLabel.trim() || null,
-        file_url:    publicUrl,
-        file_name:   planFile.name,
-        uploaded_by: 'Supervisor',
-      });
-      if (dbErr) throw dbErr;
-      const newRow: JobDrawing = {
-        id: crypto.randomUUID(),
-        job_number: planJobNum.trim(),
-        label: planLabel.trim() || null,
-        file_url: publicUrl,
-        file_name: planFile.name,
-        uploaded_by: 'Supervisor',
-        created_at: new Date().toISOString(),
-      };
-      setPlans((prev) => [newRow, ...prev]);
-      setPlanFile(null);
-      setPlanJobNum('');
-      setPlanLabel('');
-      showToast('Plan uploaded');
-    } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : 'Upload failed', true);
-    } finally {
-      setPlanUploading(false);
     }
   }
 
@@ -851,65 +792,7 @@ export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs, pl
         </div>
       </ErpCard>
 
-      {/* ── Standalone Plans Upload ── */}
-      <ErpCard
-        id="plans" open={openCard === 'plans'} onToggle={toggleCard}
-        title="Upload Job Plans"
-        statusBadge={<StatusPill label="Available" color="#34D399" bg="rgba(52,211,153,0.1)" />}
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 16 }}>
-          <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6 }}>
-            Upload PDFs, drawings, or reference files for any job. Crew will see them in the Plans section.
-          </p>
-
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ ...fieldWrap, width: 120, flexShrink: 0 }}>
-              <label style={labelStyle}>Job / Project <span style={{ color: '#F87171' }}>*</span></label>
-              <input style={inputStyle} placeholder="Job / Project" value={planJobNum} onChange={(e) => setPlanJobNum(e.target.value)} />
-            </div>
-            <div style={{ ...fieldWrap, flex: 1 }}>
-              <label style={labelStyle}>Label (optional)</label>
-              <input style={inputStyle} placeholder="e.g. Floor plan, Elevation…" value={planLabel} onChange={(e) => setPlanLabel(e.target.value)} />
-            </div>
-          </div>
-
-          <div style={fieldWrap}>
-            <label style={labelStyle}>File <span style={{ color: '#F87171' }}>*</span></label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <label style={{
-                display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 14px',
-                background: 'rgba(94,234,212,0.08)', border: '1px solid rgba(94,234,212,0.25)',
-                borderRadius: 8, cursor: 'pointer', fontSize: 13, color: 'var(--teal)', fontWeight: 600,
-              }}>
-                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-                </svg>
-                Choose file
-                <input
-                  type="file" accept=".pdf,.png,.jpg,.jpeg,.dwg,.svg" style={{ display: 'none' }}
-                  onChange={(e) => { if (e.target.files?.[0]) setPlanFile(e.target.files[0]); }}
-                />
-              </label>
-              {planFile && <span style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{planFile.name}</span>}
-            </div>
-          </div>
-
-          {plans.length > 0 && (
-            <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
-              {plans.length} plan{plans.length !== 1 ? 's' : ''} uploaded across all jobs
-            </div>
-          )}
-
-          <button
-            className="btn btn-primary"
-            onClick={handlePlanUpload}
-            disabled={planUploading || !planFile || !planJobNum.trim()}
-            style={{ alignSelf: 'flex-start', opacity: (planUploading || !planFile || !planJobNum.trim()) ? 0.5 : 1 }}
-          >
-            {planUploading ? 'Uploading…' : 'Upload Plan'}
-          </button>
-        </div>
-      </ErpCard>
+      {/* File uploads (PDFs + CSV cut lists) now live in the Plans tab. */}
 
       {/* ── QR Codes ── */}
       <div className="portal-card" style={{ padding: '20px 24px' }}>

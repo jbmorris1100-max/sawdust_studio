@@ -44,12 +44,10 @@ type Job = {
   status: string;
 };
 
-type CsvRow = Record<string, string>;
-
 interface Props {
   tenantId: string;
   showToast: (msg: string, error?: boolean) => void;
-  jobs: Job[];
+  jobs?: Job[];
 }
 
 // ── SVG icons (thin stroke, no emoji) ─────────────────────────────────────────
@@ -92,35 +90,6 @@ const IcoFlag = () => (
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function parseCSV(text: string): { headers: string[]; rows: CsvRow[] } {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim());
-  if (lines.length < 2) return { headers: [], rows: [] };
-  function splitLine(line: string): string[] {
-    const result: string[] = [];
-    let field = '';
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') {
-        if (inQuotes && line[i + 1] === '"') { field += '"'; i++; }
-        else { inQuotes = !inQuotes; }
-      } else if (ch === ',' && !inQuotes) {
-        result.push(field.trim()); field = '';
-      } else { field += ch; }
-    }
-    result.push(field.trim());
-    return result;
-  }
-  const headers = splitLine(lines[0]);
-  const rows = lines.slice(1).map((l) => {
-    const vals = splitLine(l);
-    const row: CsvRow = {};
-    headers.forEach((h, i) => { row[h] = vals[i] ?? ''; });
-    return row;
-  });
-  return { headers, rows };
-}
-
 function statusMeta(status: string): { label: string; color: string; bg: string; border: string } {
   switch (status) {
     case 'complete':    return { label: 'Complete',    color: '#34D399', bg: 'rgba(52,211,153,0.1)',   border: 'rgba(52,211,153,0.25)' };
@@ -148,23 +117,11 @@ function dimLabel(p: AssemblyPart): string {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export default function AssemblyTab({ tenantId, showToast, jobs }: Props) {
+export default function AssemblyTab({ tenantId, showToast }: Props) {
   const [units,       setUnits]       = useState<CabinetUnit[]>([]);
   const [allParts,    setAllParts]    = useState<AssemblyPart[]>([]);
   const [loading,     setLoading]     = useState(true);
   const [expandedId,  setExpandedId]  = useState<string | null>(null);
-
-  // Import state
-  const [importJobId,    setImportJobId]    = useState('');
-  const [importFile,     setImportFile]     = useState<File | null>(null);
-  const [csvHeaders,     setCsvHeaders]     = useState<string[]>([]);
-  const [csvRows,        setCsvRows]        = useState<CsvRow[]>([]);
-  const [showMapper,     setShowMapper]     = useState(false);
-  const [columnMap,      setColumnMap]      = useState<Record<string, string>>({
-    unit_id: '', part_name: '', room: '', material: '', width: '', height: '', depth: '',
-  });
-  const [importing,      setImporting]      = useState(false);
-  const [importSummary,  setImportSummary]  = useState<{ units: number; parts: number } | null>(null);
 
   // Message team state
   const [msgUnitId,  setMsgUnitId]  = useState<string | null>(null);
@@ -235,107 +192,6 @@ export default function AssemblyTab({ tenantId, showToast, jobs }: Props) {
     };
   }, [tenantId]);
 
-  // ── CSV import ─────────────────────────────────────────────────────────────
-
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0] ?? null;
-    setImportFile(file);
-    setShowMapper(false);
-    setImportSummary(null);
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = ev.target?.result as string;
-      const { headers, rows } = parseCSV(text);
-      setCsvHeaders(headers);
-      setCsvRows(rows);
-      setColumnMap({ unit_id: '', part_name: '', room: '', material: '', width: '', height: '', depth: '' });
-      setShowMapper(headers.length > 0);
-    };
-    reader.readAsText(file);
-  }
-
-  async function handleImport() {
-    if (!columnMap.unit_id || !columnMap.part_name || !importJobId || importing || migrationNeeded) return;
-    setImporting(true);
-    try {
-      const job = jobs.find((j) => j.id === importJobId);
-      if (!job) throw new Error('Job not found');
-
-      // Group rows by unit ID value
-      const unitGroups: Record<string, CsvRow[]> = {};
-      csvRows.forEach((row) => {
-        const unitVal = row[columnMap.unit_id]?.trim();
-        if (!unitVal) return;
-        if (!unitGroups[unitVal]) unitGroups[unitVal] = [];
-        unitGroups[unitVal].push(row);
-      });
-
-      const unitLabelToId: Record<string, string> = {};
-      let unitsInserted = 0;
-      let partsInserted = 0;
-
-      for (const [unitVal, rows] of Object.entries(unitGroups)) {
-        // Parse Job/Room/Cabinet/Part format if present
-        const segments = unitVal.split('/').map((s) => s.trim());
-        let room_number: string | null = null;
-        let cabinet_number: string | null = null;
-        let unit_label = unitVal;
-        if (segments.length >= 3) {
-          room_number    = segments[1] || null;
-          cabinet_number = segments[2] || null;
-          unit_label     = unitVal;
-        } else if (columnMap.room && rows[0]?.[columnMap.room]) {
-          room_number = rows[0][columnMap.room]?.trim() || null;
-        }
-
-        const { data: unitData, error: unitErr } = await supabase
-          .from('cabinet_units')
-          .insert({
-            tenant_id:      tenantId,
-            job_id:         job.id,
-            job_number:     job.job_number,
-            room_number,
-            cabinet_number,
-            unit_label,
-            status: 'pending',
-          })
-          .select('id')
-          .single();
-        if (unitErr) throw unitErr;
-        unitLabelToId[unitVal] = unitData.id;
-        unitsInserted++;
-
-        const partRows = rows.map((row) => ({
-          tenant_id:       tenantId,
-          cabinet_unit_id: unitData.id,
-          job_number:      job.job_number,
-          part_name:       row[columnMap.part_name]?.trim() || 'Unknown part',
-          material:        columnMap.material ? (row[columnMap.material]?.trim() || null) : null,
-          width:           columnMap.width   ? (parseFloat(row[columnMap.width] ?? '') || null) : null,
-          height:          columnMap.height  ? (parseFloat(row[columnMap.height] ?? '') || null) : null,
-          depth:           columnMap.depth   ? (parseFloat(row[columnMap.depth] ?? '') || null) : null,
-          quantity:        1,
-          status:          'pending',
-        }));
-
-        const { error: partsErr } = await supabase.from('parts').insert(partRows);
-        if (partsErr) throw partsErr;
-        partsInserted += partRows.length;
-      }
-
-      setImportSummary({ units: unitsInserted, parts: partsInserted });
-      setShowMapper(false);
-      setImportFile(null);
-      await loadAll();
-      showToast(`Imported ${unitsInserted} units and ${partsInserted} parts`);
-    } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : 'Import failed', true);
-    } finally {
-      setImporting(false);
-    }
-  }
-
   // ── Message team ──────────────────────────────────────────────────────────
 
   function openMsgModal(unit: CabinetUnit) {
@@ -389,15 +245,14 @@ export default function AssemblyTab({ tenantId, showToast, jobs }: Props) {
     grouped[k].push(u);
   });
 
-  const IMPORT_FIELDS: { key: string; label: string; required?: boolean }[] = [
-    { key: 'unit_id',   label: 'Cabinet / Unit ID', required: true },
-    { key: 'part_name', label: 'Part Name',          required: true },
-    { key: 'room',      label: 'Room' },
-    { key: 'material',  label: 'Material' },
-    { key: 'width',     label: 'Width' },
-    { key: 'height',    label: 'Height' },
-    { key: 'depth',     label: 'Depth' },
-  ];
+  // Per-job status overview counts
+  const jobStatusCounts = (jobUnits: CabinetUnit[]) => ({
+    flagged:  jobUnits.filter((u) => u.status === 'flagged').length,
+    complete: jobUnits.filter((u) => u.status === 'complete').length,
+    active:   jobUnits.filter((u) => u.status !== 'flagged' && u.status !== 'complete').length,
+  });
+
+  const flaggedUnits = sortedUnits.filter((u) => u.status === 'flagged');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -428,99 +283,42 @@ export default function AssemblyTab({ tenantId, showToast, jobs }: Props) {
         </div>
       )}
 
-      {/* ── Import Cutlist ───────────────────────────────────────────────── */}
-      <div className="portal-card">
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>
-          Import Cutlist
+      {/* ── Flagged cabinets banner ─────────────────────────────────────── */}
+      {!loading && flaggedUnits.length > 0 && (
+        <div style={{ padding: '12px 18px', borderRadius: 12, background: 'rgba(248,113,113,0.07)', border: '1px solid rgba(248,113,113,0.3)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#F87171', flexShrink: 0, animation: 'flagPulse 1.5s ease-in-out infinite' }} />
+          <span style={{ fontSize: 13, fontWeight: 700, color: '#F87171' }}>
+            {flaggedUnits.length} cabinet{flaggedUnits.length !== 1 ? 's' : ''} flagged
+          </span>
+          <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
+            {flaggedUnits.slice(0, 4).map((u) => u.cabinet_number || u.unit_label).join(', ')}
+            {flaggedUnits.length > 4 ? '…' : ''}
+          </span>
         </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
-          <div style={{ gridColumn: '1 / -1' }}>
-            <label style={{ fontSize: 12, color: 'var(--ink-mute)', fontWeight: 600, display: 'block', marginBottom: 5 }}>Job *</label>
-            <select
-              className="form-input"
-              value={importJobId}
-              onChange={(e) => setImportJobId(e.target.value)}
-              style={{ width: '100%', cursor: 'pointer' }}
-            >
-              <option value="">Select a job…</option>
-              {jobs.filter((j) => j.status === 'active').map((j) => (
-                <option key={j.id} value={j.id}>{j.job_number}{j.job_name ? ` — ${j.job_name}` : ''}</option>
-              ))}
-            </select>
-          </div>
-
-          <div style={{ gridColumn: '1 / -1' }}>
-            <label style={{ fontSize: 12, color: 'var(--ink-mute)', fontWeight: 600, display: 'block', marginBottom: 5 }}>CSV File *</label>
-            <input
-              type="file"
-              accept=".csv"
-              onChange={handleFileChange}
-              style={{ fontSize: 13, color: 'var(--ink-dim)', width: '100%' }}
-            />
-          </div>
-        </div>
-
-        {/* Column mapper */}
-        {showMapper && (
-          <div style={{ marginTop: 14 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--teal)', marginBottom: 10 }}>
-              Map Columns — {csvRows.length} rows parsed
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
-              {IMPORT_FIELDS.map(({ key, label, required }) => (
-                <div key={key}>
-                  <label style={{ fontSize: 12, color: required ? 'var(--ink-dim)' : 'var(--ink-mute)', fontWeight: required ? 700 : 500, display: 'block', marginBottom: 4 }}>
-                    {label}{required ? ' *' : ''}
-                  </label>
-                  <select
-                    className="form-input"
-                    value={columnMap[key] || ''}
-                    onChange={(e) => setColumnMap((prev) => ({ ...prev, [key]: e.target.value }))}
-                    style={{ width: '100%', cursor: 'pointer' }}
-                  >
-                    <option value="">{required ? '— select column —' : '(skip)'}</option>
-                    {csvHeaders.map((h) => (
-                      <option key={h} value={h}>{h}</option>
-                    ))}
-                  </select>
-                </div>
-              ))}
-            </div>
-            <button
-              className="btn btn-primary"
-              style={{ opacity: (!columnMap.unit_id || !columnMap.part_name || !importJobId || importing) ? 0.5 : 1 }}
-              onClick={handleImport}
-              disabled={!columnMap.unit_id || !columnMap.part_name || !importJobId || importing}
-            >
-              {importing ? 'Importing…' : `Import ${csvRows.length} rows`}
-            </button>
-          </div>
-        )}
-
-        {importSummary && (
-          <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 8, background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)', fontSize: 13, color: '#34D399', fontWeight: 600 }}>
-            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ display: 'inline', marginRight: 7, verticalAlign: 'middle' }}><polyline points="20 6 9 17 4 12"/></svg>
-            {importSummary.units} cabinet units and {importSummary.parts} parts imported
-          </div>
-        )}
-      </div>
+      )}
 
       {/* ── Cabinet Units ─────────────────────────────────────────────────── */}
       {loading ? (
         <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading assembly data…</div>
       ) : units.length === 0 ? (
         <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>
-          No cabinet units yet. Import a cutlist above to get started.
+          No cabinet units yet. Upload a CSV cut list in the <strong style={{ color: 'var(--ink-dim)' }}>Plans</strong> tab to get started.
         </div>
       ) : (
-        Object.entries(grouped).map(([jobKey, jobUnits]) => (
+        Object.entries(grouped).map(([jobKey, jobUnits]) => {
+          const counts = jobStatusCounts(jobUnits);
+          return (
           <div key={jobKey} className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
-            <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--line)', background: 'rgba(94,234,212,0.03)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--line)', background: 'rgba(94,234,212,0.03)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#5EEAD4' }}>
                 Job {jobKey}
               </span>
-              <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{jobUnits.length} unit{jobUnits.length !== 1 ? 's' : ''}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11 }}>
+                {counts.flagged > 0 && <span style={{ color: '#F87171', fontWeight: 700 }}>{counts.flagged} flagged</span>}
+                {counts.complete > 0 && <span style={{ color: '#34D399', fontWeight: 700 }}>{counts.complete} complete</span>}
+                {counts.active > 0 && <span style={{ color: 'var(--ink-mute)' }}>{counts.active} in progress</span>}
+                <span style={{ color: 'var(--ink-mute)' }}>· {jobUnits.length} unit{jobUnits.length !== 1 ? 's' : ''}</span>
+              </div>
             </div>
 
             {jobUnits.map((unit) => {
@@ -669,7 +467,8 @@ export default function AssemblyTab({ tenantId, showToast, jobs }: Props) {
               );
             })}
           </div>
-        ))
+          );
+        })
       )}
 
       {/* ── Message Team Modal ────────────────────────────────────────────── */}

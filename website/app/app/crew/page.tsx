@@ -31,13 +31,30 @@ type Message = {
 type Drawing = {
   id: string;
   job_number: string | null;
+  job_name: string | null;
   plan_name: string | null;
   label: string | null;
   file_url: string | null;
   external_url: string | null;
   file_name: string | null;
+  file_type: string | null;
+  departments: string[] | null;
+  parsed: boolean | null;
   uploaded_by: string | null;
   created_at: string;
+};
+
+type PartsListPart = {
+  id: string;
+  cabinet_unit_id: string;
+  part_name: string;
+  material: string | null;
+  width: number | null;
+  height: number | null;
+  depth: number | null;
+  quantity: number;
+  status: string;
+  flag_type: string | null;
 };
 
 type SopItem = {
@@ -68,7 +85,7 @@ type Job = {
   status: string;
 };
 
-type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'sops' | 'switchDept' | 'editName' | 'buildTimer' | 'parts' | 'assemblyScan' | null;
+type ModalType = 'clock' | 'inventory' | 'damage' | 'plans' | 'partsList' | 'sops' | 'switchDept' | 'editName' | 'buildTimer' | 'parts' | 'assemblyScan' | null;
 type ClockStep = 'lookup' | 'clockin' | 'clockout';
 type BuildTimerStep = 'form' | 'summary';
 type AssemblyScanStep = 'scan' | 'checklist' | 'confirm';
@@ -138,21 +155,44 @@ function fmtElapsed(startIso: string): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-function fileTypeBadge(fileName: string | null): { label: string; color: string; bg: string } | null {
-  if (!fileName) return null;
-  const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
-  const map: Record<string, { label: string; color: string; bg: string }> = {
-    pdf:  { label: 'PDF',  color: '#F87171', bg: 'rgba(248,113,113,0.1)' },
-    csv:  { label: 'CSV',  color: '#34D399', bg: 'rgba(52,211,153,0.1)'  },
-    xlsx: { label: 'XLS',  color: '#34D399', bg: 'rgba(52,211,153,0.1)'  },
-    xls:  { label: 'XLS',  color: '#34D399', bg: 'rgba(52,211,153,0.1)'  },
-    dwg:  { label: 'DWG',  color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)'  },
-    png:  { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
-    jpg:  { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
-    jpeg: { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
-  };
-  const t = map[ext];
-  return t ?? { label: ext.toUpperCase() || 'FILE', color: '#8BA5A0', bg: 'rgba(95,111,108,0.1)' };
+const IcoPdf = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14 2 14 8 20 8"/>
+    <line x1="16" y1="13" x2="8" y2="13"/>
+    <line x1="16" y1="17" x2="8" y2="17"/>
+    <polyline points="10 9 9 9 8 9"/>
+  </svg>
+);
+const IcoCsv = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="8" y1="6" x2="21" y2="6"/>
+    <line x1="8" y1="12" x2="21" y2="12"/>
+    <line x1="8" y1="18" x2="21" y2="18"/>
+    <line x1="3" y1="6" x2="3.01" y2="6"/>
+    <line x1="3" y1="12" x2="3.01" y2="12"/>
+    <line x1="3" y1="18" x2="3.01" y2="18"/>
+  </svg>
+);
+
+function PlanTypeBadge({ fileType, fileName }: { fileType: string | null; fileName?: string | null }) {
+  const isCsv = fileType === 'csv' || (!fileType && (fileName ?? '').toLowerCase().endsWith('.csv'));
+  const color = isCsv ? '#34D399' : '#F87171';
+  const bg    = isCsv ? 'rgba(52,211,153,0.1)' : 'rgba(248,113,113,0.1)';
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, fontWeight: 700, padding: '3px 7px', borderRadius: 5, background: bg, color, flexShrink: 0 }}>
+      {isCsv ? <IcoCsv /> : <IcoPdf />}
+      {isCsv ? 'CSV' : 'PDF'}
+    </span>
+  );
+}
+
+function partsListStatusIcon(status: string, flagType: string | null) {
+  if (flagType === 'damaged')    return <span style={{ color: '#F87171' }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>;
+  if (flagType === 'missing')    return <span style={{ color: '#FBBF24' }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg></span>;
+  if (flagType === 'wrong_part') return <span style={{ color: '#F87171' }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span>;
+  if (status === 'checked' || status === 'complete') return <span style={{ color: '#34D399' }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>;
+  return <span style={{ color: '#8BA5A0' }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/></svg></span>;
 }
 
 // ── Small UI pieces ────────────────────────────────────────────────────────────
@@ -295,6 +335,13 @@ export default function CrewPage() {
   // Plans modal
   const [drawings,     setDrawings]     = useState<Drawing[]>([]);
   const [plansLoading, setPlansLoading] = useState(false);
+
+  // Parts List modal (assembly checklist launched from a parsed CSV plan)
+  const [partsListJob,      setPartsListJob]      = useState<string | null>(null);
+  const [partsListUnits,    setPartsListUnits]    = useState<AssemblyCabinetUnit[]>([]);
+  const [partsListParts,    setPartsListParts]    = useState<PartsListPart[]>([]);
+  const [partsListLoading,  setPartsListLoading]  = useState(false);
+  const [partsListExpanded, setPartsListExpanded] = useState<Record<string, boolean>>({});
 
   // SOPs modal
   const [sops,        setSops]        = useState<SopItem[]>([]);
@@ -649,12 +696,100 @@ export default function CrewPage() {
     try {
       const { data } = await supabase
         .from('job_drawings')
-        .select('id, tenant_id, job_number, plan_name, label, file_url, external_url, file_name, uploaded_by, created_at')
+        .select('id, tenant_id, job_number, job_name, plan_name, label, file_url, external_url, file_name, file_type, departments, parsed, uploaded_by, created_at')
         .eq('tenant_id', tenant!.id)
         .order('created_at', { ascending: false });
-      if (data) setDrawings(data as Drawing[]);
+      if (data) {
+        // Visible if routed to "all" departments or to this crew's department.
+        const visible = (data as Drawing[]).filter((d) => {
+          const depts = d.departments ?? ['all'];
+          return depts.includes('all') || (!!crewDept && depts.includes(crewDept));
+        });
+        setDrawings(visible);
+      }
     } catch (_) {}
     setPlansLoading(false);
+  }
+
+  // Load a cabinet unit + its parts into the assembly scan checklist.
+  async function loadCabinetUnit(cabinetUnitId: string) {
+    const [unitRes, partsRes] = await Promise.all([
+      supabase.from('cabinet_units')
+        .select('id, unit_label, job_number, cabinet_number, room_number, status')
+        .eq('id', cabinetUnitId).single(),
+      supabase.from('parts')
+        .select('id, part_name, material, width, height, depth, quantity, status, flag_type')
+        .eq('cabinet_unit_id', cabinetUnitId).order('part_name'),
+    ]);
+    if (unitRes.error) throw unitRes.error;
+
+    const unit  = unitRes.data as AssemblyCabinetUnit;
+    const parts = (partsRes.data as AssemblyScanPart[]) ?? [];
+
+    setAssemblyScanUnit(unit);
+    setAssemblyScanParts(parts);
+    await supabase.from('cabinet_units').update({ status: 'in_assembly' }).eq('id', cabinetUnitId);
+
+    const init: Record<string, boolean> = {};
+    parts.forEach((p) => { init[p.id] = false; });
+    setAssemblyScanChecked(init);
+    setAssemblyScanStep('checklist');
+    parts.forEach((p, i) => {
+      setTimeout(() => { setAssemblyScanChecked((prev) => ({ ...prev, [p.id]: true })); }, 150 + i * 100);
+    });
+  }
+
+  async function openPartsList(jobNumber: string) {
+    setPartsListJob(jobNumber || null);
+    setPartsListUnits([]);
+    setPartsListParts([]);
+    setPartsListExpanded({});
+    setModal('partsList');
+    setPartsListLoading(true);
+    try {
+      const { data: units } = await supabase
+        .from('cabinet_units')
+        .select('id, unit_label, job_number, cabinet_number, room_number, status')
+        .eq('tenant_id', tenant!.id)
+        .eq('job_number', jobNumber)
+        .order('room_number', { ascending: true });
+      const unitList = (units as AssemblyCabinetUnit[]) ?? [];
+      let partList: PartsListPart[] = [];
+      if (unitList.length > 0) {
+        const ids = unitList.map((u) => u.id);
+        const { data: parts } = await supabase
+          .from('parts')
+          .select('id, cabinet_unit_id, part_name, material, width, height, depth, quantity, status, flag_type')
+          .in('cabinet_unit_id', ids)
+          .order('part_name');
+        partList = (parts as PartsListPart[]) ?? [];
+      }
+      setPartsListUnits(unitList);
+      setPartsListParts(partList);
+    } catch (_) {}
+    setPartsListLoading(false);
+  }
+
+  // Launch the scan flow pre-loaded with a specific cabinet (from the parts list).
+  async function openScanForUnit(unitId: string) {
+    setAssemblyScanInput('');
+    setAssemblyScanFlags({});
+    setAssemblyScanFlagging(null);
+    setAssemblyScanNotFound(false);
+    setAssemblyScanDone(false);
+    setAssemblyScanUnit(null);
+    setAssemblyScanParts([]);
+    setAssemblyScanStep('checklist'); // prevents the scan-step camera from auto-starting
+    setModal('assemblyScan');
+    setAssemblyScanSearching(true);
+    try {
+      await loadCabinetUnit(unitId);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Could not load cabinet', true);
+      setAssemblyScanStep('scan');
+    } finally {
+      setAssemblyScanSearching(false);
+    }
   }
 
   async function openParts() {
@@ -763,37 +898,8 @@ export default function CrewPage() {
         return;
       }
 
-      // Load cabinet unit + parts
-      const [unitRes, partsRes] = await Promise.all([
-        supabase.from('cabinet_units')
-          .select('id, unit_label, job_number, cabinet_number, room_number, status')
-          .eq('id', cabinetUnitId).single(),
-        supabase.from('parts')
-          .select('id, part_name, material, width, height, depth, quantity, status, flag_type')
-          .eq('cabinet_unit_id', cabinetUnitId).order('part_name'),
-      ]);
-      if (unitRes.error) throw unitRes.error;
-
-      const unit  = unitRes.data as AssemblyCabinetUnit;
-      const parts = (partsRes.data as AssemblyScanPart[]) ?? [];
-
-      setAssemblyScanUnit(unit);
-      setAssemblyScanParts(parts);
-
-      // Mark in_assembly
-      await supabase.from('cabinet_units').update({ status: 'in_assembly' }).eq('id', cabinetUnitId);
-
-      // Set all to unchecked then animate
-      const init: Record<string, boolean> = {};
-      parts.forEach((p) => { init[p.id] = false; });
-      setAssemblyScanChecked(init);
-      setAssemblyScanStep('checklist');
-
-      parts.forEach((p, i) => {
-        setTimeout(() => {
-          setAssemblyScanChecked((prev) => ({ ...prev, [p.id]: true }));
-        }, 150 + i * 100);
-      });
+      // Load cabinet unit + parts into the checklist
+      await loadCabinetUnit(cabinetUnitId);
 
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Search failed', true);
@@ -2097,17 +2203,23 @@ export default function CrewPage() {
                   <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#A78BFA', padding: '10px 0 6px', borderBottom: '1px solid var(--line)' }}>{jobKey}</div>
                   {items.map((d) => {
                     const url = d.file_url || d.external_url;
-                    const name = d.plan_name || d.label || 'Untitled';
-                    const badge = fileTypeBadge(d.file_name);
+                    const name = d.plan_name || d.label || d.file_name || 'Untitled';
+                    const isCsv = d.file_type === 'csv' || (d.file_name ?? '').toLowerCase().endsWith('.csv');
                     return (
                       <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
-                        {badge && (
-                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 5, background: badge.bg, color: badge.color, flexShrink: 0 }}>{badge.label}</span>
-                        )}
+                        <PlanTypeBadge fileType={d.file_type} fileName={d.file_name} />
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{name}</div>
-                          <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 2 }}>{d.uploaded_by ? `${d.uploaded_by} · ` : ''}{formatDate(d.created_at)}</div>
+                          <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 2 }}>{d.job_name ? `${d.job_name} · ` : ''}{d.uploaded_by ? `${d.uploaded_by} · ` : ''}{formatDate(d.created_at)}</div>
                         </div>
+                        {isCsv && d.parsed && d.job_number && (
+                          <button
+                            onClick={() => void openPartsList(d.job_number!)}
+                            style={{ fontSize: 12, fontWeight: 700, color: '#2DE1C9', background: 'rgba(45,225,201,0.1)', border: 'none', padding: '5px 12px', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}
+                          >
+                            View Parts List
+                          </button>
+                        )}
                         {url ? (
                           <a href={url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.1)', padding: '5px 12px', borderRadius: 8, textDecoration: 'none', flexShrink: 0 }}>Open</a>
                         ) : (
@@ -2118,6 +2230,90 @@ export default function CrewPage() {
                   })}
                 </div>
               ))}
+            </div>
+          )}
+        </ModalOverlay>
+      )}
+
+      {/* ── Parts List Modal (assembly checklist for a parsed CSV plan) ────── */}
+      {modal === 'partsList' && (
+        <ModalOverlay onClose={closeModal} title={partsListJob ? `Parts List — ${partsListJob}` : 'Parts List'}>
+          {partsListLoading ? (
+            <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--ink-mute)', fontSize: 13 }}>Loading parts…</div>
+          ) : partsListUnits.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--ink-mute)', fontSize: 13 }}>No cabinet units for this job yet.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {(() => {
+                const byRoom: Record<string, AssemblyCabinetUnit[]> = {};
+                partsListUnits.forEach((u) => {
+                  const k = u.room_number ? `Room ${u.room_number}` : 'Unassigned';
+                  (byRoom[k] ??= []).push(u);
+                });
+                return Object.entries(byRoom).map(([room, roomUnits]) => (
+                  <div key={room}>
+                    <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#A78BFA', padding: '8px 0 6px', borderBottom: '1px solid var(--line)' }}>{room}</div>
+                    {roomUnits.map((unit) => {
+                      const parts   = partsListParts.filter((p) => p.cabinet_unit_id === unit.id);
+                      const total   = parts.length;
+                      const checked = parts.filter((p) => p.status !== 'pending').length;
+                      const open    = !!partsListExpanded[unit.id];
+                      const flagged = parts.some((p) => p.flag_type) || unit.status === 'flagged';
+                      const label   = unit.cabinet_number ? `Cabinet ${unit.cabinet_number}` : unit.unit_label;
+                      return (
+                        <div key={unit.id} style={{ borderBottom: '1px solid var(--line)' }}>
+                          <button
+                            onClick={() => setPartsListExpanded((prev) => ({ ...prev, [unit.id]: !prev[unit.id] }))}
+                            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '11px 2px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}
+                          >
+                            {flagged && <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#F87171', flexShrink: 0 }} />}
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: flagged ? '#F87171' : 'var(--ink)' }}>{label}</div>
+                              <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>{checked}/{total} checked</div>
+                            </div>
+                            <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, transition: 'transform 0.2s', transform: open ? 'rotate(180deg)' : 'none' }}><polyline points="6 9 12 15 18 9"/></svg>
+                          </button>
+                          {open && (
+                            <div style={{ padding: '0 2px 12px' }}>
+                              {parts.length === 0 ? (
+                                <div style={{ fontSize: 12, color: 'var(--ink-mute)', padding: '4px 0 10px' }}>No parts loaded for this cabinet.</div>
+                              ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', marginBottom: 12 }}>
+                                  {parts.map((part) => {
+                                    const dims = [part.width, part.height, part.depth].filter(Boolean).map((v) => `${v}"`).join(' x ');
+                                    return (
+                                      <div key={part.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                                        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>{partsListStatusIcon(part.status, part.flag_type)}</div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                          <div style={{ fontSize: 13, fontWeight: 600, color: part.flag_type ? '#F87171' : 'var(--ink)' }}>
+                                            {part.part_name}
+                                            {part.quantity > 1 && <span style={{ fontWeight: 400, color: 'var(--ink-mute)', marginLeft: 6 }}>×{part.quantity}</span>}
+                                          </div>
+                                          {(dims || part.material) && (
+                                            <div style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{dims}{part.material ? (dims ? ` · ${part.material}` : part.material) : ''}</div>
+                                          )}
+                                          {part.flag_type && <div style={{ fontSize: 11, color: '#F87171', marginTop: 1 }}>{part.flag_type.replace('_', ' ')}</div>}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              <button
+                                onClick={() => void openScanForUnit(unit.id)}
+                                style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '9px 0', borderRadius: 8, background: 'rgba(45,225,201,0.1)', border: '1px solid rgba(45,225,201,0.3)', color: '#2DE1C9', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                              >
+                                <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></svg>
+                                Scan / Check Cabinet
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ));
+              })()}
             </div>
           )}
         </ModalOverlay>

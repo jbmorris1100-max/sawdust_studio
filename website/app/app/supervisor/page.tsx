@@ -78,7 +78,101 @@ type JobDrawing = {
   file_name: string | null;
   uploaded_by: string | null;
   created_at: string;
+  file_type: string | null;
+  departments: string[] | null;
+  parsed: boolean | null;
 };
+
+type CsvRow = Record<string, string>;
+
+const PLAN_DEPTS = ['Production', 'Assembly', 'Finishing', 'Craftsman'] as const;
+
+const JOB_DRAWING_COLS =
+  'id, tenant_id, job_number, label, file_url, file_name, uploaded_by, created_at, file_type, departments, parsed';
+
+function parsePlanCSV(text: string): { headers: string[]; rows: CsvRow[] } {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return { headers: [], rows: [] };
+  function splitLine(line: string): string[] {
+    const result: string[] = [];
+    let field = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') { field += '"'; i++; }
+        else { inQuotes = !inQuotes; }
+      } else if (ch === ',' && !inQuotes) {
+        result.push(field.trim()); field = '';
+      } else { field += ch; }
+    }
+    result.push(field.trim());
+    return result;
+  }
+  const headers = splitLine(lines[0]);
+  const rows = lines.slice(1).map((l) => {
+    const vals = splitLine(l);
+    const row: CsvRow = {};
+    headers.forEach((h, i) => { row[h] = vals[i] ?? ''; });
+    return row;
+  });
+  return { headers, rows };
+}
+
+const PLAN_IMPORT_FIELDS: { key: string; label: string; required?: boolean }[] = [
+  { key: 'unit_id',   label: 'Cabinet / Unit ID', required: true },
+  { key: 'part_name', label: 'Part Name',          required: true },
+  { key: 'room',      label: 'Room' },
+  { key: 'material',  label: 'Material' },
+  { key: 'width',     label: 'Width' },
+  { key: 'height',    label: 'Height' },
+  { key: 'depth',     label: 'Depth' },
+];
+
+const IcoPdf = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14 2 14 8 20 8"/>
+    <line x1="16" y1="13" x2="8" y2="13"/>
+    <line x1="16" y1="17" x2="8" y2="17"/>
+    <polyline points="10 9 9 9 8 9"/>
+  </svg>
+);
+const IcoCsv = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="8" y1="6" x2="21" y2="6"/>
+    <line x1="8" y1="12" x2="21" y2="12"/>
+    <line x1="8" y1="18" x2="21" y2="18"/>
+    <line x1="3" y1="6" x2="3.01" y2="6"/>
+    <line x1="3" y1="12" x2="3.01" y2="12"/>
+    <line x1="3" y1="18" x2="3.01" y2="18"/>
+  </svg>
+);
+
+function PlanTypeBadge({ fileType, fileName }: { fileType: string | null; fileName?: string | null }) {
+  const isCsv = fileType === 'csv' || (!fileType && (fileName ?? '').toLowerCase().endsWith('.csv'));
+  const color = isCsv ? '#34D399' : '#F87171';
+  const bg    = isCsv ? 'rgba(52,211,153,0.1)' : 'rgba(248,113,113,0.1)';
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, fontWeight: 700, padding: '3px 7px', borderRadius: 5, background: bg, color, flexShrink: 0 }}>
+      {isCsv ? <IcoCsv /> : <IcoPdf />}
+      {isCsv ? 'CSV' : 'PDF'}
+    </span>
+  );
+}
+
+function DeptPills({ departments }: { departments: string[] | null }) {
+  const depts = departments && departments.length ? departments : ['all'];
+  return (
+    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+      {depts.map((d) => (
+        <span key={d} style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(94,234,212,0.1)', color: 'var(--teal)' }}>
+          {d === 'all' ? 'All Depts' : d}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 type SopItem = {
   id: string;
@@ -263,23 +357,6 @@ function ActionBtn({ label, color, onClick, disabled }: { label: string; color: 
   );
 }
 
-function fileTypeBadge(fileName: string | null): { label: string; color: string; bg: string } | null {
-  if (!fileName) return null;
-  const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
-  const map: Record<string, { label: string; color: string; bg: string }> = {
-    pdf:  { label: 'PDF',  color: '#F87171', bg: 'rgba(248,113,113,0.1)' },
-    csv:  { label: 'CSV',  color: '#34D399', bg: 'rgba(52,211,153,0.1)'  },
-    xlsx: { label: 'XLS',  color: '#34D399', bg: 'rgba(52,211,153,0.1)'  },
-    xls:  { label: 'XLS',  color: '#34D399', bg: 'rgba(52,211,153,0.1)'  },
-    dwg:  { label: 'DWG',  color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)'  },
-    png:  { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
-    jpg:  { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
-    jpeg: { label: 'IMG',  color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' },
-  };
-  const t = map[ext];
-  return t ?? { label: ext.toUpperCase() || 'FILE', color: '#8BA5A0', bg: 'rgba(95,111,108,0.1)' };
-}
-
 // ── ShiftTimeline ─────────────────────────────────────────────────────────────
 
 const EVENT_META: Record<string, { color: string; icon: React.ReactNode; label: string }> = {
@@ -390,6 +467,15 @@ export default function SupervisorPage() {
   const [planJobNum,    setPlanJobNum]    = useState('');
   const [planLabel,     setPlanLabel]     = useState('');
   const [planUploading, setPlanUploading] = useState(false);
+  const [planDepts,     setPlanDepts]     = useState<string[]>(['all']);
+
+  // Plans CSV → cabinet_units + parts mapper
+  const [planCsvHeaders,      setPlanCsvHeaders]      = useState<string[]>([]);
+  const [planCsvRows,         setPlanCsvRows]         = useState<CsvRow[]>([]);
+  const [planColumnMap,       setPlanColumnMap]       = useState<Record<string, string>>({ unit_id: '', part_name: '', room: '', material: '', width: '', height: '', depth: '' });
+  const [planPendingId,       setPlanPendingId]       = useState<string | null>(null);
+  const [planPendingJobNum,   setPlanPendingJobNum]   = useState<string>('');
+  const [planParsing,         setPlanParsing]         = useState(false);
 
   // SOPs upload
   const [sopFile,       setSopFile]       = useState<File | null>(null);
@@ -494,7 +580,7 @@ export default function SupervisorPage() {
     } catch (_) {}
     try {
       const [plansRes, sopsRes, buildsRes, partsRes, jobsRes] = await Promise.all([
-        supabase.from('job_drawings').select('id, tenant_id, job_number, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
+        supabase.from('job_drawings').select(JOB_DRAWING_COLS).eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('time_clock').select('id, worker_name, clock_in, clock_out, notes, job_number, total_hours').eq('tenant_id', tenant.id).eq('status', 'craftsman_build').order('clock_in', { ascending: false }).limit(50),
         supabase.from('parts_log').select('*').eq('tenant_id', tenant.id).not('status', 'in', '("Archived")').order('created_at', { ascending: false }).limit(100),
@@ -1117,35 +1203,152 @@ export default function SupervisorPage() {
 
   // ── Plans ───────────────────────────────────────────────────────────────────
 
+  // Departments multi-select: "all" and specific depts are mutually exclusive.
+  function togglePlanDept(dept: string) {
+    setPlanDepts((prev) => {
+      if (dept === 'all') return ['all'];
+      const base = prev.filter((d) => d !== 'all');
+      const next = base.includes(dept) ? base.filter((d) => d !== dept) : [...base, dept];
+      return next.length === 0 ? ['all'] : next;
+    });
+  }
+
   async function handlePlanUpload() {
     if (!planFile || !planJobNum.trim() || planUploading) return;
     setPlanUploading(true);
     try {
-      const ext = planFile.name.split('.').pop() ?? 'bin';
-      const path = `${tenant!.id}/${Date.now()}.${ext}`;
-      const { error: uploadErr } = await supabase.storage.from('job-drawings').upload(path, planFile, { upsert: true });
+      const ext      = (planFile.name.split('.').pop() ?? 'bin').toLowerCase();
+      const fileType = ext === 'csv' ? 'csv' : 'pdf';
+      const path     = `${tenant!.id}/${Date.now()}.${ext}`;
+      const { error: uploadErr } = await supabase.storage.from('job-plans').upload(path, planFile, { upsert: true });
       if (uploadErr) throw uploadErr;
-      const { data: { publicUrl } } = supabase.storage.from('job-drawings').getPublicUrl(path);
-      const { error: dbErr } = await supabase.from('job_drawings').insert({
-        tenant_id:  tenant!.id,
-        job_number: planJobNum.trim(),
-        label:      planLabel.trim() || null,
-        file_url:   publicUrl,
-        file_name:  planFile.name,
+      const { data: { publicUrl } } = supabase.storage.from('job-plans').getPublicUrl(path);
+      const departments = planDepts.length ? planDepts : ['all'];
+      const { data: inserted, error: dbErr } = await supabase.from('job_drawings').insert({
+        tenant_id:   tenant!.id,
+        job_number:  planJobNum.trim(),
+        label:       planLabel.trim() || null,
+        file_url:    publicUrl,
+        file_name:   planFile.name,
+        file_type:   fileType,
+        departments,
         uploaded_by: 'Supervisor',
-      });
+      }).select(JOB_DRAWING_COLS).single();
       if (dbErr) throw dbErr;
-      setPlanFile(null);
-      setPlanJobNum('');
-      setPlanLabel('');
-      showToast('Plan uploaded');
-      const { data } = await supabase.from('job_drawings').select('id, tenant_id, job_number, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
-      if (data) setPlans(data as JobDrawing[]);
+      setPlans((prev) => [inserted as JobDrawing, ...prev]);
+
+      if (fileType === 'csv') {
+        // Parse the CSV and reveal the column mapper to finish creating units + parts.
+        const text = await planFile.text();
+        const { headers, rows } = parsePlanCSV(text);
+        if (headers.length === 0) {
+          showToast('CSV looks empty — nothing to map', true);
+        } else {
+          setPlanCsvHeaders(headers);
+          setPlanCsvRows(rows);
+          setPlanColumnMap({ unit_id: '', part_name: '', room: '', material: '', width: '', height: '', depth: '' });
+          setPlanPendingId((inserted as JobDrawing).id);
+          setPlanPendingJobNum(planJobNum.trim());
+          showToast('CSV uploaded — map the columns to build the cut list');
+        }
+        setPlanFile(null);
+        setPlanLabel('');
+      } else {
+        setPlanFile(null);
+        setPlanJobNum('');
+        setPlanLabel('');
+        setPlanDepts(['all']);
+        showToast('Plan uploaded');
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Upload failed';
       showToast(msg, true);
     } finally {
       setPlanUploading(false);
+    }
+  }
+
+  function cancelPlanMapper() {
+    setPlanCsvHeaders([]);
+    setPlanCsvRows([]);
+    setPlanPendingId(null);
+    setPlanPendingJobNum('');
+  }
+
+  async function handlePlanParse() {
+    if (!planColumnMap.unit_id || !planColumnMap.part_name || !planPendingId || planParsing) return;
+    setPlanParsing(true);
+    try {
+      const jobNumber = planPendingJobNum;
+      const job = jobs.find((j) => j.job_number === jobNumber); // optional link to jobs row
+
+      // Group rows by unit-ID value
+      const unitGroups: Record<string, CsvRow[]> = {};
+      planCsvRows.forEach((row) => {
+        const v = row[planColumnMap.unit_id]?.trim();
+        if (!v) return;
+        (unitGroups[v] ??= []).push(row);
+      });
+
+      let unitsInserted = 0;
+      let partsInserted = 0;
+
+      for (const [unitVal, rows] of Object.entries(unitGroups)) {
+        const segments = unitVal.split('/').map((s) => s.trim());
+        let room_number: string | null = null;
+        let cabinet_number: string | null = null;
+        const unit_label = unitVal;
+        if (segments.length >= 3) {
+          room_number    = segments[1] || null;
+          cabinet_number = segments[2] || null;
+        } else if (planColumnMap.room && rows[0]?.[planColumnMap.room]) {
+          room_number = rows[0][planColumnMap.room]?.trim() || null;
+        }
+
+        const { data: unitData, error: unitErr } = await supabase
+          .from('cabinet_units')
+          .insert({
+            tenant_id:      tenant!.id,
+            job_id:         job?.id ?? null,
+            job_number:     jobNumber,
+            room_number,
+            cabinet_number,
+            unit_label,
+            status:         'pending',
+          })
+          .select('id')
+          .single();
+        if (unitErr) throw unitErr;
+        unitsInserted++;
+
+        const partRows = rows.map((row) => ({
+          tenant_id:       tenant!.id,
+          cabinet_unit_id: unitData.id,
+          job_number:      jobNumber,
+          part_name:       row[planColumnMap.part_name]?.trim() || 'Unknown part',
+          material:        planColumnMap.material ? (row[planColumnMap.material]?.trim() || null) : null,
+          width:           planColumnMap.width   ? (parseFloat(row[planColumnMap.width]  ?? '') || null) : null,
+          height:          planColumnMap.height  ? (parseFloat(row[planColumnMap.height] ?? '') || null) : null,
+          depth:           planColumnMap.depth   ? (parseFloat(row[planColumnMap.depth]  ?? '') || null) : null,
+          quantity:        1,
+          status:          'pending',
+        }));
+        const { error: partsErr } = await supabase.from('parts').insert(partRows);
+        if (partsErr) throw partsErr;
+        partsInserted += partRows.length;
+      }
+
+      await supabase.from('job_drawings').update({ parsed: true }).eq('id', planPendingId);
+      setPlans((prev) => prev.map((p) => p.id === planPendingId ? { ...p, parsed: true } : p));
+
+      cancelPlanMapper();
+      setPlanJobNum('');
+      setPlanDepts(['all']);
+      showToast(`Cut list parsed — ${unitsInserted} cabinet units and ${partsInserted} parts created`);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Parse failed', true);
+    } finally {
+      setPlanParsing(false);
     }
   }
 
@@ -1157,7 +1360,7 @@ export default function SupervisorPage() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Delete failed';
       showToast(msg, true);
-      const { data } = await supabase.from('job_drawings').select('id, tenant_id, job_number, label, file_url, file_name, uploaded_by, created_at').eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
+      const { data } = await supabase.from('job_drawings').select(JOB_DRAWING_COLS).eq('tenant_id', tenant!.id).order('created_at', { ascending: false }).limit(100);
       if (data) setPlans(data as JobDrawing[]);
     }
   }
@@ -2309,22 +2512,63 @@ export default function SupervisorPage() {
           {tab === 'plans' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
               <div className="portal-card">
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Upload Plan</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 4 }}>Upload Plan</div>
+                <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6 }}>
+                  Plans is the home for every file — PDFs, layouts, and CSV cut lists. Upload a CSV to build the assembly cut list automatically.
+                </p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
                   <div>
                     <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Job / Project *</label>
-                    <input className="form-input" placeholder="e.g. P-26-1001 or Smith Kitchen" value={planJobNum} onChange={(e) => setPlanJobNum(e.target.value)} />
+                    <input className="form-input" placeholder="Enter job or project name" value={planJobNum} onChange={(e) => setPlanJobNum(e.target.value)} />
                   </div>
                   <div>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Description</label>
-                    <input className="form-input" placeholder="e.g. Cabinet layout, CNC file…" value={planLabel} onChange={(e) => setPlanLabel(e.target.value)} />
+                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Plan name / description</label>
+                    <input className="form-input" placeholder="e.g. Kitchen Layout, Cut List, Elevation Views" value={planLabel} onChange={(e) => setPlanLabel(e.target.value)} />
                   </div>
                 </div>
+
+                {/* Departments multi-select */}
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 7 }}>Visible to departments</label>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {([{ key: 'all', label: 'All Departments' }, ...PLAN_DEPTS.map((d) => ({ key: d, label: d }))]).map(({ key, label }) => {
+                      const isAll      = key === 'all';
+                      const allChecked = planDepts.includes('all');
+                      const checked    = isAll ? allChecked : planDepts.includes(key);
+                      const disabled   = !isAll && allChecked;
+                      return (
+                        <label
+                          key={key}
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 7,
+                            padding: '7px 12px', borderRadius: 8,
+                            border: `1px solid ${checked ? 'rgba(94,234,212,0.4)' : 'var(--line)'}`,
+                            background: checked ? 'rgba(94,234,212,0.08)' : 'transparent',
+                            color: disabled ? 'var(--ink-mute)' : checked ? 'var(--teal)' : 'var(--ink-dim)',
+                            fontSize: 13, fontWeight: 600,
+                            cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={disabled}
+                            onChange={() => togglePlanDept(key)}
+                            style={{ accentColor: '#2DE1C9', cursor: disabled ? 'not-allowed' : 'pointer' }}
+                          />
+                          {label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div style={{ marginBottom: 14 }}>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>File (PDF, CSV, DWG…) *</label>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>File (PDF or CSV) *</label>
                   <input
                     type="file"
-                    accept=".pdf,.csv,.xlsx,.xls,.dwg,.png,.jpg,.jpeg"
+                    accept=".pdf,.csv"
                     onChange={(e) => setPlanFile(e.target.files?.[0] ?? null)}
                     style={{ fontSize: 13, color: 'var(--ink-dim)', width: '100%' }}
                   />
@@ -2338,6 +2582,47 @@ export default function SupervisorPage() {
                   {planUploading ? 'Uploading…' : 'Upload Plan'}
                 </button>
               </div>
+
+              {/* CSV column mapper — appears after a CSV upload */}
+              {planCsvHeaders.length > 0 && planPendingId && (
+                <div className="portal-card" style={{ border: '1px solid rgba(52,211,153,0.3)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#34D399' }}>
+                      Map Cut List Columns — {planCsvRows.length} rows
+                    </div>
+                    <button onClick={cancelPlanMapper} style={{ background: 'none', border: 'none', color: 'var(--ink-mute)', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit' }}>Skip</button>
+                  </div>
+                  <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6 }}>
+                    Match your CSV columns to cabinet fields. Cabinet / Unit ID and Part Name are required.
+                  </p>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+                    {PLAN_IMPORT_FIELDS.map(({ key, label, required }) => (
+                      <div key={key}>
+                        <label style={{ fontSize: 12, color: required ? 'var(--ink-dim)' : 'var(--ink-mute)', fontWeight: required ? 700 : 500, display: 'block', marginBottom: 4 }}>
+                          {label}{required ? ' *' : ''}
+                        </label>
+                        <select
+                          className="form-input"
+                          value={planColumnMap[key] || ''}
+                          onChange={(e) => setPlanColumnMap((prev) => ({ ...prev, [key]: e.target.value }))}
+                          style={{ width: '100%', cursor: 'pointer' }}
+                        >
+                          <option value="">{required ? '— select column —' : '(skip)'}</option>
+                          {planCsvHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    style={{ opacity: (!planColumnMap.unit_id || !planColumnMap.part_name || planParsing) ? 0.5 : 1 }}
+                    onClick={handlePlanParse}
+                    disabled={!planColumnMap.unit_id || !planColumnMap.part_name || planParsing}
+                  >
+                    {planParsing ? 'Building cut list…' : `Create cabinet units & parts from ${planCsvRows.length} rows`}
+                  </button>
+                </div>
+              )}
 
               {dataLoading ? (
                 <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
@@ -2357,26 +2642,27 @@ export default function SupervisorPage() {
                         <div style={{ padding: '10px 20px', background: 'rgba(167,139,250,0.05)', borderBottom: '1px solid var(--line)', fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#A78BFA' }}>
                           {jobKey}
                         </div>
-                        {items.map((p) => {
-                          const badge = fileTypeBadge(p.file_name);
-                          return (
-                            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px', borderBottom: '1px solid var(--line)' }}>
-                              {badge && (
-                                <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 7px', borderRadius: 5, background: badge.bg, color: badge.color, flexShrink: 0 }}>{badge.label}</span>
-                              )}
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.label || p.file_name || 'Untitled'}</div>
-                                <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 2 }}>{formatDate(p.created_at)}</div>
-                              </div>
-                              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                                {p.file_url && (
-                                  <a href={p.file_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.1)', padding: '5px 12px', borderRadius: 8, textDecoration: 'none' }}>View</a>
+                        {items.map((p) => (
+                          <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px', borderBottom: '1px solid var(--line)' }}>
+                            <PlanTypeBadge fileType={p.file_type} fileName={p.file_name} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.label || p.file_name || 'Untitled'}</div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 5, flexWrap: 'wrap' }}>
+                                <DeptPills departments={p.departments} />
+                                {p.file_type === 'csv' && p.parsed && (
+                                  <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(52,211,153,0.12)', color: '#34D399' }}>Parsed</span>
                                 )}
-                                <ActionBtn label="Delete" color="#F87171" onClick={() => handlePlanDelete(p.id)} />
+                                <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{formatDate(p.created_at)}</span>
                               </div>
                             </div>
-                          );
-                        })}
+                            <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                              {p.file_url && (
+                                <a href={p.file_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.1)', padding: '5px 12px', borderRadius: 8, textDecoration: 'none' }}>View</a>
+                              )}
+                              <ActionBtn label="Delete" color="#F87171" onClick={() => handlePlanDelete(p.id)} />
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     ));
                   })()}
@@ -2981,8 +3267,6 @@ export default function SupervisorPage() {
               showToast={showToast}
               jobs={jobs}
               setJobs={setJobs}
-              plans={plans}
-              setPlans={setPlans}
             />
           )}
 
