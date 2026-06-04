@@ -18,6 +18,12 @@ export const metadata: Metadata = {
   title: 'InlineIQ — Keep your shop sharp.',
   description:
     'The 1–2 tap shop floor system that captures every minute, every part, and every dollar — then turns it into the data your bids have always been missing.',
+  manifest: '/manifest.webmanifest',
+  appleWebApp: {
+    capable: true,
+    title: 'InlineIQ',
+    statusBarStyle: 'black-translucent',
+  },
   openGraph: {
     title: 'InlineIQ — Keep your shop sharp.',
     description:

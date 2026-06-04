@@ -6,6 +6,8 @@ import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
 import { trialDaysLeft, getDepartments, type Tenant } from '@/lib/auth';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
+import PushPrompt from '@/components/PushPrompt';
+import { sendNotify } from '@/lib/notify';
 
 // ── Crew tenant resolver ───────────────────────────────────────────────────────
 // Crew never need to log in. Resolution order:
@@ -1194,6 +1196,13 @@ export default function CrewPage() {
         });
         const { error } = await supabase.from('damage_reports').insert(reports);
         if (error) throw error;
+        sendNotify({
+          tenant_id: tenant!.id,
+          target: 'supervisor',
+          title: 'Damage Report',
+          body: `${crewName || 'Crew'} reported damage in Assembly`,
+          url: '/app/supervisor',
+        });
       }
 
       void logShiftEvent({
@@ -1650,6 +1659,13 @@ export default function CrewPage() {
         tenant_id: tenant!.id,
       });
       if (error) throw error;
+      sendNotify({
+        tenant_id: tenant!.id,
+        target: 'supervisor',
+        title: 'Inventory Needed',
+        body: `${item} needed in ${dept}`,
+        url: '/app/supervisor',
+      });
       void logShiftEvent({
         tenantId: tenant!.id, timeClockId: activeTimeClockId,
         workerName: crewName, eventType: 'inventory_logged',
@@ -1750,6 +1766,13 @@ export default function CrewPage() {
         tenant_id: tenant!.id,
       });
       if (error) throw error;
+      sendNotify({
+        tenant_id: tenant!.id,
+        target: 'supervisor',
+        title: 'Damage Report',
+        body: `${crewName || 'Crew'} reported damage in ${dept}`,
+        url: '/app/supervisor',
+      });
       void logShiftEvent({
         tenantId: tenant!.id, timeClockId: activeTimeClockId,
         workerName: crewName, eventType: 'damage_reported',
@@ -1793,6 +1816,13 @@ export default function CrewPage() {
         .single();
       if (error) throw error;
       setMessages((prev) => prev.map((m) => m.id === optimisticId ? (data as Message) : m));
+      sendNotify({
+        tenant_id: tenant!.id,
+        target: 'supervisor',
+        title: 'New Message',
+        body: `${crewName || 'Crew'}: ${body.slice(0, 50)}`,
+        url: '/app/supervisor',
+      });
       void logShiftEvent({
         tenantId: tenant!.id, timeClockId: activeTimeClockId,
         workerName: crewName || 'Crew', eventType: 'message_sent',
@@ -1993,6 +2023,8 @@ export default function CrewPage() {
 
         {isTrial && <TrialBanner days={days} />}
         {msgNotification && <NewMsgBanner preview={msgNotification} onDismiss={() => { setMsgNotification(null); if (notifTimer.current) clearTimeout(notifTimer.current); }} />}
+
+        {tenant && <PushPrompt tenantId={tenant.id} userType="crew" userName={crewName || undefined} />}
 
         <main style={{ flex: 1, padding: '40px 24px', maxWidth: 900, margin: '0 auto', width: '100%' }}>
 

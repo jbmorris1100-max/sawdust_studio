@@ -11,6 +11,8 @@ import SetupWizard from './SetupWizard';
 import AssemblyTab from './AssemblyTab';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import JobSearch, { type SearchTarget } from '@/components/JobSearch';
+import PushPrompt from '@/components/PushPrompt';
+import { sendNotify } from '@/lib/notify';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -872,6 +874,45 @@ export default function SupervisorPage() {
     })();
   }, [tenant]);
 
+  // ── Trial-expiring push (day 25 → 5 left, day 28 → 2 left) ──────────────────
+  // Fires at most once per day per threshold (localStorage last_trial_notification).
+  useEffect(() => {
+    if (!tenant || tenant.subscription_status !== 'trial') return;
+    const d = trialDaysLeft(tenant.trial_ends_at ?? null);
+    let note: { title: string; body: string } | null = null;
+    if (d === 5) note = { title: 'Trial ends in 5 days', body: 'Upgrade to keep your shop running on InlineIQ' };
+    else if (d === 2) note = { title: 'Trial ends in 2 days', body: "Don't lose your shop data — upgrade now" };
+    if (!note) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const stamp = `${today}:${d}`;
+    try {
+      if (localStorage.getItem('last_trial_notification') === stamp) return;
+      localStorage.setItem('last_trial_notification', stamp);
+    } catch { /* ignore */ }
+    sendNotify({ tenant_id: tenant.id, target: 'supervisor', title: note.title, body: note.body, url: '/pricing' });
+  }, [tenant]);
+
+  // ── Job-due-soon push (exactly 3 days out) ──────────────────────────────────
+  // Fires once per job per day (localStorage notified_jobs map: jobId → date).
+  useEffect(() => {
+    if (!tenant || jobs.length === 0) return;
+    const today = new Date().toISOString().slice(0, 10);
+    let notified: Record<string, string> = {};
+    try { notified = JSON.parse(localStorage.getItem('notified_jobs') ?? '{}'); } catch { notified = {}; }
+    let changed = false;
+    jobs.forEach((j) => {
+      if (!j.due_date) return;
+      const days = Math.ceil((new Date(j.due_date).getTime() - Date.now()) / 86400000);
+      if (days !== 3) return;
+      if (notified[j.id] === today) return;
+      notified[j.id] = today;
+      changed = true;
+      const path = j.job_path || j.job_name || `Job ${j.job_number}`;
+      sendNotify({ tenant_id: tenant.id, target: 'supervisor', title: 'Job due soon', body: `${path} is due in 3 days`, url: '/app/supervisor' });
+    });
+    if (changed) { try { localStorage.setItem('notified_jobs', JSON.stringify(notified)); } catch { /* ignore */ } }
+  }, [tenant, jobs]);
+
   // ── Realtime subscriptions ──────────────────────────────────────────────────
 
   useEffect(() => {
@@ -1102,6 +1143,14 @@ export default function SupervisorPage() {
       }).select('id, sender_name, dept, body, created_at').single();
       if (error) throw error;
       setMessages((prev) => prev.map((m) => m.id === optimistic.id ? data as Message : m));
+      // Notify crew of the new message (fire-and-forget).
+      sendNotify({
+        tenant_id: tenant!.id,
+        target: 'crew',
+        title: 'New Message',
+        body: `Supervisor: ${body.slice(0, 50)}`,
+        url: '/app/crew',
+      });
       showToast('Message sent');
     } catch (err: unknown) {
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
@@ -1182,6 +1231,13 @@ export default function SupervisorPage() {
       }).select('id, item, dept, job_number, qty, status, created_at').single();
       if (error) throw error;
       setNeeds((prev) => prev.map((n) => n.id === optimisticId ? (data as InventoryNeed) : n));
+      sendNotify({
+        tenant_id: tenant!.id,
+        target: 'supervisor',
+        title: 'Inventory Needed',
+        body: `${item} needed in ${supInvDept}`,
+        url: '/app/supervisor',
+      });
       setSupInvItem('');
       setSupInvDept('Production');
       setSupInvQty(1);
@@ -1255,6 +1311,13 @@ export default function SupervisorPage() {
       }).select('id, part_name, job_id, dept, notes, photo_url, status, created_at').single();
       if (error) throw error;
       setDamage((prev) => prev.map((d) => d.id === optimisticId ? (data as DamageReport) : d));
+      sendNotify({
+        tenant_id: tenant!.id,
+        target: 'supervisor',
+        title: 'Damage Report',
+        body: `Supervisor reported damage in ${supDmgDept}`,
+        url: '/app/supervisor',
+      });
       setSupDmgDesc('');
       setSupDmgDept('Production');
       setSupDmgJobNum('');
@@ -1804,6 +1867,8 @@ export default function SupervisorPage() {
         </div>
 
         {isTrial && <TrialBanner days={days} />}
+
+        {tenant && <PushPrompt tenantId={tenant.id} userType="supervisor" userName="Supervisor" />}
 
         <main style={{ flex: 1, padding: '40px 24px', maxWidth: 1100, margin: '0 auto', width: '100%', overflowX: 'hidden' }}>
 
