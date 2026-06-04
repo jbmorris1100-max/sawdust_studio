@@ -308,14 +308,27 @@ const IcoCsv = () => (
   </svg>
 );
 
+// Map a stored file_type / filename → a short label + colour for the type chip.
+function planBadgeMeta(fileType: string | null, fileName?: string | null): { label: string; color: string; bg: string } {
+  const ext = (fileName ?? '').split('.').pop()?.toLowerCase() ?? '';
+  const t = (fileType ?? '').toLowerCase();
+  const is = (type: string, ...exts: string[]) => t === type || (!fileType && exts.includes(ext));
+  if (is('csv', 'csv'))                                     return { label: 'CSV',   color: '#34D399', bg: 'rgba(52,211,153,0.1)' };
+  if (is('image', 'jpg', 'jpeg', 'png', 'webp', 'gif'))     return { label: 'Image', color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)' };
+  if (is('svg', 'svg'))                                     return { label: 'SVG',   color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)' };
+  if (is('dxf', 'dxf'))                                     return { label: 'DXF',   color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' };
+  if (is('xml', 'xml'))                                     return { label: 'XML',   color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' };
+  if (is('html', 'html', 'htm'))                            return { label: 'HTML',  color: '#FBBF24', bg: 'rgba(251,191,36,0.1)' };
+  if (is('spreadsheet', 'xlsx', 'xls', 'xlsm'))             return { label: 'XLSX',  color: '#34D399', bg: 'rgba(52,211,153,0.1)' };
+  return { label: 'PDF', color: '#F87171', bg: 'rgba(248,113,113,0.1)' };
+}
+
 function PlanTypeBadge({ fileType, fileName }: { fileType: string | null; fileName?: string | null }) {
-  const isCsv = fileType === 'csv' || (!fileType && (fileName ?? '').toLowerCase().endsWith('.csv'));
-  const color = isCsv ? '#34D399' : '#F87171';
-  const bg    = isCsv ? 'rgba(52,211,153,0.1)' : 'rgba(248,113,113,0.1)';
+  const { label, color, bg } = planBadgeMeta(fileType, fileName);
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, fontWeight: 700, padding: '3px 7px', borderRadius: 5, background: bg, color, flexShrink: 0 }}>
-      {isCsv ? <IcoCsv /> : <IcoPdf />}
-      {isCsv ? 'CSV' : 'PDF'}
+      {label === 'CSV' ? <IcoCsv /> : <IcoPdf />}
+      {label}
     </span>
   );
 }

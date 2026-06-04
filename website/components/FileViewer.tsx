@@ -39,13 +39,16 @@ export type ViewerFile = {
 };
 
 /* ---- format detection ---------------------------------------------------- */
-type Kind = 'pdf' | 'csv' | 'image' | 'xml' | 'json' | 'dxf' | 'unknown';
+type Kind = 'pdf' | 'csv' | 'image' | 'svg' | 'html' | 'xml' | 'json' | 'dxf' | 'spreadsheet' | 'unknown';
 function detectKind(file: ViewerFile): Kind {
   const ext = (file.name.split('.').pop() ?? '').toLowerCase();
   const t = (file.fileType ?? '').toLowerCase();
   if (t === 'pdf' || ext === 'pdf') return 'pdf';
   if (t === 'csv' || ext === 'csv') return 'csv';
+  if (t === 'svg' || ext === 'svg') return 'svg';
   if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext) || t === 'image') return 'image';
+  if (t === 'html' || ext === 'html' || ext === 'htm') return 'html';
+  if (t === 'spreadsheet' || ['xlsx', 'xls', 'xlsm'].includes(ext)) return 'spreadsheet';
   if (ext === 'json' || t === 'json') return 'json';
   if (ext === 'xml' || t === 'xml') return 'xml';
   if (ext === 'dxf' || t === 'dxf') return 'dxf';
@@ -321,6 +324,35 @@ function ImageView({ url }: { url: string }) {
 }
 
 /* ========================================================================== *
+ *  SVG VIEWER  (vector plans — rendered on white so dark strokes stay visible)
+ * ========================================================================== */
+function SvgView({ url }: { url: string }) {
+  const [zoom, setZoom] = useState(1);
+  return (
+    <div onDoubleClick={() => setZoom((z) => (z === 1 ? 2.2 : 1))}
+      style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto', background: '#fff', touchAction: 'pinch-zoom' }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={url} alt="" style={{ maxWidth: zoom === 1 ? '100%' : 'none', maxHeight: zoom === 1 ? '100%' : 'none', transform: `scale(${zoom})`, transition: 'transform .2s', transformOrigin: 'center' }} />
+    </div>
+  );
+}
+
+/* ========================================================================== *
+ *  HTML VIEWER  (sandboxed — no script execution, no same-origin access)
+ * ========================================================================== */
+function HtmlView({ url, name }: { url: string; name: string }) {
+  return (
+    <iframe
+      src={url}
+      title={name}
+      sandbox=""
+      referrerPolicy="no-referrer"
+      style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }}
+    />
+  );
+}
+
+/* ========================================================================== *
  *  XML / JSON TREE VIEWER
  * ========================================================================== */
 function JsonNode({ k, v, depth }: { k: string | null; v: unknown; depth: number }) {
@@ -383,8 +415,12 @@ function fmtSize(b?: number | null): string {
 function InfoView({ file, kind }: { file: ViewerFile; kind: Kind }) {
   const note = kind === 'dxf'
     ? 'Open in your CAD app to view. (Inline SVG rendering coming in a future update.)'
+    : kind === 'spreadsheet'
+    ? 'Spreadsheet files open in Excel, Numbers, or Google Sheets. Download to view, or upload as CSV to preview inline.'
     : 'This file type opens in an external app.';
-  const title = kind === 'dxf' ? `DXF file — ${file.name}` : file.name;
+  const title = kind === 'dxf' ? `DXF file — ${file.name}`
+    : kind === 'spreadsheet' ? `Spreadsheet — ${file.name}`
+    : file.name;
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: 32, textAlign: 'center' }}>
       <svg width="56" height="56" viewBox="0 0 24 24" {...stroke}><path d="M14 3v5h5M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /></svg>
@@ -418,6 +454,8 @@ export default function FileViewer({ file, onClose }: { file: ViewerFile; onClos
       case 'pdf':   return <PdfView url={file.url} />;
       case 'csv':   return <CsvView file={file} />;
       case 'image': return <ImageView url={file.url} />;
+      case 'svg':   return <SvgView url={file.url} />;
+      case 'html':  return <HtmlView url={file.url} name={file.name} />;
       case 'json':  return <StructuredView url={file.url} kind="json" />;
       case 'xml':   return <StructuredView url={file.url} kind="xml" />;
       default:      return <InfoView file={file} kind={kind} />;

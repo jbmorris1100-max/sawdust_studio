@@ -156,14 +156,27 @@ const IcoCsv = () => (
   </svg>
 );
 
+// Map a stored file_type / filename → a short label + colour for the type chip.
+function planBadgeMeta(fileType: string | null, fileName?: string | null): { label: string; color: string; bg: string } {
+  const ext = (fileName ?? '').split('.').pop()?.toLowerCase() ?? '';
+  const t = (fileType ?? '').toLowerCase();
+  const is = (type: string, ...exts: string[]) => t === type || (!fileType && exts.includes(ext));
+  if (is('csv', 'csv'))                                     return { label: 'CSV',   color: '#34D399', bg: 'rgba(52,211,153,0.1)' };
+  if (is('image', 'jpg', 'jpeg', 'png', 'webp', 'gif'))     return { label: 'Image', color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)' };
+  if (is('svg', 'svg'))                                     return { label: 'SVG',   color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)' };
+  if (is('dxf', 'dxf'))                                     return { label: 'DXF',   color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' };
+  if (is('xml', 'xml'))                                     return { label: 'XML',   color: '#A78BFA', bg: 'rgba(167,139,250,0.1)' };
+  if (is('html', 'html', 'htm'))                            return { label: 'HTML',  color: '#FBBF24', bg: 'rgba(251,191,36,0.1)' };
+  if (is('spreadsheet', 'xlsx', 'xls', 'xlsm'))             return { label: 'XLSX',  color: '#34D399', bg: 'rgba(52,211,153,0.1)' };
+  return { label: 'PDF', color: '#F87171', bg: 'rgba(248,113,113,0.1)' };
+}
+
 function PlanTypeBadge({ fileType, fileName }: { fileType: string | null; fileName?: string | null }) {
-  const isCsv = fileType === 'csv' || (!fileType && (fileName ?? '').toLowerCase().endsWith('.csv'));
-  const color = isCsv ? '#34D399' : '#F87171';
-  const bg    = isCsv ? 'rgba(52,211,153,0.1)' : 'rgba(248,113,113,0.1)';
+  const { label, color, bg } = planBadgeMeta(fileType, fileName);
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, fontWeight: 700, padding: '3px 7px', borderRadius: 5, background: bg, color, flexShrink: 0 }}>
-      {isCsv ? <IcoCsv /> : <IcoPdf />}
-      {isCsv ? 'CSV' : 'PDF'}
+      {label === 'CSV' ? <IcoCsv /> : <IcoPdf />}
+      {label}
     </span>
   );
 }
@@ -297,6 +310,24 @@ function formatTime(iso: string) {
 }
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+// Map an uploaded file's extension → the file_type stored on job_drawings.
+function detectPlanFileType(ext: string): string {
+  switch (ext.toLowerCase()) {
+    case 'csv':  return 'csv';
+    case 'pdf':  return 'pdf';
+    case 'svg':  return 'svg';
+    case 'html': return 'html';
+    case 'dxf':  return 'dxf';
+    case 'xml':  return 'xml';
+    case 'xlsx':
+    case 'xls':  return 'spreadsheet';
+    case 'jpg':
+    case 'jpeg':
+    case 'png':
+    case 'webp': return 'image';
+    default:     return ext || 'file';
+  }
 }
 // Short relative time for plan-view timestamps ("2 hours ago", "Yesterday").
 function relativeTime(iso: string): string {
@@ -1493,7 +1524,7 @@ export default function SupervisorPage() {
     setPlanUploading(true);
     try {
       const ext      = (planFile.name.split('.').pop() ?? 'bin').toLowerCase();
-      const fileType = ext === 'csv' ? 'csv' : 'pdf';
+      const fileType = detectPlanFileType(ext);
       const path     = `${tenant!.id}/${Date.now()}.${ext}`;
       const { error: uploadErr } = await supabase.storage.from('job-plans').upload(path, planFile, { upsert: true });
       if (uploadErr) throw uploadErr;
@@ -3039,10 +3070,10 @@ export default function SupervisorPage() {
                 </div>
 
                 <div style={{ marginBottom: 14 }}>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>File (PDF or CSV) *</label>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>File (PDF, CSV, image, SVG, DXF, XML, HTML, or spreadsheet) *</label>
                   <input
                     type="file"
-                    accept=".pdf,.csv"
+                    accept=".pdf,.csv,.svg,.html,.dxf,.xml,.xlsx,.xls,.jpg,.jpeg,.png,.webp"
                     onChange={(e) => setPlanFile(e.target.files?.[0] ?? null)}
                     style={{ fontSize: 13, color: 'var(--ink-dim)', width: '100%' }}
                   />
