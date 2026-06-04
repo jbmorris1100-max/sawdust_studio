@@ -1,11 +1,56 @@
 'use client';
 import Link from 'next/link';
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
-import { useSession } from '@/lib/useSession';
-import { trialDaysLeft } from '@/lib/auth';
+import { trialDaysLeft, type Tenant } from '@/lib/auth';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
+
+// ── Crew tenant resolver ───────────────────────────────────────────────────────
+// Crew never need to log in. Resolution order:
+//   1. invite-link tenant in localStorage (crew_tenant_id) → load by id, no login
+//   2. logged-in session (e.g. a supervisor previewing the crew view)
+//   3. neither → redirect to /join ("ask your supervisor for the crew link")
+function useCrewTenant() {
+  const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  const [tenant,  setTenant]  = useState<Tenant | null>(null);
+  const [email,   setEmail]   = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      // 1. Invite-link tenant (no login required)
+      let inviteId = '';
+      try { inviteId = localStorage.getItem('crew_tenant_id') || localStorage.getItem('@inline_join_tenant_id') || ''; } catch (_) {}
+      if (inviteId) {
+        try {
+          const { data } = await supabase.from('tenants').select('*').eq('id', inviteId).single();
+          if (!cancelled && data) {
+            try { localStorage.setItem('crew_tenant_id', inviteId); } catch (_) {}
+            setTenant(data as Tenant); setEmail(''); setLoading(false);
+            return;
+          }
+        } catch (_) {}
+      }
+      // 2. Logged-in session
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          if (!cancelled) setEmail(session.user.email ?? '');
+          const { data } = await supabase.from('tenants').select('*').eq('owner_user_id', session.user.id).single();
+          if (!cancelled && data) { setTenant(data as Tenant); setLoading(false); return; }
+        }
+      } catch (_) {}
+      // 3. Neither — send them to the join page
+      if (!cancelled) router.replace('/join');
+    })();
+    return () => { cancelled = true; };
+  }, [router]);
+
+  return { loading, tenant, email };
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -368,7 +413,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function CrewPage() {
-  const { loading: sessionLoading, tenant, email } = useSession();
+  const { loading: sessionLoading, tenant, email } = useCrewTenant();
 
   // Page data
   const [clockEntries, setClockEntries] = useState<TimeEntry[]>([]);

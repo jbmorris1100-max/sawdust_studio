@@ -42,7 +42,10 @@ function JoinInner() {
 
   function enterAsCrew() {
     if (!tenantId) return;
-    try { localStorage.setItem('@inline_join_tenant_id', tenantId); } catch (_) {}
+    try {
+      localStorage.setItem('crew_tenant_id', tenantId);
+      localStorage.setItem('@inline_join_tenant_id', tenantId); // legacy key
+    } catch (_) {}
     router.push('/app/crew');
   }
 
