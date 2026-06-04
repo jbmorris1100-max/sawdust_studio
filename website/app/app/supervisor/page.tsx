@@ -1296,7 +1296,7 @@ export default function SupervisorPage() {
   // Silent on any failure: the mapper just stays empty for manual selection.
   async function runAiColumnMapping(headers: string[], rows: CsvRow[]) {
     try {
-      const res = await fetch('/api/map-columns', {
+      const res = await fetch('/app/api/map-columns', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ headers, sampleRows: rows.slice(0, 3) }),
