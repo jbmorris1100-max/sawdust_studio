@@ -5,6 +5,7 @@ import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
 import { useSession } from '@/lib/useSession';
 import { trialDaysLeft } from '@/lib/auth';
+import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -304,6 +305,9 @@ export default function CrewPage() {
   // New-message notification banner
   const [msgNotification, setMsgNotification] = useState<string | null>(null);
   const notifTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Universal file viewer (Part 2) — inline, no new tabs
+  const [viewerFile, setViewerFile] = useState<ViewerFile | null>(null);
 
   // Modal state
   const [modal,     setModal]     = useState<ModalType>(null);
@@ -2221,7 +2225,8 @@ export default function CrewPage() {
                           </button>
                         )}
                         {url ? (
-                          <a href={url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.1)', padding: '5px 12px', borderRadius: 8, textDecoration: 'none', flexShrink: 0 }}>Open</a>
+                          <button onClick={() => setViewerFile({ url, name, fileType: d.file_type, parsed: !!d.parsed, jobPath: d.job_name ? `${d.job_name}/Drawings` : undefined })}
+                            style={{ fontSize: 12, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.1)', padding: '5px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>Open</button>
                         ) : (
                           <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>No link</span>
                         )}
@@ -2965,6 +2970,8 @@ export default function CrewPage() {
           </div>
         </div>
       )}
+
+      {viewerFile && <FileViewer file={viewerFile} onClose={() => setViewerFile(null)} />}
     </>
   );
 }

@@ -9,6 +9,8 @@ import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
 import ReportsTab from './ReportsTab';
 import SetupWizard from './SetupWizard';
 import AssemblyTab from './AssemblyTab';
+import FileViewer, { type ViewerFile } from '@/components/FileViewer';
+import JobSearch, { type SearchTarget } from '@/components/JobSearch';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -522,6 +524,18 @@ export default function SupervisorPage() {
   const [briefLoading, setBriefLoading] = useState(false);
   const [briefError,   setBriefError]   = useState<string | null>(null);
   const briefAutoRun   = useRef(false);
+
+  // Universal file viewer (Part 2) + job search routing (Part 1)
+  const [viewerFile, setViewerFile] = useState<ViewerFile | null>(null);
+  const handleSearchSelect = useCallback((t: SearchTarget) => {
+    if (t.kind === 'file') {
+      setViewerFile({ url: t.url, name: t.name, fileType: t.fileType, parsed: t.parsed, jobPath: t.jobPath ?? undefined });
+    } else if (t.kind === 'cutlist' || t.kind === 'drawings' || t.kind === 'job') {
+      setTab('plans');
+    } else if (t.kind === 'cabinet') {
+      setTab('assembly');
+    }
+  }, []);
 
   // Damage filter tab
   const [damageFilter, setDamageFilter] = useState<'all' | 'damaged' | 'missing' | 'wrong_part'>('all');
@@ -1685,6 +1699,13 @@ export default function SupervisorPage() {
             ))}
           </div>
 
+          {/* Universal job search — always visible (Part 1) */}
+          {tenant && (
+            <div style={{ marginBottom: 24 }}>
+              <JobSearch tenantId={tenant.id} onSelect={handleSearchSelect} />
+            </div>
+          )}
+
           {/* Tabs — desktop only */}
           <div className="hidden md:flex" style={{ gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 24 }}>
             {tabs.map(({ key, label, count }) => (
@@ -2766,7 +2787,8 @@ export default function SupervisorPage() {
                             </div>
                             <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
                               {p.file_url && (
-                                <a href={p.file_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.1)', padding: '5px 12px', borderRadius: 8, textDecoration: 'none' }}>View</a>
+                                <button onClick={() => setViewerFile({ url: p.file_url!, name: p.file_name || p.label || 'file', fileType: p.file_type, parsed: !!p.parsed, jobPath: p.job_number ? `Job ${p.job_number}` : undefined })}
+                                  style={{ fontSize: 12, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.1)', padding: '5px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>View</button>
                               )}
                               <ActionBtn label="Delete" color="#F87171" onClick={() => handlePlanDelete(p.id)} />
                             </div>
@@ -3675,6 +3697,8 @@ export default function SupervisorPage() {
       )}
 
       {toast && <Toast msg={toast.msg} error={toast.error} />}
+
+      {viewerFile && <FileViewer file={viewerFile} onClose={() => setViewerFile(null)} />}
     </>
   );
 }
