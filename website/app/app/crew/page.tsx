@@ -222,6 +222,39 @@ async function logShiftEvent(params: {
   }
 }
 
+// ── Crew member registry (auto-registration on clock-in) ─────────────────────
+// Ensures every crew member who clocks in exists in crew_members. Returns the
+// crew_member id (or null) so the time_clock row can be linked to it.
+//   - new name → insert an 'active' record (name, dept, joined_at, last_active)
+//   - known name → bump last_active to now
+async function registerCrewMember(tenantId: string, name: string, dept: string | null): Promise<string | null> {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const now = new Date().toISOString();
+  try {
+    const { data: existing } = await supabase
+      .from('crew_members')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .ilike('name', trimmed)
+      .limit(1)
+      .maybeSingle();
+    if (existing?.id) {
+      try { await supabase.from('crew_members').update({ last_active: now }).eq('id', existing.id); } catch (_) {}
+      return existing.id as string;
+    }
+    const { data: inserted } = await supabase
+      .from('crew_members')
+      .insert({ tenant_id: tenantId, name: trimmed, department: dept, status: 'active', joined_at: now, last_active: now })
+      .select('id')
+      .single();
+    return (inserted as { id: string } | null)?.id ?? null;
+  } catch (e) {
+    console.error('[crew_member]', e);
+    return null;
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatTime(iso: string) {
@@ -800,6 +833,22 @@ export default function CrewPage() {
     localStorage.setItem('crew_dept', dept);
     setCrewName(name);
     setCrewDept(dept);
+  }
+
+  // "Not [name]?" — clear the saved identity so a different crew member can use
+  // this same device, then drop straight into the clock-in lookup with a blank name.
+  function switchUser() {
+    try {
+      localStorage.removeItem('crew_name');
+      localStorage.removeItem('crew_dept');
+    } catch (_) {}
+    setCrewName('');
+    setCrewDept('');
+    setClockName('');
+    setClockDept('');
+    setOpenEntry(null);
+    setClockStep('lookup');
+    setModal('clock');
   }
 
   // ── Open modal helpers ──────────────────────────────────────────────────────
@@ -1472,6 +1521,18 @@ export default function CrewPage() {
         setOpenEntry(data as TimeEntry);
         setClockStep('clockout');
       } else {
+        // Known crew member? Pre-fill their department from the roster.
+        try {
+          const { data: member } = await supabase
+            .from('crew_members')
+            .select('department')
+            .eq('tenant_id', tenant!.id)
+            .ilike('name', name)
+            .limit(1)
+            .maybeSingle();
+          const dept = (member as { department: string | null } | null)?.department;
+          if (dept) setClockDept(dept);
+        } catch (_) { /* roster lookup is best-effort */ }
         setClockStep('clockin');
       }
     } catch (_) {
@@ -1488,6 +1549,9 @@ export default function CrewPage() {
     try {
       const now  = new Date().toISOString();
       const date = new Date().toISOString().split('T')[0];
+      // Auto-register (or refresh) this crew member so the supervisor roster
+      // always reflects everyone who has ever clocked in.
+      const crewMemberId = await registerCrewMember(tenant!.id, name, dept);
       const payload = {
         worker_name: name,
         dept,
@@ -1498,7 +1562,7 @@ export default function CrewPage() {
         tenant_id:   tenant!.id,
       };
       const { data: insertedRow, error } = await supabase
-        .from('time_clock').insert({ ...payload, current_dept: dept }).select('id').single();
+        .from('time_clock').insert({ ...payload, current_dept: dept, crew_member_id: crewMemberId }).select('id').single();
       if (error) throw error;
       const clockId = (insertedRow as { id: string }).id;
       localStorage.setItem('active_time_clock_id', clockId);
@@ -2055,6 +2119,12 @@ export default function CrewPage() {
                     style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 2, display: 'flex', lineHeight: 1 }}
                   >
                     <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  </button>
+                  <button
+                    onClick={switchUser}
+                    style={{ fontSize: 12, color: 'var(--ink-mute)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0', fontFamily: 'inherit', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
+                  >
+                    Not {crewName}?
                   </button>
                 </div>
               )}

@@ -9,6 +9,7 @@ import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
 import ReportsTab from './ReportsTab';
 import SetupWizard from './SetupWizard';
 import AssemblyTab from './AssemblyTab';
+import CrewTab from './CrewTab';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import JobSearch, { type SearchTarget } from '@/components/JobSearch';
 import PushPrompt from '@/components/PushPrompt';
@@ -236,7 +237,7 @@ type PipelineRow = {
   cabinetsCut: number;  // production_status cut+
 };
 
-type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'assembly' | 'settings';
+type Tab = 'overview' | 'crew' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'assembly' | 'settings';
 
 type AiMode = 'learn' | 'assist' | 'autonomous';
 
@@ -1800,6 +1801,7 @@ export default function SupervisorPage() {
 
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: 'overview',      label: 'Overview' },
+    { key: 'crew',          label: 'Crew' },
     { key: 'assembly',      label: 'Assembly' },
     { key: 'messages',      label: 'Messages',    count: messages.length },
     { key: 'needs',         label: 'Inventory',   count: openNeeds.length },
@@ -2407,6 +2409,11 @@ export default function SupervisorPage() {
               </div>
 
             </div>
+          )}
+
+          {/* ── Crew tab ──────────────────────────────────────────────────────── */}
+          {tab === 'crew' && tenant && (
+            <CrewTab tenant={tenant} departments={departments} showToast={showToast} />
           )}
 
           {/* ── Messages tab — Inbox ──────────────────────────────────────────── */}
@@ -3850,6 +3857,14 @@ export default function SupervisorPage() {
               <div style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(94,234,212,0.2)', margin: '14px auto 10px' }} />
               {(
                 [
+                  { key: 'crew' as Tab, label: 'Crew', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                      <circle cx="9" cy="7" r="4"/>
+                      <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                    </svg>
+                  )},
                   { key: 'assembly' as Tab, label: 'Assembly', icon: (
                     <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="2" y="3" width="20" height="14" rx="2"/>

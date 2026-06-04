@@ -73,7 +73,6 @@ export async function GET(req: Request) {
     // ── Per-tenant time_clock aggregates ──────────────────────────────────────
     // Pull a bounded set of clock rows and fold them in JS (admin scale = small).
     const lastActive: Record<string, string> = {};
-    const crewNames: Record<string, Set<string>> = {};
     const clockCount: Record<string, number> = {};
     try {
       const { data: clockRows } = await db
@@ -86,10 +85,21 @@ export async function GET(req: Request) {
         if (!tid) continue;
         const ts = r.clock_in ?? r.created_at;
         if (ts && (!lastActive[tid] || ts > lastActive[tid])) lastActive[tid] = ts;
-        if (r.worker_name) (crewNames[tid] ??= new Set()).add(r.worker_name);
         clockCount[tid] = (clockCount[tid] ?? 0) + 1;
       }
     } catch { /* time_clock may be empty */ }
+
+    // ── Per-tenant crew counts (from crew_members — the authoritative roster) ──
+    const crewCount: Record<string, number> = {};
+    try {
+      const { data: crewRows } = await db
+        .from('crew_members')
+        .select('tenant_id')
+        .limit(20000);
+      for (const r of (crewRows ?? []) as { tenant_id: string }[]) {
+        if (r.tenant_id) crewCount[r.tenant_id] = (crewCount[r.tenant_id] ?? 0) + 1;
+      }
+    } catch { /* crew_members table optional */ }
 
     // ── Per-tenant job counts ────────────────────────────────────────────────
     const jobCount: Record<string, number> = {};
@@ -107,7 +117,7 @@ export async function GET(req: Request) {
     const enriched = tenants.map((t) => ({
       ...t,
       lastActive: lastActive[t.id] ?? null,
-      crewCount: crewNames[t.id]?.size ?? 0,
+      crewCount: crewCount[t.id] ?? 0,
       jobCount: jobCount[t.id] ?? 0,
       clockCount: clockCount[t.id] ?? 0,
       daysSinceSignup: Math.max(0, Math.floor((now - new Date(t.created_at).getTime()) / 86400000)),
