@@ -2316,6 +2316,15 @@ export default function CrewPage() {
             </div>
           </div>
 
+          {/* ── Minimal app footer ───────────────────────────────────────── */}
+          <div style={{ marginTop: 40, paddingTop: 20, borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'center', gap: 10, fontSize: 12, color: 'var(--ink-mute)' }}>
+            <span>© 2026 InlineIQ</span>
+            <span>·</span>
+            <Link href="/terms" style={{ color: 'var(--ink-mute)', textDecoration: 'none' }}>Terms</Link>
+            <span>·</span>
+            <Link href="/privacy" style={{ color: 'var(--ink-mute)', textDecoration: 'none' }}>Privacy</Link>
+          </div>
+
         </main>
       </div>
 

@@ -3558,6 +3558,15 @@ export default function SupervisorPage() {
             <ReportsTab tenantId={tenant.id} showToast={showToast} />
           )}
 
+          {/* ── Minimal app footer ───────────────────────────────────────── */}
+          <div style={{ marginTop: 40, paddingTop: 20, borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'center', gap: 10, fontSize: 12, color: 'var(--ink-mute)' }}>
+            <span>© 2026 InlineIQ</span>
+            <span>·</span>
+            <Link href="/terms" style={{ color: 'var(--ink-mute)', textDecoration: 'none' }}>Terms</Link>
+            <span>·</span>
+            <Link href="/privacy" style={{ color: 'var(--ink-mute)', textDecoration: 'none' }}>Privacy</Link>
+          </div>
+
           {/* Mobile bottom-nav spacer — pushes content above the fixed bar */}
           <div className="block md:hidden" style={{ height: 'calc(64px + env(safe-area-inset-bottom))' }} />
 
