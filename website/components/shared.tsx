@@ -80,6 +80,23 @@ export function Nav() {
 }
 
 export function Footer() {
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  // Surface the /admin link only when signed in as the platform owner.
+  useEffect(() => {
+    const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL;
+    if (!adminEmail) return;
+    let cancelled = false;
+    import('@/lib/supabase').then(({ supabase }) => {
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (cancelled) return;
+        const email = session?.user.email?.toLowerCase();
+        if (email && email === adminEmail.toLowerCase()) setIsAdmin(true);
+      });
+    });
+    return () => { cancelled = true; };
+  }, []);
+
   return (
     <footer id="contact">
       <div className="container foot">
@@ -91,9 +108,12 @@ export function Footer() {
         <div className="foot-links">
           <a href="/#features">Features</a>
           <Link href="/pricing">Pricing</Link>
-          <a href="#">Privacy</a>
-          <a href="#">Terms</a>
+          <Link href="/privacy">Privacy</Link>
+          <Link href="/terms">Terms</Link>
           <a href="mailto:hello@inlineiq.app">hello@inlineiq.app</a>
+          {isAdmin && (
+            <Link href="/admin" style={{ color: 'var(--ink-mute)', opacity: 0.6, fontSize: 12 }}>Admin</Link>
+          )}
         </div>
         <div className="foot-copy">© 2026 InlineIQ, Inc.</div>
       </div>
