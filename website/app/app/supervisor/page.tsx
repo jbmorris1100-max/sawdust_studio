@@ -13,6 +13,7 @@ import CrewTab from './CrewTab';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import JobSearch, { type SearchTarget } from '@/components/JobSearch';
 import PushPrompt from '@/components/PushPrompt';
+import OfflineBanner from '@/components/OfflineBanner';
 import { sendNotify } from '@/lib/notify';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -86,12 +87,15 @@ type JobDrawing = {
   file_type: string | null;
   departments: string[] | null;
   parsed: boolean | null;
+  version: number | null;
+  superseded_by: string | null;
+  is_current: boolean | null;
 };
 
 type CsvRow = Record<string, string>;
 
 const JOB_DRAWING_COLS =
-  'id, tenant_id, job_number, label, file_url, file_name, uploaded_by, created_at, file_type, departments, parsed';
+  'id, tenant_id, job_number, label, file_url, file_name, uploaded_by, created_at, file_type, departments, parsed, version, superseded_by, is_current';
 
 function parsePlanCSV(text: string): { headers: string[]; rows: CsvRow[] } {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
@@ -293,6 +297,19 @@ function formatTime(iso: string) {
 }
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+// Short relative time for plan-view timestamps ("2 hours ago", "Yesterday").
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins  = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days  = Math.floor(diff / 86400000);
+  if (mins < 1)   return 'just now';
+  if (mins < 60)  return `${mins} min${mins !== 1 ? 's' : ''} ago`;
+  if (hours < 24) return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+  if (days === 1) return 'Yesterday';
+  if (days < 30)  return `${days} days ago`;
+  return formatDate(iso);
 }
 // Due-date colour coding: green 7+ · amber 3-6 · red 1-2 · pulsing red overdue
 function dueMeta(dateStr: string): { label: string; color: string; overdue: boolean } {
@@ -504,6 +521,12 @@ export default function SupervisorPage() {
   const [planLabel,     setPlanLabel]     = useState('');
   const [planUploading, setPlanUploading] = useState(false);
   const [planDepts,     setPlanDepts]     = useState<string[]>(['all']);
+  // Version-conflict prompt when a plan with the same job + name already exists.
+  const [versionConflict, setVersionConflict] = useState<JobDrawing | null>(null);
+  // Per-plan "viewed by" expansion + cached view rows (Crew Viewed Confirmation).
+  const [expandedViewsId, setExpandedViewsId] = useState<string | null>(null);
+  const [planViews,       setPlanViews]       = useState<Record<string, { viewer_name: string; viewed_at: string }[]>>({});
+  const [crewRoster,      setCrewRoster]      = useState<string[]>([]);
 
   // Plans CSV → cabinet_units + parts mapper
   const [planCsvHeaders,      setPlanCsvHeaders]      = useState<string[]>([]);
@@ -1437,8 +1460,36 @@ export default function SupervisorPage() {
     });
   }
 
+  // Plan name a plan would carry — used for both upload and duplicate detection.
+  function planNameFor(): string {
+    return planLabel.trim() || planFile?.name || '';
+  }
+
+  // Find a current plan with the same job + name (case-insensitive) → version conflict.
+  function findDuplicatePlan(): JobDrawing | null {
+    const job  = planJobNum.trim().toLowerCase();
+    const name = planNameFor().toLowerCase();
+    if (!job || !name) return null;
+    return plans.find((p) =>
+      (p.is_current !== false) &&
+      (p.job_number ?? '').toLowerCase() === job &&
+      (p.label ?? p.file_name ?? '').toLowerCase() === name,
+    ) ?? null;
+  }
+
   async function handlePlanUpload() {
     if (!planFile || !planJobNum.trim() || planUploading) return;
+    // A current plan with the same job + name already exists → ask how to proceed.
+    const dup = findDuplicatePlan();
+    if (dup) { setVersionConflict(dup); return; }
+    await performPlanUpload(null);
+  }
+
+  // Perform the actual upload. When `replace` is provided, the new file becomes
+  // version N+1 and the old record is marked superseded.
+  async function performPlanUpload(replace: JobDrawing | null) {
+    if (!planFile || !planJobNum.trim() || planUploading) return;
+    setVersionConflict(null);
     setPlanUploading(true);
     try {
       const ext      = (planFile.name.split('.').pop() ?? 'bin').toLowerCase();
@@ -1448,6 +1499,7 @@ export default function SupervisorPage() {
       if (uploadErr) throw uploadErr;
       const { data: { publicUrl } } = supabase.storage.from('job-plans').getPublicUrl(path);
       const departments = planDepts.length ? planDepts : ['all'];
+      const newVersion = replace ? (replace.version ?? 1) + 1 : 1;
       const { data: inserted, error: dbErr } = await supabase.from('job_drawings').insert({
         tenant_id:   tenant!.id,
         job_id:      planJobNum.trim(),          // job_id is NOT NULL — mirror the job/project value
@@ -1458,8 +1510,20 @@ export default function SupervisorPage() {
         file_type:   fileType,
         departments,
         uploaded_by: 'Supervisor',
+        version:     newVersion,
+        is_current:  true,
       }).select(JOB_DRAWING_COLS).single();
       if (dbErr) throw dbErr;
+
+      // Supersede the old version: point it at the new record and hide it from "current".
+      if (replace) {
+        try {
+          await supabase.from('job_drawings')
+            .update({ is_current: false, superseded_by: (inserted as JobDrawing).id })
+            .eq('id', replace.id);
+        } catch (_) { /* best-effort */ }
+        setPlans((prev) => prev.map((p) => p.id === replace.id ? { ...p, is_current: false, superseded_by: (inserted as JobDrawing).id } : p));
+      }
       setPlans((prev) => [inserted as JobDrawing, ...prev]);
 
       if (fileType === 'csv') {
@@ -1488,13 +1552,73 @@ export default function SupervisorPage() {
         setPlanJobNum('');
         setPlanLabel('');
         setPlanDepts(['all']);
-        showToast('Plan uploaded');
+        showToast(newVersion > 1 ? `Version ${newVersion} uploaded` : 'Plan uploaded');
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Upload failed';
       showToast(msg, true);
     } finally {
       setPlanUploading(false);
+    }
+  }
+
+  // Restore a superseded plan as the current version (supervisor action).
+  async function handleRestoreVersion(plan: JobDrawing) {
+    try {
+      // Demote whatever is currently current for this job + name.
+      const job  = (plan.job_number ?? '').toLowerCase();
+      const name = (plan.label ?? plan.file_name ?? '').toLowerCase();
+      const current = plans.find((p) =>
+        p.id !== plan.id && p.is_current !== false &&
+        (p.job_number ?? '').toLowerCase() === job &&
+        (p.label ?? p.file_name ?? '').toLowerCase() === name,
+      );
+      const nextVersion = Math.max(...plans
+        .filter((p) => (p.job_number ?? '').toLowerCase() === job && (p.label ?? p.file_name ?? '').toLowerCase() === name)
+        .map((p) => p.version ?? 1)) + 1;
+      if (current) {
+        await supabase.from('job_drawings').update({ is_current: false, superseded_by: plan.id }).eq('id', current.id);
+      }
+      await supabase.from('job_drawings').update({ is_current: true, superseded_by: null, version: nextVersion }).eq('id', plan.id);
+      setPlans((prev) => prev.map((p) => {
+        if (p.id === plan.id)            return { ...p, is_current: true, superseded_by: null, version: nextVersion };
+        if (current && p.id === current.id) return { ...p, is_current: false, superseded_by: plan.id };
+        return p;
+      }));
+      showToast(`Restored as version ${nextVersion}`);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Restore failed', true);
+    }
+  }
+
+  // Lazy-load the crew who have viewed a plan (Crew Viewed Confirmation).
+  async function togglePlanViews(planId: string) {
+    if (expandedViewsId === planId) { setExpandedViewsId(null); return; }
+    setExpandedViewsId(planId);
+    // Load the crew roster once so we can flag who has never viewed.
+    if (crewRoster.length === 0 && tenant) {
+      try {
+        const { data } = await supabase
+          .from('crew_members').select('name').eq('tenant_id', tenant.id).eq('status', 'active');
+        setCrewRoster(((data as { name: string }[]) ?? []).map((r) => r.name));
+      } catch (_) { /* roster optional */ }
+    }
+    if (planViews[planId]) return;
+    try {
+      const { data } = await supabase
+        .from('plan_views')
+        .select('viewer_name, viewed_at')
+        .eq('plan_id', planId)
+        .order('viewed_at', { ascending: false });
+      // Keep only the most recent view per crew member.
+      const seen = new Set<string>();
+      const rows = ((data as { viewer_name: string; viewed_at: string }[]) ?? []).filter((r) => {
+        if (seen.has(r.viewer_name)) return false;
+        seen.add(r.viewer_name); return true;
+      });
+      setPlanViews((prev) => ({ ...prev, [planId]: rows }));
+    } catch (_) {
+      setPlanViews((prev) => ({ ...prev, [planId]: [] }));
     }
   }
 
@@ -1869,6 +1993,8 @@ export default function SupervisorPage() {
         </div>
 
         {isTrial && <TrialBanner days={days} />}
+
+        <OfflineBanner tenantId={tenant?.id} onSynced={loadAll} />
 
         {tenant && <PushPrompt tenantId={tenant.id} userType="supervisor" userName="Supervisor" />}
 
@@ -3038,17 +3164,40 @@ export default function SupervisorPage() {
                         <div style={{ padding: '10px 20px', background: 'rgba(167,139,250,0.05)', borderBottom: '1px solid var(--line)', fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#A78BFA' }}>
                           {jobKey}
                         </div>
-                        {items.map((p) => (
-                          <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px', borderBottom: '1px solid var(--line)' }}>
+                        {items.map((p) => {
+                          const superseded = p.is_current === false;
+                          const ver = p.version ?? 1;
+                          const views = planViews[p.id];
+                          const viewedNames = new Set((views ?? []).map((v) => v.viewer_name));
+                          const neverViewed = crewRoster.filter((n) => !viewedNames.has(n));
+                          return (
+                          <div key={p.id} style={{ borderBottom: '1px solid var(--line)', opacity: superseded ? 0.6 : 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px' }}>
                             <PlanTypeBadge fileType={p.file_type} fileName={p.file_name} />
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.label || p.file_name || 'Untitled'}</div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.label || p.file_name || 'Untitled'}</span>
+                                {ver > 1 && (
+                                  <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(94,234,212,0.12)', color: 'var(--teal)', flexShrink: 0 }}>v{ver}</span>
+                                )}
+                                {superseded && (
+                                  <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(139,165,160,0.15)', color: '#8BA5A0', flexShrink: 0 }}>Superseded</span>
+                                )}
+                              </div>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 5, flexWrap: 'wrap' }}>
                                 <DeptPills departments={p.departments} />
                                 {p.file_type === 'csv' && p.parsed && (
                                   <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(52,211,153,0.12)', color: '#34D399' }}>Parsed</span>
                                 )}
                                 <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{formatDate(p.created_at)}</span>
+                                {!superseded && (
+                                  <button
+                                    onClick={() => void togglePlanViews(p.id)}
+                                    style={{ fontSize: 11, color: 'var(--ink-mute)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline', textDecorationStyle: 'dotted', padding: 0 }}
+                                  >
+                                    {views ? `Viewed by ${viewedNames.size} crew member${viewedNames.size !== 1 ? 's' : ''}` : 'View status'}
+                                  </button>
+                                )}
                               </div>
                             </div>
                             <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
@@ -3056,10 +3205,38 @@ export default function SupervisorPage() {
                                 <button onClick={() => setViewerFile({ url: p.file_url!, name: p.file_name || p.label || 'file', fileType: p.file_type, parsed: !!p.parsed, jobPath: p.job_number ? `Job ${p.job_number}` : undefined })}
                                   style={{ fontSize: 12, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.1)', padding: '5px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>View</button>
                               )}
+                              {superseded && (
+                                <button onClick={() => void handleRestoreVersion(p)}
+                                  style={{ fontSize: 12, fontWeight: 700, color: 'var(--teal)', background: 'rgba(94,234,212,0.1)', padding: '5px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>Make current</button>
+                              )}
                               <ActionBtn label="Delete" color="#F87171" onClick={() => handlePlanDelete(p.id)} />
                             </div>
                           </div>
-                        ))}
+                          {/* Viewed-by expansion */}
+                          {expandedViewsId === p.id && (
+                            <div style={{ padding: '0 20px 14px 58px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                              {(views ?? []).map((v) => (
+                                <div key={v.viewer_name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12 }}>
+                                  <span style={{ color: 'var(--ink-dim)' }}>{v.viewer_name}</span>
+                                  <span style={{ color: 'var(--ink-mute)' }}>{relativeTime(v.viewed_at)}</span>
+                                </div>
+                              ))}
+                              {neverViewed.map((n) => (
+                                <div key={n} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12 }}>
+                                  <span style={{ color: '#FBBF24' }}>{n}</span>
+                                  <span style={{ color: '#FBBF24', display: 'flex', alignItems: 'center', gap: 5 }}>
+                                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#FBBF24' }} />Never viewed
+                                  </span>
+                                </div>
+                              ))}
+                              {(views ?? []).length === 0 && neverViewed.length === 0 && (
+                                <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>No crew roster yet.</span>
+                              )}
+                            </div>
+                          )}
+                          </div>
+                          );
+                        })}
                       </div>
                     ));
                   })()}
@@ -4056,6 +4233,29 @@ export default function SupervisorPage() {
       {toast && <Toast msg={toast.msg} error={toast.error} />}
 
       {viewerFile && <FileViewer file={viewerFile} onClose={() => setViewerFile(null)} />}
+
+      {/* ── Plan version-conflict modal ── */}
+      {versionConflict && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 20 }} onClick={() => setVersionConflict(null)}>
+          <div className="portal-card" style={{ width: '100%', maxWidth: 460, display: 'flex', flexDirection: 'column', gap: 16 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: 'var(--ink)' }}>Plan already exists</h3>
+            <p style={{ fontSize: 13.5, color: 'var(--ink-dim)', lineHeight: 1.6, margin: 0 }}>
+              A plan named <b style={{ color: 'var(--ink)' }}>{versionConflict.label || versionConflict.file_name}</b> already exists for this job. What would you like to do?
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <button className="btn btn-primary" style={{ justifyContent: 'center' }} onClick={() => void performPlanUpload(versionConflict)}>
+                Replace (new version v{(versionConflict.version ?? 1) + 1})
+              </button>
+              <button className="btn btn-ghost" style={{ justifyContent: 'center' }} onClick={() => void performPlanUpload(null)}>
+                Keep both
+              </button>
+              <button className="btn btn-ghost" style={{ justifyContent: 'center', color: 'var(--ink-mute)' }} onClick={() => setVersionConflict(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

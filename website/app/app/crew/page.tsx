@@ -7,6 +7,8 @@ import { supabase } from '@/lib/supabase';
 import { trialDaysLeft, getDepartments, type Tenant } from '@/lib/auth';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import PushPrompt from '@/components/PushPrompt';
+import OfflineBanner from '@/components/OfflineBanner';
+import { enqueue, pendingCount } from '@/lib/offlineQueue';
 import { sendNotify } from '@/lib/notify';
 
 // ── Crew tenant resolver ───────────────────────────────────────────────────────
@@ -90,6 +92,9 @@ type Drawing = {
   parsed: boolean | null;
   uploaded_by: string | null;
   created_at: string;
+  version: number | null;
+  superseded_by: string | null;
+  is_current: boolean | null;
 };
 
 type PartsListPart = {
@@ -260,6 +265,17 @@ async function registerCrewMember(tenantId: string, name: string, dept: string |
 function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
+
+// "Updated 2 days ago" style label for plan version timestamps.
+function updatedAgo(iso: string): string {
+  const days  = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  const hours = Math.floor((Date.now() - new Date(iso).getTime()) / 3600000);
+  if (hours < 1)  return 'Updated just now';
+  if (hours < 24) return `Updated ${hours} hour${hours !== 1 ? 's' : ''} ago`;
+  if (days === 1) return 'Updated yesterday';
+  if (days < 30)  return `Updated ${days} days ago`;
+  return `Updated ${new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+}
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
@@ -403,12 +419,13 @@ function NewMsgBanner({ preview, onDismiss }: { preview: string; onDismiss: () =
   );
 }
 
-function Toast({ msg, error }: { msg: string; error?: boolean }) {
+function Toast({ msg, error, pending }: { msg: string; error?: boolean; pending?: boolean }) {
+  const bg    = pending ? '#FBBF24' : error ? '#F87171' : '#34D399';
+  const color = pending ? '#1a1400' : error ? '#fff' : '#001a0d';
   return (
     <div style={{
       position: 'fixed', bottom: 28, left: '50%', transform: 'translateX(-50%)',
-      zIndex: 400, background: error ? '#F87171' : '#34D399',
-      color: error ? '#fff' : '#001a0d',
+      zIndex: 400, background: bg, color,
       padding: '12px 24px', borderRadius: 10, fontWeight: 700, fontSize: 14,
       boxShadow: '0 4px 24px rgba(0,0,0,0.5)', whiteSpace: 'nowrap',
     }}>
@@ -474,7 +491,7 @@ export default function CrewPage() {
   // Modal state
   const [modal,     setModal]     = useState<ModalType>(null);
   const [saving,    setSaving]    = useState(false);
-  const [toast,     setToast]     = useState<{ msg: string; error?: boolean } | null>(null);
+  const [toast,     setToast]     = useState<{ msg: string; error?: boolean; pending?: boolean } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Clock modal
@@ -501,6 +518,7 @@ export default function CrewPage() {
   // Plans modal
   const [drawings,     setDrawings]     = useState<Drawing[]>([]);
   const [plansLoading, setPlansLoading] = useState(false);
+  const [showOldPlans, setShowOldPlans] = useState(false);
 
   // Parts List modal (assembly checklist launched from a parsed CSV plan)
   const [partsListJob,      setPartsListJob]      = useState<string | null>(null);
@@ -737,6 +755,13 @@ export default function CrewPage() {
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }, []);
 
+  // Amber "(pending sync)" toast for actions queued while offline.
+  const showPending = useCallback((msg: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ msg, pending: true });
+    toastTimer.current = setTimeout(() => setToast(null), 3000);
+  }, []);
+
   const reloadClock = useCallback(async () => {
     if (!tenant) return;
     try {
@@ -952,12 +977,13 @@ export default function CrewPage() {
 
   async function openPlans() {
     setDrawings([]);
+    setShowOldPlans(false);
     setModal('plans');
     setPlansLoading(true);
     try {
       const { data } = await supabase
         .from('job_drawings')
-        .select('id, tenant_id, job_number, job_name, plan_name, label, file_url, external_url, file_name, file_type, departments, parsed, uploaded_by, created_at')
+        .select('id, tenant_id, job_number, job_name, plan_name, label, file_url, external_url, file_name, file_type, departments, parsed, uploaded_by, created_at, version, superseded_by, is_current')
         .eq('tenant_id', tenant!.id)
         .order('created_at', { ascending: false });
       if (data) {
@@ -970,6 +996,24 @@ export default function CrewPage() {
       }
     } catch (_) {}
     setPlansLoading(false);
+  }
+
+  // Silently record that this crew member viewed a plan (Crew Viewed Confirmation).
+  function recordPlanView(planId: string) {
+    if (!tenant || !crewName) return;
+    try {
+      void supabase.from('plan_views').insert({
+        tenant_id:   tenant.id,
+        plan_id:     planId,
+        viewer_name: crewName,
+      });
+    } catch (_) { /* view tracking best-effort */ }
+  }
+
+  // Open a plan file in the viewer and log the view.
+  function openPlanFile(plan: Drawing, file: ViewerFile) {
+    recordPlanView(plan.id);
+    setViewerFile(file);
   }
 
   // Load a cabinet unit + its parts into the assembly scan checklist.
@@ -1203,10 +1247,50 @@ export default function CrewPage() {
 
   async function handleAssemblyScanConfirm() {
     if (!assemblyScanUnit || assemblyScanConfirming || !tenant) return;
+
+    const flaggedEntries = Object.entries(assemblyScanFlags);
+    const hasFlagged     = flaggedEntries.length > 0;
+
+    // Offline — queue the scan (part status updates + unit status + any flags).
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const updates = assemblyScanParts.map((p) => {
+        const flag = assemblyScanFlags[p.id];
+        return {
+          id:         p.id,
+          status:     flag ? flag.type : (assemblyScanChecked[p.id] ? 'checked' : 'pending'),
+          checked_at: assemblyScanChecked[p.id] ? new Date().toISOString() : null,
+          checked_by: crewName || null,
+          flag_type:  flag?.type  || null,
+          flag_notes: flag?.notes || null,
+        };
+      });
+      const damage_reports = flaggedEntries.map(([partId, flag]) => {
+        const part = assemblyScanParts.find((pp) => pp.id === partId);
+        return {
+          part_name:       part?.part_name ?? 'Unknown part',
+          dept:            'Assembly',
+          status:          'open',
+          flag_type:       flag.type,
+          notes:           flag.notes || null,
+          cabinet_unit_id: assemblyScanUnit.id,
+          job_id:          assemblyScanUnit.job_number,
+          assembler_name:  crewName || null,
+        };
+      });
+      enqueue('part_scan', {
+        updates,
+        cabinet_unit_id: assemblyScanUnit.id,
+        unit_status:     hasFlagged ? 'flagged' : 'complete',
+        damage_reports,
+      });
+      setAssemblyScanDone(true);
+      showPending('Scan saved (pending sync)');
+      setTimeout(() => { setAssemblyScanDone(false); closeModal(); }, 2000);
+      return;
+    }
+
     setAssemblyScanConfirming(true);
     try {
-      const flaggedEntries = Object.entries(assemblyScanFlags);
-      const hasFlagged     = flaggedEntries.length > 0;
 
       // Update all part statuses
       await Promise.all(assemblyScanParts.map((p) => {
@@ -1545,10 +1629,23 @@ export default function CrewPage() {
     const name = clockName.trim();
     const dept = clockDept;
     if (!name || !dept || saving) return;
+    const now  = new Date().toISOString();
+    const date = now.split('T')[0];
+
+    // Offline — queue the clock-in and mark active locally so the timer runs.
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      enqueue('clock_in', { worker_name: name, dept, clock_in: now, date });
+      const pendingId = `pending-${Date.now()}`;
+      try { localStorage.setItem('active_time_clock_id', pendingId); } catch (_) {}
+      setActiveTimeClockId(pendingId);
+      saveIdentity(name, dept);
+      closeModal();
+      showPending(`${name} clocked in (pending sync)`);
+      return;
+    }
+
     setSaving(true);
     try {
-      const now  = new Date().toISOString();
-      const date = new Date().toISOString().split('T')[0];
       // Auto-register (or refresh) this crew member so the supervisor roster
       // always reflects everyone who has ever clocked in.
       const crewMemberId = await registerCrewMember(tenant!.id, name, dept);
@@ -1643,6 +1740,21 @@ export default function CrewPage() {
 
   async function handleClockOut() {
     if (!openEntry || saving) return;
+
+    // Offline — queue the clock-out and clear local active state.
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const now = new Date().toISOString();
+      enqueue('clock_out', { worker_name: openEntry.worker_name, clock_out: now });
+      try { localStorage.removeItem('active_time_clock_id'); } catch (_) {}
+      setActiveTimeClockId(null);
+      setOnBreak(false);
+      setBreakStartTime(null);
+      try { localStorage.removeItem('on_break'); localStorage.removeItem('break_start_time'); } catch (_) {}
+      closeModal();
+      showPending(`${openEntry.worker_name} clocked out (pending sync)`);
+      return;
+    }
+
     setSaving(true);
     try {
       // Auto-end break if active
@@ -1712,6 +1824,16 @@ export default function CrewPage() {
     const item = invItem.trim();
     const dept = invDept.trim();
     if (!item || !dept || saving) return;
+
+    // Offline — queue the inventory need.
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      enqueue('inventory_need', { item, dept, qty: 1, job_number: invJobNum.trim() || null });
+      saveIdentity(crewName, dept);
+      closeModal();
+      showPending('Inventory need saved (pending sync)');
+      return;
+    }
+
     setSaving(true);
     try {
       const { error } = await supabase.from('inventory_needs').insert({
@@ -1813,6 +1935,17 @@ export default function CrewPage() {
 
   async function handleDamageSubmit() {
     if (saving) return;
+
+    // Offline — queue the report text now; the photo needs a live connection.
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const dept = dmgDept.trim() || crewDept || 'Unknown';
+      enqueue('damage_report', { part_name: dmgWhat.trim() || 'Damage report', dept, notes: null });
+      saveIdentity(crewName, dept);
+      closeModal();
+      showPending(dmgPhoto ? 'Report saved — photo will upload when online' : 'Damage report saved (pending sync)');
+      return;
+    }
+
     setSaving(true);
     try {
       let photoUrl: string | null = null;
@@ -1985,9 +2118,12 @@ export default function CrewPage() {
   // Conversation messages sorted oldest-first for display
   const openThreadMsgs = openThread === 'supervisor' ? [...supervisorMsgs].reverse() : [];
 
-  // Group drawings by job number for plans modal
+  // Group drawings by job number for plans modal. Superseded versions are hidden
+  // unless the crew member toggles "Show older versions".
+  const supersededCount = drawings.filter((d) => d.is_current === false).length;
+  const visibleDrawings = showOldPlans ? drawings : drawings.filter((d) => d.is_current !== false);
   const drawingGroups: Record<string, Drawing[]> = {};
-  drawings.forEach((d) => {
+  visibleDrawings.forEach((d) => {
     const key = d.job_number || 'Unknown';
     if (!drawingGroups[key]) drawingGroups[key] = [];
     drawingGroups[key].push(d);
@@ -2087,6 +2223,8 @@ export default function CrewPage() {
 
         {isTrial && <TrialBanner days={days} />}
         {msgNotification && <NewMsgBanner preview={msgNotification} onDismiss={() => { setMsgNotification(null); if (notifTimer.current) clearTimeout(notifTimer.current); }} />}
+
+        <OfflineBanner tenantId={tenant?.id} onSynced={() => { void reloadClock(); }} />
 
         {tenant && <PushPrompt tenantId={tenant.id} userType="crew" userName={crewName || undefined} />}
 
@@ -2691,12 +2829,22 @@ export default function CrewPage() {
                     const url = d.file_url || d.external_url;
                     const name = d.plan_name || d.label || d.file_name || 'Untitled';
                     const isCsv = d.file_type === 'csv' || (d.file_name ?? '').toLowerCase().endsWith('.csv');
+                    const ver = d.version ?? 1;
+                    const superseded = d.is_current === false;
                     return (
-                      <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
+                      <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--line)', opacity: superseded ? 0.5 : 1 }}>
                         <PlanTypeBadge fileType={d.file_type} fileName={d.file_name} />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{name}</div>
-                          <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 2 }}>{d.job_name ? `${d.job_name} · ` : ''}{d.uploaded_by ? `${d.uploaded_by} · ` : ''}{formatDate(d.created_at)}</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{name}</span>
+                            {ver > 1 && !superseded && (
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 20, background: 'rgba(45,225,201,0.12)', color: '#2DE1C9', flexShrink: 0 }}>v{ver}</span>
+                            )}
+                            {superseded && (
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 20, background: 'rgba(139,165,160,0.15)', color: '#8BA5A0', flexShrink: 0 }}>Old v{ver}</span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 2 }}>{d.job_name ? `${d.job_name} · ` : ''}{ver > 1 ? updatedAgo(d.created_at) : (d.uploaded_by ? `${d.uploaded_by} · ${formatDate(d.created_at)}` : formatDate(d.created_at))}</div>
                         </div>
                         {isCsv && d.parsed && d.job_number && (
                           <button
@@ -2707,7 +2855,7 @@ export default function CrewPage() {
                           </button>
                         )}
                         {url ? (
-                          <button onClick={() => setViewerFile({ url, name, fileType: d.file_type, parsed: !!d.parsed, jobPath: d.job_name ? `${d.job_name}/Drawings` : undefined })}
+                          <button onClick={() => openPlanFile(d, { url, name, fileType: d.file_type, parsed: !!d.parsed, jobPath: d.job_name ? `${d.job_name}/Drawings` : undefined })}
                             style={{ fontSize: 12, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.1)', padding: '5px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>Open</button>
                         ) : (
                           <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>No link</span>
@@ -2717,6 +2865,16 @@ export default function CrewPage() {
                   })}
                 </div>
               ))}
+
+              {/* Show older versions toggle */}
+              {supersededCount > 0 && (
+                <button
+                  onClick={() => setShowOldPlans((v) => !v)}
+                  style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline', textDecorationStyle: 'dotted', alignSelf: 'center', padding: 6 }}
+                >
+                  {showOldPlans ? 'Hide older versions' : `Show older versions (${supersededCount})`}
+                </button>
+              )}
             </div>
           )}
         </ModalOverlay>
@@ -3466,7 +3624,7 @@ export default function CrewPage() {
       {/* Hidden canvas for video frame capture */}
       <canvas ref={canvasRef} style={{ display: 'none' }} />
 
-      {toast && <Toast msg={toast.msg} error={toast.error} />}
+      {toast && <Toast msg={toast.msg} error={toast.error} pending={toast.pending} />}
 
       {/* ── Success flash overlays ── */}
       {(dmgFlash || partFlash) && (
