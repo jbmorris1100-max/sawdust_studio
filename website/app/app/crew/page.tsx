@@ -2006,7 +2006,7 @@ export default function CrewPage() {
                 Switch Role
               </Link>
             </div>
-            <h2 style={{ fontSize: 28 }}>{tenant?.shop_name}</h2>
+            <h2 style={{ fontSize: 28 }}>{tenant?.shop_name ?? 'My Shop'}</h2>
             <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 14, color: 'var(--ink-dim)' }}>
                 {activeCrew.length} crew member{activeCrew.length !== 1 ? 's' : ''} clocked in

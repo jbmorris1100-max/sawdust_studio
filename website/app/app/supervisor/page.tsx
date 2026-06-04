@@ -1768,7 +1768,7 @@ export default function SupervisorPage() {
           <div style={{ marginBottom: 32, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
             <div>
               <div className="eyebrow" style={{ marginBottom: 8 }}>Supervisor Dashboard</div>
-              <h2 style={{ fontSize: 28 }}>{tenant?.shop_name}</h2>
+              <h2 style={{ fontSize: 28 }}>{tenant?.shop_name ?? 'My Shop'}</h2>
               <Link
                 href="/app"
                 style={{ fontSize: 12, color: 'var(--ink-mute)', display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 8, textDecoration: 'none' }}

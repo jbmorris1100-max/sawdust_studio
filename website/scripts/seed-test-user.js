@@ -39,7 +39,7 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
 
 const TEST_EMAIL    = 'user@inlineiq.app';
 const TEST_PASSWORD = '1';
-const SHOP_NAME     = 'InlineIQ Demo Shop';
+const SHOP_NAME     = process.env.SEED_SHOP_NAME ?? 'My Shop';
 
 async function seed() {
   console.log('Seeding test account…\n');
