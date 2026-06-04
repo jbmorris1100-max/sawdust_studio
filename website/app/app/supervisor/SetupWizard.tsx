@@ -119,6 +119,9 @@ export default function SetupWizard({ tenant, onComplete }: Props) {
   const [shopName,  setShopName]  = useState(tenant.shop_name ?? '');
   const [depts,     setDepts]     = useState<string[]>([]);
   const [deptError, setDeptError] = useState(false);
+  const [showCustom,  setShowCustom]  = useState(false);
+  const [customInput, setCustomInput] = useState('');
+  const [customErr,   setCustomErr]   = useState('');
   const [jobClient, setJobClient] = useState('');
   const [jobRoom,   setJobRoom]   = useState('');
   const [jobDue,    setJobDue]    = useState('');
@@ -143,6 +146,20 @@ export default function SetupWizard({ tenant, onComplete }: Props) {
     finally { setSaving(false); }
     setStep(2);
   }
+
+  // Add a custom department (selected by default). Validates length/dupes/empty.
+  function addCustomDept() {
+    const v = customInput.trim();
+    if (!v) { setCustomErr('Enter a department name'); return; }
+    if (v.length > 20) { setCustomErr('Max 20 characters'); return; }
+    const taken = [...DEPT_OPTIONS.map((o) => o.name), ...depts].some((n) => n.toLowerCase() === v.toLowerCase());
+    if (taken) { setCustomErr('That department already exists'); return; }
+    setDepts((prev) => [...prev, v]);
+    setCustomInput(''); setCustomErr(''); setShowCustom(false); setDeptError(false);
+  }
+
+  // Custom depts = selected names that aren't one of the four defaults.
+  const customDepts = depts.filter((d) => !DEPT_OPTIONS.some((o) => o.name === d));
 
   // Step 2 → 3 (save departments)
   async function goStep3() {
@@ -273,7 +290,70 @@ export default function SetupWizard({ tenant, onComplete }: Props) {
                   </button>
                 );
               })}
+
+              {/* Custom department cards */}
+              {customDepts.map((name) => (
+                <div
+                  key={name}
+                  style={{
+                    padding: '14px 16px', borderRadius: 12, minHeight: 48,
+                    textAlign: 'left', display: 'flex', alignItems: 'center', gap: 12,
+                    background: 'rgba(45,225,201,0.08)', border: '1.5px solid #2DE1C9',
+                  }}
+                >
+                  <span style={{
+                    width: 20, height: 20, flexShrink: 0, borderRadius: 5,
+                    border: '1.5px solid #2DE1C9', background: '#2DE1C9',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#001917" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 14.5, fontWeight: 700, color: '#2DE1C9' }}>{name}</span>
+                    <span style={{ display: 'block', fontSize: 12.5, color: '#8BA5A0', marginTop: 2 }}>Custom department</span>
+                  </span>
+                  <button
+                    onClick={() => setDepts((prev) => prev.filter((x) => x !== name))}
+                    aria-label={`Remove ${name}`}
+                    style={{ flexShrink: 0, width: 28, height: 28, borderRadius: 7, background: 'none', border: '1px solid rgba(94,234,212,0.15)', color: '#8BA5A0', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'inherit' }}
+                  >
+                    <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+              ))}
             </div>
+
+            {/* Add custom department */}
+            {!showCustom ? (
+              <button
+                onClick={() => { setShowCustom(true); setCustomErr(''); }}
+                style={{ ...S.btnGhost, width: '100%', minHeight: 42, fontSize: 13, marginBottom: 14 }}
+              >
+                + Add custom department
+              </button>
+            ) : (
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    autoFocus
+                    style={{ ...S.input, flex: 1, padding: '11px 14px', fontSize: 14 }}
+                    value={customInput}
+                    maxLength={20}
+                    placeholder="e.g. CNC, Hardware, Install Crew"
+                    onChange={(e) => { setCustomInput(e.target.value); setCustomErr(''); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomDept(); } }}
+                  />
+                  <button
+                    onClick={addCustomDept}
+                    style={{ ...S.btnPrimary(!customInput.trim()), width: 'auto', minHeight: 44, marginTop: 0, padding: '0 20px', fontSize: 14 }}
+                    disabled={!customInput.trim()}
+                  >
+                    Add
+                  </button>
+                </div>
+                {customErr && <div style={{ fontSize: 12.5, color: '#F87171', marginTop: 6 }}>{customErr}</div>}
+              </div>
+            )}
 
             {deptError && depts.length === 0 && (
               <div style={{ fontSize: 13, color: '#F87171', marginBottom: 14 }}>Please select at least one department.</div>

@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
+import { DEFAULT_DEPARTMENTS } from '@/lib/auth';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,7 @@ interface Props {
   tenantId: string;
   showToast: (msg: string, error?: boolean) => void;
   jobs?: Job[];
+  departments?: string[];
 }
 
 // ── SVG icons (thin stroke, no emoji) ─────────────────────────────────────────
@@ -117,7 +119,8 @@ function dimLabel(p: AssemblyPart): string {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export default function AssemblyTab({ tenantId, showToast }: Props) {
+export default function AssemblyTab({ tenantId, showToast, departments }: Props) {
+  const deptOptions = departments && departments.length ? departments : DEFAULT_DEPARTMENTS;
   const [units,       setUnits]       = useState<CabinetUnit[]>([]);
   const [allParts,    setAllParts]    = useState<AssemblyPart[]>([]);
   const [loading,     setLoading]     = useState(true);
@@ -494,10 +497,9 @@ export default function AssemblyTab({ tenantId, showToast }: Props) {
                 style={{ width: '100%', cursor: 'pointer' }}
               >
                 <option value="">All Departments</option>
-                <option value="Production">Production</option>
-                <option value="Assembly">Assembly</option>
-                <option value="Finishing">Finishing</option>
-                <option value="Craftsman">Craftsman</option>
+                {deptOptions.map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
               </select>
             </div>
 

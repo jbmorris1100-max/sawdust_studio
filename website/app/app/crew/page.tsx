@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
-import { trialDaysLeft, type Tenant } from '@/lib/auth';
+import { trialDaysLeft, getDepartments, type Tenant } from '@/lib/auth';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 
 // ── Crew tenant resolver ───────────────────────────────────────────────────────
@@ -414,6 +414,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 export default function CrewPage() {
   const { loading: sessionLoading, tenant, email } = useCrewTenant();
+  // Department list for every crew dropdown — from tenant, falling back to defaults.
+  const deptOptions = getDepartments(tenant);
 
   // Page data
   const [clockEntries, setClockEntries] = useState<TimeEntry[]>([]);
@@ -2355,10 +2357,9 @@ export default function CrewPage() {
               <Field label="Department">
                 <select className="form-input" value={clockDept} onChange={(e) => setClockDept(e.target.value)} autoFocus style={{ cursor: 'pointer' }}>
                   <option value="">Select department…</option>
-                  <option value="Production">Production</option>
-                  <option value="Assembly">Assembly</option>
-                  <option value="Finishing">Finishing</option>
-                  <option value="Craftsman">Craftsman</option>
+                  {deptOptions.map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
                 </select>
               </Field>
               <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
@@ -2755,10 +2756,9 @@ export default function CrewPage() {
               style={{ cursor: 'pointer' }}
             >
               <option value="">Select department…</option>
-              <option value="Production">Production</option>
-              <option value="Assembly">Assembly</option>
-              <option value="Finishing">Finishing</option>
-              <option value="Craftsman">Craftsman</option>
+              {deptOptions.map((d) => (
+                <option key={d} value={d}>{d}</option>
+              ))}
             </select>
           </Field>
           <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>

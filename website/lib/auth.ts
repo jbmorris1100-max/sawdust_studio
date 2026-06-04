@@ -10,6 +10,16 @@ export type Tenant = {
   departments: string[] | null;
 };
 
+// Default departments used when a tenant has not customized its list.
+export const DEFAULT_DEPARTMENTS = ['Production', 'Assembly', 'Finishing', 'Craftsman'];
+
+// Resolve the department list for a tenant, falling back to the defaults
+// when departments is null/empty. Used by every department dropdown in the app.
+export function getDepartments(tenant: Pick<Tenant, 'departments'> | null | undefined): string[] {
+  const d = tenant?.departments;
+  return Array.isArray(d) && d.length > 0 ? d : DEFAULT_DEPARTMENTS;
+}
+
 export function trialDaysLeft(trial_ends_at: string | null): number {
   if (!trial_ends_at) return 0;
   const ms = new Date(trial_ends_at).getTime() - Date.now();

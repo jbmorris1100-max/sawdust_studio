@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
 import { useSession } from '@/lib/useSession';
-import { trialDaysLeft } from '@/lib/auth';
+import { trialDaysLeft, getDepartments } from '@/lib/auth';
 import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
 import ReportsTab from './ReportsTab';
 import SetupWizard from './SetupWizard';
@@ -86,8 +86,6 @@ type JobDrawing = {
 };
 
 type CsvRow = Record<string, string>;
-
-const PLAN_DEPTS = ['Production', 'Assembly', 'Finishing', 'Craftsman'] as const;
 
 const JOB_DRAWING_COLS =
   'id, tenant_id, job_number, label, file_url, file_name, uploaded_by, created_at, file_type, departments, parsed';
@@ -236,7 +234,7 @@ type PipelineRow = {
   cabinetsCut: number;  // production_status cut+
 };
 
-type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'assembly';
+type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'assembly' | 'settings';
 
 type AiMode = 'learn' | 'assist' | 'autonomous';
 
@@ -612,6 +610,51 @@ export default function SupervisorPage() {
     setToast({ msg, error });
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }, []);
+
+  // ── Departments (Settings tab) ───────────────────────────────────────────────
+  // `departments` is the committed list every dropdown reads from. `deptDraft`
+  // is the editable buffer in the Settings tab, persisted on Save.
+  const [departments, setDepartments] = useState<string[]>([]);
+  const [deptDraft,   setDeptDraft]   = useState<string[]>([]);
+  const [deptInput,   setDeptInput]   = useState('');
+  const [deptErr,     setDeptErr]     = useState('');
+  const [deptSaving,  setDeptSaving]  = useState(false);
+
+  useEffect(() => {
+    if (!tenant) return;
+    const d = getDepartments(tenant);
+    setDepartments(d);
+    setDeptDraft(d);
+  }, [tenant]);
+
+  const deptDirty = JSON.stringify(deptDraft) !== JSON.stringify(departments);
+
+  function addDeptToDraft() {
+    const v = deptInput.trim();
+    if (!v) { setDeptErr('Enter a department name'); return; }
+    if (v.length > 20) { setDeptErr('Max 20 characters'); return; }
+    if (deptDraft.some((d) => d.toLowerCase() === v.toLowerCase())) { setDeptErr('That department already exists'); return; }
+    setDeptDraft((prev) => [...prev, v]);
+    setDeptInput(''); setDeptErr('');
+  }
+
+  async function saveDepartments() {
+    if (!tenant || deptSaving) return;
+    const cleaned = deptDraft.map((d) => d.trim()).filter(Boolean);
+    if (cleaned.length === 0) { setDeptErr('Keep at least one department'); return; }
+    setDeptSaving(true);
+    try {
+      const { error } = await supabase.from('tenants').update({ departments: cleaned }).eq('id', tenant.id);
+      if (error) throw error;
+      setDepartments(cleaned);
+      setDeptDraft(cleaned);
+      showToast('Departments saved');
+    } catch (_) {
+      showToast('Could not save departments', true);
+    } finally {
+      setDeptSaving(false);
+    }
+  }
 
   // ── Data load ───────────────────────────────────────────────────────────────
 
@@ -1676,9 +1719,8 @@ export default function SupervisorPage() {
         severity: 'alert',
       });
     });
-    const allDepts = ['Production', 'Assembly', 'Finishing', 'Craftsman'];
     const activeDepts = new Set(activeCrew.map((c) => c.dept));
-    allDepts.forEach((dept) => {
+    departments.forEach((dept) => {
       if (!activeDepts.has(dept)) flags.push({
         trigger: `No ${dept} crew clocked in today`,
         action:  `Check if ${dept} is scheduled today.`,
@@ -1686,7 +1728,7 @@ export default function SupervisorPage() {
       });
     });
     return flags;
-  }, [activeCrew, openNeeds, openDamage]);
+  }, [activeCrew, openNeeds, openDamage, departments]);
 
   if (sessionLoading) return <Spinner />;
 
@@ -1704,6 +1746,7 @@ export default function SupervisorPage() {
     { key: 'ai',            label: 'AI' },
     { key: 'integrations',  label: 'Integrations' },
     { key: 'reports',       label: 'Reports' },
+    { key: 'settings',      label: 'Settings' },
   ];
 
   // ── Thread computation for Messages tab ────────────────────────────────────
@@ -2046,7 +2089,7 @@ export default function SupervisorPage() {
                   'Moving to Next Stage': { color: '#60A5FA', bg: 'rgba(96,165,250,0.1)',    order: 3 },
                   'Passed QC':            { color: '#34D399', bg: 'rgba(52,211,153,0.1)',    order: 4 },
                 };
-                const NEXT_DEPTS = ['Production', 'Assembly', 'Finishing', 'Craftsman', 'Installation'];
+                const NEXT_DEPTS = Array.from(new Set([...departments, 'Installation']));
                 const grouped: Record<string, PartLog[]> = {};
                 parts.forEach((p) => {
                   const k = p.status;
@@ -2316,10 +2359,9 @@ export default function SupervisorPage() {
                     style={{ width: '100%', cursor: 'pointer' }}
                   >
                     <option value="">All Departments (broadcast)</option>
-                    <option value="Production">Production</option>
-                    <option value="Assembly">Assembly</option>
-                    <option value="Finishing">Finishing</option>
-                    <option value="Craftsman">Craftsman</option>
+                    {departments.map((d) => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
                   </select>
                 </div>
                 <div style={{ display: 'flex', gap: 10 }}>
@@ -2513,7 +2555,7 @@ export default function SupervisorPage() {
                   onChange={(e) => setSupInvDept(e.target.value)}
                   style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
                 >
-                  {['Production', 'Assembly', 'Finishing', 'Craftsman', 'All Departments'].map((d) => (
+                  {[...departments, 'All Departments'].map((d) => (
                     <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
@@ -2643,7 +2685,7 @@ export default function SupervisorPage() {
                     onChange={(e) => setSupDmgDept(e.target.value)}
                     style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
                   >
-                    {['Production', 'Assembly', 'Finishing', 'Craftsman'].map((d) => (
+                    {departments.map((d) => (
                       <option key={d} value={d}>{d}</option>
                     ))}
                   </select>
@@ -2770,7 +2812,7 @@ export default function SupervisorPage() {
                 <div style={{ marginBottom: 12 }}>
                   <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 7 }}>Visible to departments</label>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {([{ key: 'all', label: 'All Departments' }, ...PLAN_DEPTS.map((d) => ({ key: d, label: d }))]).map(({ key, label }) => {
+                    {([{ key: 'all', label: 'All Departments' }, ...departments.map((d) => ({ key: d, label: d }))]).map(({ key, label }) => {
                       const isAll   = key === 'all';
                       const checked = isAll ? planDepts.includes('all') : planDepts.includes(key);
                       return (
@@ -2968,10 +3010,9 @@ export default function SupervisorPage() {
                     <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Department</label>
                     <select className="form-input" value={sopDept} onChange={(e) => setSopDept(e.target.value)} style={{ cursor: 'pointer' }}>
                       <option value="">All Departments</option>
-                      <option value="Production">Production</option>
-                      <option value="Assembly">Assembly</option>
-                      <option value="Finishing">Finishing</option>
-                      <option value="Craftsman">Craftsman</option>
+                      {departments.map((d) => (
+                        <option key={d} value={d}>{d}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -3540,6 +3581,7 @@ export default function SupervisorPage() {
               tenantId={tenant.id}
               showToast={showToast}
               jobs={jobs}
+              departments={departments}
             />
           )}
 
@@ -3556,6 +3598,74 @@ export default function SupervisorPage() {
           {/* ── Reports tab ──────────────────────────────────────────────── */}
           {tab === 'reports' && tenant && (
             <ReportsTab tenantId={tenant.id} showToast={showToast} />
+          )}
+
+          {/* ── Settings tab ─────────────────────────────────────────────── */}
+          {tab === 'settings' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 640 }}>
+              <div className="portal-card">
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 6 }}>Departments</div>
+                <p style={{ fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6, marginBottom: 16 }}>
+                  These departments power every department dropdown across the app — clock in, messages, inventory, damage, and assembly. Changes apply everywhere once saved.
+                </p>
+
+                {/* Current departments as removable pills */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+                  {deptDraft.length === 0 && (
+                    <span style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No departments yet — add one below.</span>
+                  )}
+                  {deptDraft.map((d) => (
+                    <span key={d} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--teal)', background: 'rgba(94,234,212,0.1)', border: '1px solid var(--line-strong)', borderRadius: 20, padding: '6px 8px 6px 14px' }}>
+                      {d}
+                      <button
+                        onClick={() => { setDeptDraft((prev) => prev.filter((x) => x !== d)); setDeptErr(''); }}
+                        aria-label={`Remove ${d}`}
+                        style={{ width: 20, height: 20, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', border: 'none', color: 'var(--ink-mute)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'inherit' }}
+                      >
+                        <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                      </button>
+                    </span>
+                  ))}
+                </div>
+
+                {/* Add department input */}
+                <div style={{ display: 'flex', gap: 8, marginBottom: deptErr ? 6 : 14 }}>
+                  <input
+                    className="form-input"
+                    value={deptInput}
+                    maxLength={20}
+                    placeholder="e.g. CNC, Hardware, Install Crew"
+                    onChange={(e) => { setDeptInput(e.target.value); setDeptErr(''); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addDeptToDraft(); } }}
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    onClick={addDeptToDraft}
+                    disabled={!deptInput.trim()}
+                    className="btn btn-ghost"
+                    style={{ padding: '0 18px', whiteSpace: 'nowrap', opacity: deptInput.trim() ? 1 : 0.5, cursor: deptInput.trim() ? 'pointer' : 'not-allowed' }}
+                  >
+                    Add Department
+                  </button>
+                </div>
+                {deptErr && <div style={{ fontSize: 12.5, color: 'var(--danger)', marginBottom: 14 }}>{deptErr}</div>}
+
+                {/* Save */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
+                  <button
+                    onClick={saveDepartments}
+                    disabled={!deptDirty || deptSaving || deptDraft.length === 0}
+                    className="btn btn-primary"
+                    style={{ padding: '0 22px', opacity: (!deptDirty || deptSaving || deptDraft.length === 0) ? 0.5 : 1, cursor: (!deptDirty || deptSaving || deptDraft.length === 0) ? 'not-allowed' : 'pointer' }}
+                  >
+                    {deptSaving ? 'Saving…' : 'Save Changes'}
+                  </button>
+                  {deptDirty && !deptSaving && (
+                    <span style={{ fontSize: 12.5, color: 'var(--ink-mute)' }}>Unsaved changes</span>
+                  )}
+                </div>
+              </div>
+            </div>
           )}
 
           {/* ── Minimal app footer ───────────────────────────────────────── */}
@@ -3712,6 +3822,12 @@ export default function SupervisorPage() {
                       <line x1="18" y1="20" x2="18" y2="10"/>
                       <line x1="12" y1="20" x2="12" y2="4"/>
                       <line x1="6" y1="20" x2="6" y2="14"/>
+                    </svg>
+                  )},
+                  { key: 'settings' as Tab, label: 'Settings', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="3"/>
+                      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                     </svg>
                   )},
                 ] as { key: Tab; label: string; icon: React.ReactNode }[]
