@@ -216,6 +216,24 @@ type Job = {
   status: string;
   source?: string | null;
   created_at: string;
+  job_path?: string | null;
+  client_name?: string | null;
+  room_name?: string | null;
+  due_date?: string | null;
+  install_date?: string | null;
+};
+
+// Production pipeline row (Overview)
+type PipelineRow = {
+  jobNumber: string;
+  jobPath: string;
+  dueDate: string | null;
+  cabinetsTotal: number;
+  production: number;   // not_cut | cutting | cut (cut but not yet in assembly)
+  assembly: number;     // in_assembly | flagged
+  finishing: number;    // finishing
+  done: number;         // complete
+  cabinetsCut: number;  // production_status cut+
 };
 
 type Tab = 'overview' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'assembly';
@@ -274,6 +292,14 @@ function formatTime(iso: string) {
 }
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+// Due-date colour coding: green 7+ · amber 3-6 · red 1-2 · pulsing red overdue
+function dueMeta(dateStr: string): { label: string; color: string; overdue: boolean } {
+  const days = Math.ceil((new Date(dateStr).getTime() - Date.now()) / 86400000);
+  const overdue = days < 0;
+  const color = overdue || days <= 2 ? '#F87171' : days <= 6 ? '#FBBF24' : '#34D399';
+  const label = overdue ? `${-days}d overdue` : days === 0 ? 'today' : `in ${days}d`;
+  return { label, color, overdue };
 }
 function elapsed(clockIn: string) {
   const ms = Date.now() - new Date(clockIn).getTime();
@@ -462,7 +488,14 @@ export default function SupervisorPage() {
   const [jobs,           setJobs]           = useState<Job[]>([]);
   const [newJobNum,      setNewJobNum]      = useState('');
   const [newJobName,     setNewJobName]     = useState('');
+  const [newJobClient,   setNewJobClient]   = useState('');
+  const [newJobRoom,     setNewJobRoom]     = useState('');
+  const [newJobDue,      setNewJobDue]      = useState('');
+  const [newJobInstall,  setNewJobInstall]  = useState('');
   const [addingJob,      setAddingJob]      = useState(false);
+
+  // Production pipeline (Overview)
+  const [pipeline, setPipeline] = useState<PipelineRow[]>([]);
 
   // Plans upload
   const [planFile,      setPlanFile]      = useState<File | null>(null);
@@ -602,7 +635,7 @@ export default function SupervisorPage() {
         supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('time_clock').select('id, worker_name, clock_in, clock_out, notes, job_number, total_hours').eq('tenant_id', tenant.id).eq('status', 'craftsman_build').order('clock_in', { ascending: false }).limit(50),
         supabase.from('parts_log').select('*').eq('tenant_id', tenant.id).not('status', 'in', '("Archived")').order('created_at', { ascending: false }).limit(100),
-        supabase.from('jobs').select('id, job_number, job_name, status, source, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
+        supabase.from('jobs').select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, install_date').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
       ]);
       if (plansRes.data)  setPlans(plansRes.data as JobDrawing[]);
       if (sopsRes.data)   setSops(sopsRes.data as SopItem[]);
@@ -637,6 +670,53 @@ export default function SupervisorPage() {
     } catch (_) {}
     setDataLoading(false);
   }, [tenant]);
+
+  // ── Production pipeline loader ─────────────────────────────────────────────
+  const loadPipeline = useCallback(async () => {
+    if (!tenant) return;
+    try {
+      const { data: cabs } = await supabase
+        .from('cabinet_units')
+        .select('job_number, status, production_status')
+        .eq('tenant_id', tenant.id)
+        .limit(5000);
+      const rows = (cabs as { job_number: string | null; status: string | null; production_status: string | null }[]) ?? [];
+      if (rows.length === 0) { setPipeline([]); return; }
+
+      // job_number → { job_path, due_date } (best-effort)
+      const jobMeta: Record<string, { jobPath: string; dueDate: string | null }> = {};
+      try {
+        const { data: jrows } = await supabase
+          .from('jobs').select('job_number, job_path, due_date, status')
+          .eq('tenant_id', tenant.id).eq('status', 'active').limit(500);
+        ((jrows as { job_number: string; job_path: string | null; due_date: string | null }[]) ?? []).forEach((j) => {
+          jobMeta[j.job_number] = { jobPath: j.job_path || `Job ${j.job_number}`, dueDate: j.due_date ?? null };
+        });
+      } catch (_) {}
+
+      const cut = (s: string | null) => !!s && ['cut', 'qa_passed', 'in_assembly', 'complete'].includes(s);
+      const byJob: Record<string, PipelineRow> = {};
+      rows.forEach((c) => {
+        const jn = c.job_number ?? 'unassigned';
+        const meta = jobMeta[jn];
+        // Only surface jobs that still exist & are active (have meta) — otherwise group loosely
+        const row = (byJob[jn] ??= { jobNumber: jn, jobPath: meta?.jobPath || `Job ${jn}`, dueDate: meta?.dueDate ?? null, cabinetsTotal: 0, production: 0, assembly: 0, finishing: 0, done: 0, cabinetsCut: 0 });
+        row.cabinetsTotal++;
+        if (cut(c.production_status)) row.cabinetsCut++;
+        if (c.status === 'complete') row.done++;
+        else if (c.status === 'finishing') row.finishing++;
+        else if (c.status === 'in_assembly' || c.status === 'flagged') row.assembly++;
+        else row.production++;
+      });
+      setPipeline(Object.values(byJob).sort((a, b) => {
+        const ad = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
+        const bd = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
+        return ad - bd;
+      }));
+    } catch (_) { /* column may not exist until migrations run */ }
+  }, [tenant]);
+
+  useEffect(() => { void loadPipeline(); }, [loadPipeline]);
 
   // ── AI handlers ────────────────────────────────────────────────────────────
 
@@ -859,6 +939,12 @@ export default function SupervisorPage() {
       })
       .subscribe();
 
+    // Production pipeline — refresh bars as cabinets move through stages
+    const cabinetsCh = supabase
+      .channel('rt-pipeline-cabinets')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, () => { void loadPipeline(); })
+      .subscribe();
+
     return () => {
       supabase.removeChannel(clockCh);
       supabase.removeChannel(msgCh);
@@ -866,8 +952,9 @@ export default function SupervisorPage() {
       supabase.removeChannel(damageCh);
       supabase.removeChannel(partsCh);
       supabase.removeChannel(jobsCh);
+      supabase.removeChannel(cabinetsCh);
     };
-  }, [tenant]);
+  }, [tenant, loadPipeline]);
 
   // ── Crew timeline ──────────────────────────────────────────────────────────
 
@@ -897,20 +984,32 @@ export default function SupervisorPage() {
   // ── Job handlers ────────────────────────────────────────────────────────────
 
   async function handleAddJob() {
-    const num = newJobNum.trim();
-    if (!num || addingJob || !tenant) return;
+    const num    = newJobNum.trim();
+    const client = newJobClient.trim();
+    const room   = newJobRoom.trim();
+    if ((!num && !client) || addingJob || !tenant) return;
+    const jobPath   = client ? (room ? `${client}/${room}` : client) : null;
+    const jobNumber = num || jobPath || client; // job_number is NOT NULL
     setAddingJob(true);
     try {
-      const { error } = await supabase.from('jobs').insert({
-        job_number: num,
-        job_name:   newJobName.trim() || null,
+      // Only send the new columns when filled, so inserts still work pre-migration.
+      const insert: Record<string, unknown> = {
+        job_number: jobNumber,
+        job_name:   newJobName.trim() || (client ? (room ? `${client} — ${room}` : client) : null),
         status:     'active',
         tenant_id:  tenant.id,
-      });
+      };
+      if (client)        insert.client_name  = client;
+      if (room)          insert.room_name    = room;
+      if (jobPath)       insert.job_path     = jobPath;
+      if (newJobDue)     insert.due_date     = newJobDue;
+      if (newJobInstall) insert.install_date = newJobInstall;
+
+      const { error } = await supabase.from('jobs').insert(insert);
       if (error) throw error;
-      setNewJobNum('');
-      setNewJobName('');
+      setNewJobNum(''); setNewJobName(''); setNewJobClient(''); setNewJobRoom(''); setNewJobDue(''); setNewJobInstall('');
       showToast('Job added');
+      void loadPipeline();
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Insert failed', true);
     } finally {
@@ -1729,6 +1828,42 @@ export default function SupervisorPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
               <style>{`@keyframes craftsPulse{0%,100%{opacity:1}50%{opacity:0.3}}`}</style>
 
+              {/* ── Production Pipeline ── */}
+              {pipeline.length > 0 && (
+                <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
+                  <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                    <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Production Pipeline</span>
+                  </div>
+                  {pipeline.map((p) => {
+                    const total = p.cabinetsTotal || 1;
+                    const seg = (n: number) => `${(n / total) * 100}%`;
+                    return (
+                      <button key={p.jobNumber} onClick={() => setTab('assembly')}
+                        style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--line)', cursor: 'pointer', padding: '14px 20px', fontFamily: 'inherit' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 9, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{p.jobPath.split('/').join(' / ')}</span>
+                          {p.dueDate && (() => { const m = dueMeta(p.dueDate); return (
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: `${m.color}22`, color: m.color, ...(m.overdue ? { animation: 'craftsPulse 1.4s ease-in-out infinite' } : {}) }}>Due {m.label}</span>
+                          ); })()}
+                          <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{p.cabinetsTotal} cabinet{p.cabinetsTotal === 1 ? '' : 's'}</span>
+                        </div>
+                        {/* 4-segment pipeline bar: Production | Assembly | Finishing | Done */}
+                        <div style={{ display: 'flex', height: 9, borderRadius: 5, overflow: 'hidden', background: 'rgba(255,255,255,0.06)' }}>
+                          <div title="Production" style={{ width: seg(p.production), background: '#3a4a46', transition: 'width .3s' }} />
+                          <div title="Assembly"   style={{ width: seg(p.assembly),   background: '#FBBF24', transition: 'width .3s' }} />
+                          <div title="Finishing"  style={{ width: seg(p.finishing),  background: '#60A5FA', transition: 'width .3s' }} />
+                          <div title="Done"       style={{ width: seg(p.done),       background: '#2DE1C9', transition: 'width .3s' }} />
+                        </div>
+                        <div style={{ fontSize: 11.5, color: 'var(--ink-mute)', marginTop: 7 }}>
+                          {p.cabinetsCut}/{p.cabinetsTotal} cabinets cut · {p.assembly} in assembly{p.done ? ` · ${p.done} done` : ''}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               {/* Active crew clock-in table */}
               <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
                 <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)', fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
@@ -2096,32 +2231,41 @@ export default function SupervisorPage() {
                   <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{jobs.filter((j) => j.status === 'active').length} jobs</span>
                 </div>
 
-                {/* Add job row */}
-                <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--line)', display: 'flex', gap: 8 }}>
-                  <input
-                    className="form-input"
-                    placeholder="Job / Project"
-                    value={newJobNum}
-                    onChange={(e) => setNewJobNum(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { void handleAddJob(); } }}
-                    style={{ width: 100, flexShrink: 0 }}
-                  />
-                  <input
-                    className="form-input"
-                    placeholder="Job name (optional)"
-                    value={newJobName}
-                    onChange={(e) => setNewJobName(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { void handleAddJob(); } }}
-                    style={{ flex: 1 }}
-                  />
-                  <button
-                    className="btn btn-primary"
-                    style={{ flexShrink: 0, padding: '8px 14px', fontSize: 13, boxShadow: 'none', opacity: (!newJobNum.trim() || addingJob) ? 0.5 : 1 }}
-                    onClick={handleAddJob}
-                    disabled={!newJobNum.trim() || addingJob}
-                  >
-                    {addingJob ? '…' : '+ Add'}
-                  </button>
+                {/* Add job form */}
+                <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <input className="form-input" placeholder="Client name *" value={newJobClient}
+                      onChange={(e) => setNewJobClient(e.target.value)} style={{ flex: '1 1 160px' }} />
+                    <input className="form-input" placeholder="Room / Area  e.g. Kitchen, Master Bath" value={newJobRoom}
+                      onChange={(e) => setNewJobRoom(e.target.value)} style={{ flex: '1 1 160px' }} />
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <input className="form-input" placeholder="Job / Project # (optional)" value={newJobNum}
+                      onChange={(e) => setNewJobNum(e.target.value)} style={{ flex: '1 1 120px' }} />
+                    <label style={{ flex: '1 1 120px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      <span style={{ fontSize: 10, color: 'var(--ink-mute)', fontWeight: 600 }}>Due date</span>
+                      <input className="form-input" type="date" value={newJobDue} onChange={(e) => setNewJobDue(e.target.value)} />
+                    </label>
+                    <label style={{ flex: '1 1 120px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      <span style={{ fontSize: 10, color: 'var(--ink-mute)', fontWeight: 600 }}>Install date</span>
+                      <input className="form-input" type="date" value={newJobInstall} onChange={(e) => setNewJobInstall(e.target.value)} />
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    {newJobClient.trim() && (
+                      <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
+                        Job path: <b style={{ color: 'var(--teal)' }}>{newJobClient.trim()}{newJobRoom.trim() ? `/${newJobRoom.trim()}` : ''}</b>
+                      </span>
+                    )}
+                    <button
+                      className="btn btn-primary"
+                      style={{ marginLeft: 'auto', flexShrink: 0, padding: '8px 16px', fontSize: 13, boxShadow: 'none', opacity: ((!newJobClient.trim() && !newJobNum.trim()) || addingJob) ? 0.5 : 1 }}
+                      onClick={handleAddJob}
+                      disabled={(!newJobClient.trim() && !newJobNum.trim()) || addingJob}
+                    >
+                      {addingJob ? 'Adding…' : '+ Add Job'}
+                    </button>
+                  </div>
                 </div>
 
                 {jobs.filter((j) => j.status === 'active').length === 0 ? (
@@ -2130,9 +2274,17 @@ export default function SupervisorPage() {
                   jobs.filter((j) => j.status === 'active').map((j) => (
                     <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 20px', borderBottom: '1px solid var(--line)' }}>
                       <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{j.job_number}</span>
-                        {j.job_name && <span style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{j.job_name}</span>}
+                        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{j.job_path ? j.job_path.split('/').join(' / ') : j.job_number}</span>
+                        {j.job_name && !j.job_path && <span style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{j.job_name}</span>}
                         <SourceBadge source={j.source} />
+                        {j.due_date && (() => { const m = dueMeta(j.due_date); return (
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: `${m.color}22`, color: m.color, ...(m.overdue ? { animation: 'craftsPulse 1.4s ease-in-out infinite' } : {}) }}>
+                            Due {m.label}
+                          </span>
+                        ); })()}
+                        {j.install_date && j.install_date !== j.due_date && (
+                          <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>Install {new Date(j.install_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                        )}
                       </div>
                       <button
                         onClick={() => { void handleDeleteJob(j.id); }}

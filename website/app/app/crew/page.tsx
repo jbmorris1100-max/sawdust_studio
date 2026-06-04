@@ -110,7 +110,43 @@ type AssemblyScanPart = {
   quantity: number;
   status: string;
   flag_type: string | null;
+  production_status?: string | null;
 };
+
+// Production handoff (cut tracking)
+type ProdPart = {
+  id: string;
+  part_name: string;
+  material: string | null;
+  width: number | null;
+  height: number | null;
+  depth: number | null;
+  quantity: number;
+  production_status: string | null;
+  cut_by: string | null;
+  cut_at: string | null;
+  cut_photo_url: string | null;
+};
+
+type ProdUnit = {
+  id: string;
+  unit_label: string;
+  job_number: string | null;
+  cabinet_number: string | null;
+  room_number: string | null;
+  status: string;
+  production_status: string | null;
+  partsTotal: number;
+  partsCut: number;
+  jobPath: string;
+  dueDate: string | null;
+};
+
+// A part is "cut" (visible to Assembly) once production has advanced it past cutting.
+const CUT_STATUSES = ['cut', 'qa_passed', 'in_assembly', 'complete'];
+function isPartCut(s: string | null | undefined): boolean {
+  return !!s && CUT_STATUSES.includes(s);
+}
 
 // ── Shift event logger (fire-and-forget) ─────────────────────────────────────
 
@@ -194,6 +230,50 @@ function partsListStatusIcon(status: string, flagType: string | null) {
   if (flagType === 'wrong_part') return <span style={{ color: '#F87171' }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span>;
   if (status === 'checked' || status === 'complete') return <span style={{ color: '#34D399' }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>;
   return <span style={{ color: '#8BA5A0' }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/></svg></span>;
+}
+
+// ── Production cut-status badge (not_cut / cutting / cut) ───────────────────────
+function CutStatusBadge({ status }: { status: string | null | undefined }) {
+  if (status === 'cutting') {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, color: '#FBBF24' }}>
+        <style>{`@keyframes cutPulse{0%,100%{opacity:1}50%{opacity:0.3}}`}</style>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'cutPulse 1.4s ease-in-out infinite' }}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        Cutting
+      </span>
+    );
+  }
+  if (status && ['cut', 'qa_passed', 'in_assembly', 'complete'].includes(status)) {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, color: '#2DE1C9' }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        Cut
+      </span>
+    );
+  }
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, color: '#8BA5A0' }}>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/></svg>
+      Not cut
+    </span>
+  );
+}
+
+// ── Due-date badge (green 7+ · amber 3-6 · red 1-2 · pulsing red overdue) ───────
+function dueBadgeMeta(dueDate: string): { label: string; color: string; overdue: boolean } {
+  const days = Math.ceil((new Date(dueDate).getTime() - Date.now()) / 86400000);
+  const overdue = days < 0;
+  const color = overdue || days <= 2 ? '#F87171' : days <= 6 ? '#FBBF24' : '#34D399';
+  const label = overdue ? `${-days}d overdue` : days === 0 ? 'Due today' : `${days}d`;
+  return { label, color, overdue };
+}
+function DueBadge({ dueDate }: { dueDate: string }) {
+  const { label, color, overdue } = dueBadgeMeta(dueDate);
+  return (
+    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: `${color}22`, color, ...(overdue ? { animation: 'prodPulse 1.4s ease-in-out infinite' } : {}) }}>
+      {label}
+    </span>
+  );
 }
 
 // ── Small UI pieces ────────────────────────────────────────────────────────────
@@ -412,6 +492,20 @@ export default function CrewPage() {
   const [assemblyScanNotFound,  setAssemblyScanNotFound]  = useState(false);
   const [assemblyScanConfirming,setAssemblyScanConfirming]= useState(false);
   const [assemblyScanDone,      setAssemblyScanDone]      = useState(false);
+  // Assembly gating: cabinet whose parts aren't cut yet (blocks the checklist)
+  const [assemblyNotReady,      setAssemblyNotReady]      = useState<{ unit: AssemblyCabinetUnit; parts: AssemblyScanPart[] } | null>(null);
+
+  // ── Production handoff (cut tracking) ──────────────────────────────────────
+  const [prodUnits,    setProdUnits]    = useState<ProdUnit[]>([]);
+  const [prodLoading,  setProdLoading]  = useState(false);
+  const [prodExpanded, setProdExpanded] = useState<Record<string, boolean>>({});
+  const [cutUnit,        setCutUnit]        = useState<ProdUnit | null>(null);
+  const [cutParts,       setCutParts]       = useState<ProdPart[]>([]);
+  const [cutLoading,     setCutLoading]     = useState(false);
+  const [cutPartExpanded,setCutPartExpanded]= useState<Record<string, boolean>>({});
+  const [cutActioning,   setCutActioning]   = useState<Record<string, boolean>>({});
+  const [cutBulkBusy,    setCutBulkBusy]    = useState(false);
+  const [prodFlash,      setProdFlash]      = useState<string | null>(null);
 
   // Camera (shared between damage + parts modals — only one open at a time)
   const videoRef         = useRef<HTMLVideoElement>(null);
@@ -587,6 +681,71 @@ export default function CrewPage() {
     } catch (_) {}
   }, [tenant]);
 
+  // ── Production cut-list loader ─────────────────────────────────────────────
+  const loadProduction = useCallback(async () => {
+    if (!tenant) return;
+    setProdLoading(true);
+    try {
+      const { data: units } = await supabase
+        .from('cabinet_units')
+        .select('id, unit_label, job_number, cabinet_number, room_number, status, production_status')
+        .eq('tenant_id', tenant.id)
+        .neq('production_status', 'complete')
+        .order('job_number', { ascending: true });
+      const unitList = (units as Omit<ProdUnit, 'partsTotal' | 'partsCut' | 'jobPath' | 'dueDate'>[]) ?? [];
+
+      // parts counts per unit
+      const ids = unitList.map((u) => u.id);
+      const counts: Record<string, { total: number; cut: number }> = {};
+      if (ids.length > 0) {
+        const { data: parts } = await supabase
+          .from('parts').select('cabinet_unit_id, production_status').in('cabinet_unit_id', ids);
+        ((parts as { cabinet_unit_id: string; production_status: string | null }[]) ?? []).forEach((p) => {
+          const e = (counts[p.cabinet_unit_id] ??= { total: 0, cut: 0 });
+          e.total++; if (isPartCut(p.production_status)) e.cut++;
+        });
+      }
+
+      // job_path + due_date map (best-effort — column may not exist pre-migration)
+      const jobNums = Array.from(new Set(unitList.map((u) => u.job_number).filter(Boolean))) as string[];
+      const jobMap: Record<string, { jobPath: string; dueDate: string | null }> = {};
+      if (jobNums.length > 0) {
+        try {
+          const { data: jrows } = await supabase
+            .from('jobs').select('job_number, job_path, due_date')
+            .eq('tenant_id', tenant.id).in('job_number', jobNums);
+          ((jrows as { job_number: string; job_path: string | null; due_date: string | null }[]) ?? []).forEach((j) => {
+            jobMap[j.job_number] = { jobPath: j.job_path || `Job ${j.job_number}`, dueDate: j.due_date ?? null };
+          });
+        } catch (_) {}
+      }
+
+      setProdUnits(unitList.map((u) => {
+        const c = counts[u.id] ?? { total: 0, cut: 0 };
+        const jm = u.job_number ? jobMap[u.job_number] : undefined;
+        return { ...u, partsTotal: c.total, partsCut: c.cut, jobPath: jm?.jobPath || (u.job_number ? `Job ${u.job_number}` : 'Unassigned'), dueDate: jm?.dueDate ?? null };
+      }));
+    } catch (_) { /* column may not exist until production_handoff.sql is run */ }
+    setProdLoading(false);
+  }, [tenant]);
+
+  // Load the cut-list whenever this crew member is acting as Production
+  useEffect(() => {
+    if (crewDept === 'Production' && tenant) void loadProduction();
+  }, [crewDept, tenant, loadProduction]);
+
+  // Realtime: refresh the cut-list as cabinets/parts change
+  useEffect(() => {
+    if (!tenant || crewDept !== 'Production') return;
+    const tenantId = tenant.id;
+    const ch = supabase
+      .channel('rt-prod-handoff')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, () => { void loadProduction(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parts', filter: `tenant_id=eq.${tenantId}` }, () => { void loadProduction(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [tenant, crewDept, loadProduction]);
+
   function saveIdentity(name: string, dept: string) {
     localStorage.setItem('crew_name', name);
     localStorage.setItem('crew_dept', dept);
@@ -719,16 +878,28 @@ export default function CrewPage() {
   async function loadCabinetUnit(cabinetUnitId: string) {
     const [unitRes, partsRes] = await Promise.all([
       supabase.from('cabinet_units')
-        .select('id, unit_label, job_number, cabinet_number, room_number, status')
+        .select('id, unit_label, job_number, cabinet_number, room_number, status, production_status')
         .eq('id', cabinetUnitId).single(),
       supabase.from('parts')
-        .select('id, part_name, material, width, height, depth, quantity, status, flag_type')
+        .select('id, part_name, material, width, height, depth, quantity, status, flag_type, production_status')
         .eq('cabinet_unit_id', cabinetUnitId).order('part_name'),
     ]);
     if (unitRes.error) throw unitRes.error;
 
-    const unit  = unitRes.data as AssemblyCabinetUnit;
+    const unit  = unitRes.data as AssemblyCabinetUnit & { production_status?: string | null };
     const parts = (partsRes.data as AssemblyScanPart[]) ?? [];
+
+    // ── Production gate ──────────────────────────────────────────────────────
+    // Assembly may only open the checklist once Production has cut the cabinet.
+    // Cabinets already in assembly/flagged/complete are grandfathered in.
+    const alreadyStarted = ['in_assembly', 'flagged', 'complete'].includes(unit.status);
+    const cabinetCut = isPartCut(unit.production_status);
+    const allPartsCut = parts.length > 0 && parts.every((p) => isPartCut(p.production_status));
+    if (!alreadyStarted && !cabinetCut && !allPartsCut) {
+      setAssemblyNotReady({ unit, parts });
+      return;
+    }
+    setAssemblyNotReady(null);
 
     setAssemblyScanUnit(unit);
     setAssemblyScanParts(parts);
@@ -845,6 +1016,7 @@ export default function CrewPage() {
     setAssemblyScanFlagNotes('');
     setAssemblyScanNotFound(false);
     setAssemblyScanDone(false);
+    setAssemblyNotReady(null);
     setCameraError(null);
     setCameraStarting(false);
     setModal('assemblyScan');
@@ -1001,6 +1173,93 @@ export default function CrewPage() {
     }
   }
 
+  // ── Production: Cabinet Cut View ───────────────────────────────────────────
+  async function openCutView(unit: ProdUnit) {
+    setCutUnit(unit);
+    setCutParts([]);
+    setCutPartExpanded({});
+    setCutLoading(true);
+    try {
+      const { data } = await supabase
+        .from('parts')
+        .select('id, part_name, material, width, height, depth, quantity, production_status, cut_by, cut_at, cut_photo_url')
+        .eq('cabinet_unit_id', unit.id)
+        .order('part_name');
+      setCutParts((data as ProdPart[]) ?? []);
+    } catch (_) {}
+    setCutLoading(false);
+  }
+  function closeCutView() { setCutUnit(null); setCutParts([]); setCutPartExpanded({}); }
+
+  async function markPartStatus(partId: string, status: 'cutting' | 'cut') {
+    if (cutActioning[partId]) return;
+    setCutActioning((a) => ({ ...a, [partId]: true }));
+    const now = new Date().toISOString();
+    const patch: Record<string, unknown> = { production_status: status };
+    if (status === 'cut') { patch.cut_by = crewName || null; patch.cut_at = now; patch.cut_confirmed = true; }
+    setCutParts((ps) => ps.map((p) => p.id === partId
+      ? { ...p, production_status: status, cut_by: status === 'cut' ? (crewName || null) : p.cut_by, cut_at: status === 'cut' ? now : p.cut_at }
+      : p));
+    try {
+      const { error } = await supabase.from('parts').update(patch).eq('id', partId);
+      if (error) throw error;
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Update failed', true);
+    } finally {
+      setCutActioning((a) => ({ ...a, [partId]: false }));
+    }
+  }
+
+  async function markAllStatus(status: 'cutting' | 'cut') {
+    if (!cutUnit || cutBulkBusy || !tenant) return;
+    setCutBulkBusy(true);
+    const now = new Date().toISOString();
+    const patch: Record<string, unknown> = { production_status: status };
+    if (status === 'cut') { patch.cut_by = crewName || null; patch.cut_at = now; patch.cut_confirmed = true; }
+    setCutParts((ps) => ps.map((p) => ({ ...p, production_status: status, cut_by: status === 'cut' ? (crewName || null) : p.cut_by, cut_at: status === 'cut' ? now : p.cut_at })));
+    try {
+      const ids = cutParts.map((p) => p.id);
+      if (ids.length > 0) {
+        const { error } = await supabase.from('parts').update(patch).in('id', ids);
+        if (error) throw error;
+      }
+      await supabase.from('cabinet_units').update({ production_status: status }).eq('id', cutUnit.id);
+
+      if (status === 'cut') {
+        // Notify Assembly crew in real time
+        try {
+          await supabase.from('messages').insert({
+            sender_name: 'Production',
+            body: `${cutUnit.unit_label} — ${cutUnit.jobPath} is ready for assembly`,
+            dept: 'Assembly',
+            tenant_id: tenant.id,
+          });
+        } catch (_) {}
+        setProdFlash('Cabinet ready for assembly');
+        setTimeout(() => { setProdFlash(null); closeCutView(); void loadProduction(); }, 2000);
+      } else {
+        void loadProduction();
+      }
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Update failed', true);
+    } finally {
+      setCutBulkBusy(false);
+    }
+  }
+
+  async function handlePartPhoto(partId: string, file: File) {
+    try {
+      const url = await uploadPhoto(file, 'part-photos');
+      if (!url) return;
+      setCutParts((ps) => ps.map((p) => p.id === partId ? { ...p, cut_photo_url: url } : p));
+      const { error } = await supabase.from('parts').update({ cut_photo_url: url }).eq('id', partId);
+      if (error) throw error;
+      showToast('Photo saved');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Photo upload failed', true);
+    }
+  }
+
   async function openSOPs() {
     setSops([]);
     setModal('sops');
@@ -1133,6 +1392,7 @@ export default function CrewPage() {
   function closeModal() {
     setModal(null);
     setSaving(false);
+    setAssemblyNotReady(null);
     stopCamera();
   }
 
@@ -1760,6 +2020,71 @@ export default function CrewPage() {
               ))}
             </div>
           </div>
+
+          {/* ── Production · Cut List ──────────────────────────────────────────── */}
+          {crewDept === 'Production' && (
+            <div style={{ marginBottom: 40 }}>
+              <style>{`@keyframes prodPulse{0%,100%{opacity:1}50%{opacity:0.35}}`}</style>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Production · Cut List</div>
+              </div>
+
+              {prodLoading && prodUnits.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '28px 0', color: 'var(--ink-mute)', fontSize: 13 }}>Loading cut list…</div>
+              ) : prodUnits.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '28px 0', color: 'var(--ink-mute)', fontSize: 13 }}>No cabinets to cut. New jobs will appear here automatically.</div>
+              ) : (() => {
+                const groups: Record<string, ProdUnit[]> = {};
+                prodUnits.forEach((u) => { (groups[u.jobPath] ??= []).push(u); });
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {Object.entries(groups).map(([jobPath, units]) => {
+                      const cutCount = units.filter((u) => isPartCut(u.production_status)).length;
+                      const total = units.length;
+                      const pct = total ? Math.round((cutCount / total) * 100) : 0;
+                      const open = prodExpanded[jobPath] ?? false;
+                      const jobStatus = cutCount === 0 ? 'Not Started' : cutCount === total ? 'Complete' : 'In Progress';
+                      const statusColor = cutCount === 0 ? '#8BA5A0' : cutCount === total ? '#2DE1C9' : '#FBBF24';
+                      const due = units.find((u) => u.dueDate)?.dueDate ?? null;
+                      return (
+                        <div key={jobPath} style={{ border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden', background: 'var(--bg-1)' }}>
+                          <button onClick={() => setProdExpanded((e) => ({ ...e, [jobPath]: !open }))}
+                            style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', padding: '16px 18px', fontFamily: 'inherit' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{jobPath.split('/').join(' / ')}</span>
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: `${statusColor}22`, color: statusColor }}>{jobStatus}</span>
+                              {due && <DueBadge dueDate={due} />}
+                              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{cutCount}/{total} cut</span>
+                              <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}><path d="M6 9l6 6 6-6"/></svg>
+                            </div>
+                            <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
+                              <div style={{ width: `${pct}%`, height: '100%', background: statusColor, transition: 'width .3s' }} />
+                            </div>
+                          </button>
+
+                          {open && (
+                            <div style={{ borderTop: '1px solid var(--line)' }}>
+                              {units.map((u) => (
+                                <button key={u.id} onClick={() => void openCutView(u)}
+                                  style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--line)', cursor: 'pointer', padding: '13px 18px', display: 'flex', alignItems: 'center', gap: 12, fontFamily: 'inherit', minHeight: 44 }}>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.unit_label}</div>
+                                    <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{u.partsCut}/{u.partsTotal} part{u.partsTotal === 1 ? '' : 's'} cut</div>
+                                  </div>
+                                  <CutStatusBadge status={u.production_status} />
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
 
           {/* ── Craftsman active build timer bar ───────────────────────────────── */}
           {crewDept === 'Craftsman' && buildStart && (
@@ -2728,8 +3053,34 @@ export default function CrewPage() {
               </button>
             </div>
 
+            {/* ── Production gate: cabinet not cut yet ── */}
+            {assemblyNotReady && (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '8px 0 4px', textAlign: 'center' }}>
+                <span style={{ color: '#FBBF24' }}>
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                </span>
+                <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--ink)' }}>Not ready yet</div>
+                <div style={{ fontSize: 13, color: 'var(--ink-dim)' }}>Production is still cutting this cabinet.</div>
+                <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 6, margin: '10px 0', textAlign: 'left' }}>
+                  {assemblyNotReady.parts.map((p) => {
+                    const cut = isPartCut(p.production_status);
+                    const label = p.production_status === 'cutting' ? 'Cutting' : cut ? 'Cut' : 'Not cut yet';
+                    const color = p.production_status === 'cutting' ? '#FBBF24' : cut ? '#2DE1C9' : '#8BA5A0';
+                    return (
+                      <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', borderRadius: 9, background: 'var(--bg-1)', border: '1px solid var(--line)' }}>
+                        <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: 'var(--ink-dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.part_name}</span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color }}>{label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>We&apos;ll notify you when it&apos;s ready.</div>
+                <button onClick={closeModal} className="btn btn-ghost" style={{ marginTop: 6, minHeight: 44 }}>Back</button>
+              </div>
+            )}
+
             {/* ── STEP 1: Scan ── */}
-            {assemblyScanStep === 'scan' && (
+            {assemblyScanStep === 'scan' && !assemblyNotReady && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
                 {/* Camera viewfinder */}
                 <div style={{ position: 'relative', width: '100%', aspectRatio: '4/3', background: '#07090A', borderRadius: 12, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -2972,6 +3323,85 @@ export default function CrewPage() {
       )}
 
       {viewerFile && <FileViewer file={viewerFile} onClose={() => setViewerFile(null)} />}
+
+      {/* ── Cabinet Cut View (Production) ──────────────────────────────────────── */}
+      {cutUnit && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 1500, background: 'var(--bg)', display: 'flex', flexDirection: 'column', paddingTop: 'env(safe-area-inset-top)' }}>
+          <style>{`@keyframes prodPulse{0%,100%{opacity:1}50%{opacity:0.35}}`}</style>
+          {/* header */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', borderBottom: '1px solid var(--line)', flexShrink: 0 }}>
+            <button onClick={closeCutView} aria-label="Close"
+              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, borderRadius: 10, background: 'rgba(255,255,255,0.06)', color: 'var(--ink-dim)', border: '1px solid var(--line)', cursor: 'pointer', flexShrink: 0 }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cutUnit.unit_label}</div>
+              <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{cutUnit.jobPath.split('/').join(' / ')}</div>
+            </div>
+          </div>
+
+          {/* parts list */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: 16, paddingBottom: 110 }}>
+            {cutLoading ? (
+              <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32 }}>Loading parts…</div>
+            ) : cutParts.length === 0 ? (
+              <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32 }}>No parts on this cabinet.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 640, margin: '0 auto' }}>
+                {cutParts.map((p) => {
+                  const expanded = cutPartExpanded[p.id] ?? false;
+                  const dims = [p.width, p.height, p.depth].filter((d) => d != null).join(' × ');
+                  return (
+                    <div key={p.id} style={{ border: '1px solid var(--line)', borderRadius: 12, overflow: 'hidden', background: 'var(--bg-1)' }}>
+                      <button onClick={() => setCutPartExpanded((e) => ({ ...e, [p.id]: !expanded }))}
+                        style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', padding: '13px 14px', display: 'flex', alignItems: 'center', gap: 12, fontFamily: 'inherit', minHeight: 44 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>{p.part_name}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</div>
+                          <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{dims}{p.material ? `${dims ? ' — ' : ''}${p.material}` : ''}</div>
+                        </div>
+                        <CutStatusBadge status={p.production_status} />
+                      </button>
+                      {expanded && (
+                        <div style={{ padding: '0 14px 14px', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <button onClick={() => void markPartStatus(p.id, 'cutting')} disabled={cutActioning[p.id]}
+                            style={{ flex: '1 1 0', minHeight: 44, padding: '0 14px', borderRadius: 10, border: '1px solid rgba(251,191,36,0.4)', background: 'rgba(251,191,36,0.1)', color: '#FBBF24', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Mark Cutting</button>
+                          <button onClick={() => void markPartStatus(p.id, 'cut')} disabled={cutActioning[p.id]}
+                            style={{ flex: '1 1 0', minHeight: 44, padding: '0 14px', borderRadius: 10, border: '1px solid var(--teal-dim)', background: 'rgba(45,225,201,0.12)', color: '#2DE1C9', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Mark Cut</button>
+                          <label title="Photo proof" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, borderRadius: 10, border: '1px solid var(--line)', background: p.cut_photo_url ? 'rgba(45,225,201,0.12)' : 'var(--bg-2)', color: p.cut_photo_url ? '#2DE1C9' : 'var(--ink-mute)', cursor: 'pointer', flexShrink: 0 }}>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                            <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
+                              onChange={(e) => { const f = e.target.files?.[0]; if (f) void handlePartPhoto(p.id, f); e.target.value = ''; }} />
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* bottom action bar */}
+          <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, display: 'flex', gap: 10, padding: '12px 16px', paddingBottom: 'calc(12px + env(safe-area-inset-bottom))', borderTop: '1px solid var(--line)', background: 'rgba(5,6,8,0.92)', backdropFilter: 'blur(10px)' }}>
+            <button onClick={() => void markAllStatus('cutting')} disabled={cutBulkBusy || cutParts.length === 0}
+              style={{ flex: '0 0 auto', minHeight: 50, padding: '0 18px', borderRadius: 12, border: '1px solid rgba(251,191,36,0.4)', background: 'rgba(251,191,36,0.1)', color: '#FBBF24', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy || cutParts.length === 0 ? 0.5 : 1 }}>Mark All Cutting</button>
+            <button onClick={() => void markAllStatus('cut')} disabled={cutBulkBusy || cutParts.length === 0}
+              style={{ flex: 1, minHeight: 50, borderRadius: 12, border: 'none', background: '#2DE1C9', color: '#051A12', fontSize: 15, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy || cutParts.length === 0 ? 0.5 : 1 }}>
+              {cutBulkBusy ? 'Saving…' : 'Mark All Cut'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Production "ready for assembly" flash ──────────────────────────────── */}
+      {prodFlash && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(5,6,8,0.88)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1600, pointerEvents: 'none' }}>
+          <div style={{ background: '#052E16', border: '1px solid #34D399', borderRadius: 16, padding: '22px 40px', display: 'flex', alignItems: 'center', gap: 14 }}>
+            <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            <span style={{ fontSize: 18, fontWeight: 700, color: '#34D399' }}>{prodFlash}</span>
+          </div>
+        </div>
+      )}
     </>
   );
 }
