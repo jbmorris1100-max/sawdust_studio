@@ -338,16 +338,18 @@ function SvgView({ url }: { url: string }) {
 }
 
 /* ========================================================================== *
- *  HTML VIEWER  (sandboxed — no script execution, no same-origin access)
+ *  HTML VIEWER  (sandboxed — renders visually, but scripts stay blocked)
+ *  allow-same-origin lets the page resolve its own styles/assets so it renders
+ *  as a styled page instead of raw source; without allow-scripts, no JS runs.
  * ========================================================================== */
 function HtmlView({ url, name }: { url: string; name: string }) {
   return (
     <iframe
       src={url}
       title={name}
-      sandbox=""
+      sandbox="allow-same-origin allow-popups"
       referrerPolicy="no-referrer"
-      style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }}
+      style={{ width: '100%', height: '100%', minHeight: '70vh', border: 'none', background: '#fff' }}
     />
   );
 }
