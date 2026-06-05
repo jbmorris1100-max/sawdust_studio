@@ -74,6 +74,22 @@ export async function POST(req: Request) {
     // Service-role client — reads all subscriptions for the tenant.
     const db = createClient(url, serviceKey, { auth: { persistSession: false } });
 
+    // Permanent notification log (Notification Center). Best-effort — a logging
+    // failure must never block push delivery. dept_target narrows crew pushes;
+    // store it as the notification's dept so the bell can filter if needed.
+    try {
+      await db.from('notifications').insert({
+        tenant_id,
+        target_type: target,
+        dept: dept_target ?? null,
+        title,
+        body,
+        url: clickUrl ?? null,
+      });
+    } catch (logErr) {
+      console.error('Notification log insert failed:', logErr);
+    }
+
     let query = db
       .from('push_subscriptions')
       .select('id, endpoint, p256dh, auth')

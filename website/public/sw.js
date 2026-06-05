@@ -261,6 +261,24 @@ async function navigationStrategy(req) {
 /* ============================================================================
  * Web Push  (unchanged — must keep working after the SW update)
  * ------------------------------------------------------------------------- */
+// A notification is a "message" notification if its title mentions a message or
+// it routes to the crew app — those should deep-link to the Messages screen.
+function isMessageNotification(data) {
+  const title = (data && data.title ? String(data.title) : '').toLowerCase();
+  const url   = (data && data.url ? String(data.url) : '');
+  return /message/.test(title) || url.indexOf('/app/crew') !== -1;
+}
+
+// Persist a flag the crew app reads on open so a message that arrived while the
+// app was closed still triggers a refresh. Stored as a cache entry (works from
+// the SW without IndexedDB plumbing).
+async function setNewMessagesFlag() {
+  try {
+    const cache = await caches.open('inlineiq-flags');
+    await cache.put('/has_new_messages', new Response('1', { headers: { 'sw-set-at': String(Date.now()) } }));
+  } catch (e) { /* best-effort */ }
+}
+
 self.addEventListener('push', function (event) {
   if (!event.data) return;
 
@@ -278,18 +296,24 @@ self.addEventListener('push', function (event) {
     vibrate: [100, 50, 100],
     data: {
       url: data.url || '/',
+      isMessage: isMessageNotification(data),
     },
     actions: data.actions || [],
   };
 
   event.waitUntil(
-    self.registration.showNotification(data.title || 'InlineIQ', options)
+    (async () => {
+      if (options.data.isMessage) await setNewMessagesFlag();
+      await self.registration.showNotification(data.title || 'InlineIQ', options);
+    })()
   );
 });
 
 self.addEventListener('notificationclick', function (event) {
   event.notification.close();
-  const target = (event.notification.data && event.notification.data.url) || '/';
+  const data = event.notification.data || {};
+  // Message notifications jump straight to the crew Messages screen.
+  const target = data.isMessage ? '/app/crew?open=messages' : (data.url || '/');
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (clientList) {
       // Focus an existing tab if one is already open, otherwise open a new window.

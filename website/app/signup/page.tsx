@@ -109,9 +109,9 @@ export default function SignupPage() {
               <div style={{ marginTop: 40, padding: '20px', background: 'rgba(94,234,212,0.04)', border: '1px solid var(--line)', borderRadius: 12 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--teal-dim)', marginBottom: 8 }}>After your trial</div>
                 <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--ink)', letterSpacing: '-0.02em' }}>
-                  $399 <span style={{ fontSize: 14, color: 'var(--ink-mute)', fontWeight: 400 }}>/ shop / month</span>
+                  $599 <span style={{ fontSize: 14, color: 'var(--ink-mute)', fontWeight: 400 }}>/ shop / month</span>
                 </div>
-                <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 4 }}>Unlimited crew. One flat price.</div>
+                <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 4 }}>Shop plan — up to 15 crew. Operations for unlimited.</div>
               </div>
             </div>
 

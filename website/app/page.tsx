@@ -617,20 +617,20 @@ const PRICING = [
   {
     name: 'Starter', priceLabel: 'Free', period: '30-day trial', featured: false,
     desc: 'Get the full system in your shop for a month. No credit card.',
-    cta: 'Start 30-day free trial', ctaHref: '/signup',
-    features: ['Full crew + supervisor apps','Scan + automatic time tracking','Damage & inventory reports','Email support','Convert anytime'],
+    cta: 'Start free trial', ctaHref: '/signup',
+    features: ['Up to 3 crew members','Crew + supervisor apps','Scan + automatic time tracking','Basic reports','30 days free — no credit card'],
   },
   {
-    name: 'Shop', price: 399, period: 'per shop / month', featured: true,
+    name: 'Shop', price: 599, period: 'per shop / month', featured: false,
     desc: 'The full InlineIQ system for a working production shop.',
     cta: 'Start free trial', ctaHref: '/signup',
-    features: ['Unlimited crew per shop','AI Part Identification','AI Morning Brief','Job Costing Intelligence','Crew messaging + SOPs','Priority support'],
+    features: ['Up to 15 crew members','Crew tracking + job management','Parts tracking + file management','AI assist mode + ERP imports','Messaging, SOPs & reports','30-day free trial'],
   },
   {
-    name: 'Operations', price: 599, period: 'per shop / month', featured: false,
-    desc: 'For multi-shop operators and custom-fab businesses that need more.',
-    cta: 'Talk to sales', ctaHref: 'mailto:hello@inlineiq.app',
-    features: ['Everything in Shop','Multi-shop rollouts','API + ERP integrations','Custom AI tuning','Dedicated success manager','SSO + audit logs'],
+    name: 'Operations', price: 799, period: 'per shop / month', featured: true, badge: 'Best Value',
+    desc: 'For multi-location operators that need autonomous AI and API access.',
+    cta: 'Contact sales', ctaHref: 'mailto:hello@inlineiq.app',
+    features: ['Unlimited crew members','Everything in Shop','Multi-location support','AI autonomous mode','API access + advanced analytics','Priority support'],
   },
 ];
 
@@ -649,7 +649,7 @@ function PricingSection() {
               {t.featured && (
                 <div style={{ display: 'flex', justifyContent: 'center', marginBottom: -8 }}>
                   <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#001917', background: '#2DE1C9', borderRadius: 999, padding: '3px 14px' }}>
-                    Most Popular
+                    {(t as { badge?: string }).badge ?? 'Most Popular'}
                   </span>
                 </div>
               )}

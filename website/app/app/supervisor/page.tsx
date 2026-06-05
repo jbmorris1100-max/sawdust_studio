@@ -241,6 +241,9 @@ type Job = {
   room_name?: string | null;
   due_date?: string | null;
   install_date?: string | null;
+  archived?: boolean | null;
+  archived_at?: string | null;
+  completed_at?: string | null;
 };
 
 // Production pipeline row (Overview)
@@ -254,6 +257,18 @@ type PipelineRow = {
   finishing: number;    // finishing
   done: number;         // complete
   cabinetsCut: number;  // production_status cut+
+};
+
+type NotificationRow = {
+  id: string;
+  tenant_id: string;
+  target_type: string;
+  dept: string | null;
+  title: string;
+  body: string;
+  url: string | null;
+  read: boolean;
+  created_at: string;
 };
 
 type Tab = 'overview' | 'crew' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'assembly' | 'settings';
@@ -557,9 +572,18 @@ export default function SupervisorPage() {
   const [newJobDue,      setNewJobDue]      = useState('');
   const [newJobInstall,  setNewJobInstall]  = useState('');
   const [addingJob,      setAddingJob]      = useState(false);
+  // Job completion / archive (Overview)
+  const [completeJobTarget, setCompleteJobTarget] = useState<Job | null>(null);
+  const [completingJob,     setCompletingJob]     = useState(false);
+  const [archiveOpen,       setArchiveOpen]       = useState(false);
+  const [deleteArchiveTarget, setDeleteArchiveTarget] = useState<Job | null>(null);
 
   // Production pipeline (Overview)
   const [pipeline, setPipeline] = useState<PipelineRow[]>([]);
+
+  // Notification center (header bell)
+  const [notifications, setNotifications] = useState<NotificationRow[]>([]);
+  const [notifOpen,      setNotifOpen]    = useState(false);
 
   // Plans upload
   const [planFile,      setPlanFile]      = useState<File | null>(null);
@@ -771,7 +795,7 @@ export default function SupervisorPage() {
         supabase.from('sops').select('id, title, dept, pdf_url, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
         supabase.from('time_clock').select('id, worker_name, clock_in, clock_out, notes, job_number, total_hours').eq('tenant_id', tenant.id).eq('status', 'craftsman_build').order('clock_in', { ascending: false }).limit(50),
         supabase.from('parts_log').select('*').eq('tenant_id', tenant.id).not('status', 'in', '("Archived")').order('created_at', { ascending: false }).limit(100),
-        supabase.from('jobs').select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, install_date').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
+        supabase.from('jobs').select('*').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
       ]);
       if (plansRes.data)  setPlans(plansRes.data as JobDrawing[]);
       if (sopsRes.data)   setSops(sopsRes.data as SopItem[]);
@@ -819,6 +843,13 @@ export default function SupervisorPage() {
       const rows = (cabs as { job_number: string | null; status: string | null; production_status: string | null }[]) ?? [];
       if (rows.length === 0) { setPipeline([]); return; }
 
+      // Archived jobs never appear in the pipeline.
+      const archivedJobNums = new Set<string>();
+      try {
+        const { data: aj } = await supabase.from('jobs').select('job_number, archived').eq('tenant_id', tenant.id);
+        ((aj as { job_number: string; archived?: boolean | null }[]) ?? []).forEach((j) => { if (j.archived) archivedJobNums.add(j.job_number); });
+      } catch (_) { /* archived column may not exist yet */ }
+
       // job_number → { job_path, due_date } (best-effort)
       const jobMeta: Record<string, { jobPath: string; dueDate: string | null }> = {};
       try {
@@ -834,6 +865,7 @@ export default function SupervisorPage() {
       const byJob: Record<string, PipelineRow> = {};
       rows.forEach((c) => {
         const jn = c.job_number ?? 'unassigned';
+        if (c.job_number && archivedJobNums.has(c.job_number)) return;
         const meta = jobMeta[jn];
         const rawPath = meta?.jobPath || jn;          // no "Job " prefix
         const key = rawPath.toLowerCase();            // group by lowercased path → merges case duplicates
@@ -854,6 +886,51 @@ export default function SupervisorPage() {
   }, [tenant]);
 
   useEffect(() => { void loadPipeline(); }, [loadPipeline]);
+
+  // ── Notification center ─────────────────────────────────────────────────────
+  const loadNotifications = useCallback(async () => {
+    if (!tenant) return;
+    const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+    try {
+      const { data } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('tenant_id', tenant.id)
+        .in('target_type', ['supervisor', 'all'])
+        .gte('created_at', sevenDaysAgo)
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (data) setNotifications(data as NotificationRow[]);
+    } catch (_) { /* table may not exist until migration runs */ }
+  }, [tenant]);
+
+  useEffect(() => {
+    if (!tenant) return;
+    void loadNotifications();
+    const ch = supabase
+      .channel('rt-sup-notifications')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `tenant_id=eq.${tenant.id}` }, () => { void loadNotifications(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [tenant, loadNotifications]);
+
+  const notifUnread = notifications.filter((n) => !n.read).length;
+
+  async function markNotificationRead(n: NotificationRow) {
+    if (!n.read) {
+      setNotifications((prev) => prev.map((x) => x.id === n.id ? { ...x, read: true } : x));
+      try { await supabase.from('notifications').update({ read: true }).eq('id', n.id); } catch (_) {}
+    }
+    if (n.url) { setNotifOpen(false); window.location.href = n.url; }
+  }
+
+  async function markAllNotificationsRead() {
+    if (!tenant) return;
+    const unreadIds = notifications.filter((n) => !n.read).map((n) => n.id);
+    if (unreadIds.length === 0) return;
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    try { await supabase.from('notifications').update({ read: true }).in('id', unreadIds); } catch (_) {}
+  }
 
   // ── Labor cost per job (Overview) ───────────────────────────────────────────
   // Sums hours × hourly_rate per job_number. Pay rates are supervisor-only, so
@@ -1237,6 +1314,51 @@ export default function SupervisorPage() {
     } catch (err: unknown) {
       if (prev) setJobs((jj) => [prev, ...jj]);
       showToast(err instanceof Error ? err.message : 'Delete failed', true);
+    }
+  }
+
+  // Complete a job: mark it (and all its cabinets) complete, then archive it.
+  async function handleCompleteJob(job: Job) {
+    if (completingJob || !tenant) return;
+    setCompletingJob(true);
+    const now = new Date().toISOString();
+    try {
+      const { error } = await supabase
+        .from('jobs')
+        .update({ status: 'complete', completed_at: now, archived: true, archived_at: now })
+        .eq('id', job.id);
+      if (error) throw error;
+      // Mark every cabinet on this job complete (completed_at best-effort).
+      try {
+        await supabase.from('cabinet_units')
+          .update({ status: 'complete', completed_at: now })
+          .eq('tenant_id', tenant.id).eq('job_number', job.job_number);
+      } catch (_) {
+        try { await supabase.from('cabinet_units').update({ status: 'complete' }).eq('tenant_id', tenant.id).eq('job_number', job.job_number); } catch (__) {}
+      }
+      setJobs((jj) => jj.map((j) => j.id === job.id ? { ...j, status: 'complete', completed_at: now, archived: true, archived_at: now } : j));
+      setCompleteJobTarget(null);
+      void loadPipeline();
+      showToast(`${jobLabel(job)} completed and archived`);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Complete failed', true);
+    } finally {
+      setCompletingJob(false);
+    }
+  }
+
+  // Restore an archived job back to Active Jobs.
+  async function handleRestoreJob(job: Job) {
+    const now = new Date().toISOString();
+    setJobs((jj) => jj.map((j) => j.id === job.id ? { ...j, status: 'active', archived: false, archived_at: null } : j));
+    try {
+      const { error } = await supabase.from('jobs').update({ status: 'active', archived: false, archived_at: null }).eq('id', job.id);
+      if (error) throw error;
+      void loadPipeline();
+      showToast(`${jobLabel(job)} restored`);
+    } catch (err: unknown) {
+      setJobs((jj) => jj.map((j) => j.id === job.id ? { ...j, status: 'complete', archived: true, archived_at: now } : j));
+      showToast(err instanceof Error ? err.message : 'Restore failed', true);
     }
   }
 
@@ -2213,10 +2335,28 @@ export default function SupervisorPage() {
                 Switch Role
               </Link>
             </div>
-            <button onClick={loadAll} className="btn btn-ghost" style={{ fontSize: 12, padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 6 }}>
-              <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-              Refresh
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              {/* Notification bell */}
+              <button
+                onClick={() => setNotifOpen(true)}
+                aria-label="Notifications"
+                style={{ position: 'relative', background: 'none', border: '1px solid var(--line)', borderRadius: 10, cursor: 'pointer', color: 'var(--ink-dim)', padding: '8px 10px', display: 'flex', alignItems: 'center' }}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                </svg>
+                {notifUnread > 0 && (
+                  <span style={{ position: 'absolute', top: -6, right: -6, minWidth: 18, height: 18, padding: '0 5px', borderRadius: 9, background: '#F87171', color: '#fff', fontSize: 10.5, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {notifUnread > 9 ? '9+' : notifUnread}
+                  </span>
+                )}
+              </button>
+              <button onClick={loadAll} className="btn btn-ghost" style={{ fontSize: 12, padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Refresh
+              </button>
+            </div>
           </div>
 
           {/* KPI strip — 2×2 on mobile, 4×1 on desktop */}
@@ -2664,7 +2804,7 @@ export default function SupervisorPage() {
               <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
                 <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#A78BFA' }}>Active Jobs</span>
-                  <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{jobs.filter((j) => j.status === 'active').length} jobs</span>
+                  <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{jobs.filter((j) => j.status === 'active' && !j.archived).length} jobs</span>
                 </div>
 
                 {/* Add job form */}
@@ -2706,10 +2846,10 @@ export default function SupervisorPage() {
                   </div>
                 </div>
 
-                {jobs.filter((j) => j.status === 'active').length === 0 ? (
+                {jobs.filter((j) => j.status === 'active' && !j.archived).length === 0 ? (
                   <div style={{ padding: '16px 20px', fontSize: 13, color: 'var(--ink-mute)' }}>No active jobs. Add one above — crew will see these in the parts dropdown.</div>
                 ) : (
-                  jobs.filter((j) => j.status === 'active').map((j) => (
+                  jobs.filter((j) => j.status === 'active' && !j.archived).map((j) => (
                     <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 20px', borderBottom: '1px solid var(--line)' }}>
                       <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                         <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{j.job_path ? titleCasePath(j.job_path).split('/').join(' / ') : j.job_number}</span>
@@ -2728,6 +2868,15 @@ export default function SupervisorPage() {
                         ) : null; })()}
                       </div>
                       <button
+                        onClick={() => setCompleteJobTarget(j)}
+                        className="btn btn-ghost"
+                        style={{ flexShrink: 0, padding: '6px 12px', fontSize: 12, fontWeight: 700, color: 'var(--teal)', borderColor: 'rgba(45,225,201,0.3)', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        title="Complete job"
+                      >
+                        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                        Complete
+                      </button>
+                      <button
                         onClick={() => { void handleDeleteJob(j.id); }}
                         style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex', alignItems: 'center' }}
                         title="Delete job"
@@ -2738,6 +2887,45 @@ export default function SupervisorPage() {
                   ))
                 )}
               </div>
+
+              {/* ── Archived Jobs ── */}
+              {(() => {
+                const archived = jobs
+                  .filter((j) => j.archived === true)
+                  .sort((a, b) => new Date(b.archived_at ?? b.completed_at ?? 0).getTime() - new Date(a.archived_at ?? a.completed_at ?? 0).getTime());
+                if (archived.length === 0) return null;
+                return (
+                  <div className="portal-card" style={{ padding: 0, overflow: 'hidden', marginTop: 16 }}>
+                    <button
+                      onClick={() => setArchiveOpen((o) => !o)}
+                      style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+                    >
+                      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Archived Jobs ({archived.length})</span>
+                      <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ transform: archiveOpen ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}><path d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    {archiveOpen && archived.map((j) => {
+                      const cabinetCount = pipeline.find((p) => p.jobNumber === j.job_number)?.cabinetsTotal;
+                      const labor = laborByJob[j.job_number];
+                      return (
+                        <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 20px', borderTop: '1px solid var(--line)', flexWrap: 'wrap' }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink-dim)' }}>{jobLabel(j)}</div>
+                            <div style={{ fontSize: 11.5, color: 'var(--ink-mute)', marginTop: 2, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                              {j.completed_at && <span>Completed {new Date(j.completed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>}
+                              {cabinetCount != null && <span>{cabinetCount} cabinet{cabinetCount === 1 ? '' : 's'}</span>}
+                              {labor != null && labor > 0 && <span style={{ color: 'var(--teal)' }}>Labor ${labor.toFixed(2)}</span>}
+                            </div>
+                          </div>
+                          <button onClick={() => { void handleRestoreJob(j); }} className="btn btn-ghost" style={{ flexShrink: 0, padding: '6px 12px', fontSize: 12, fontWeight: 600 }}>Restore</button>
+                          <button onClick={() => setDeleteArchiveTarget(j)} style={{ flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }} title="Delete permanently">
+                            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
 
             </div>
           )}
@@ -4503,6 +4691,83 @@ export default function SupervisorPage() {
 
       {wizardVisible && tenant && (
         <SetupWizard tenant={tenant} onComplete={() => setWizardVisible(false)} />
+      )}
+
+      {/* ── Notification drawer (right on desktop, bottom sheet on mobile) ── */}
+      {notifOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 310, display: 'flex', justifyContent: 'flex-end' }} onClick={(e) => { if (e.target === e.currentTarget) setNotifOpen(false); }}>
+          <style>{`@keyframes notifIn{from{transform:translateX(100%)}to{transform:translateX(0)}}`}</style>
+          <div className="notif-drawer" style={{ width: '100%', maxWidth: 400, height: '100%', background: '#0a0d10', borderLeft: '1px solid var(--line-strong)', display: 'flex', flexDirection: 'column', animation: 'notifIn 0.22s ease-out' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 20px', borderBottom: '1px solid var(--line)' }}>
+              <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--ink)' }}>Notifications</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                {notifUnread > 0 && (
+                  <button onClick={() => { void markAllNotificationsRead(); }} style={{ fontSize: 12.5, color: 'var(--teal)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>Mark all read</button>
+                )}
+                <button onClick={() => setNotifOpen(false)} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 2, display: 'flex' }}>
+                  <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              {notifications.length === 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, padding: '60px 24px', textAlign: 'center' }}>
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                  <div style={{ fontSize: 14, color: 'var(--ink-mute)' }}>No notifications yet</div>
+                </div>
+              ) : (
+                notifications.map((n) => {
+                  const mins  = Math.floor((Date.now() - new Date(n.created_at).getTime()) / 60000);
+                  const rel = mins < 1 ? 'Just now' : mins < 60 ? `${mins} min ago` : mins < 1440 ? `${Math.floor(mins / 60)} hr ago` : `${Math.floor(mins / 1440)}d ago`;
+                  return (
+                    <button
+                      key={n.id}
+                      onClick={() => { void markNotificationRead(n); }}
+                      style={{ display: 'flex', gap: 11, width: '100%', textAlign: 'left', padding: '14px 18px', background: n.read ? 'none' : 'rgba(45,225,201,0.04)', border: 'none', borderBottom: '1px solid var(--line)', borderLeft: n.read ? '3px solid transparent' : '3px solid var(--teal)', cursor: 'pointer', fontFamily: 'inherit' }}
+                    >
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', marginTop: 6, flexShrink: 0, background: n.read ? 'transparent' : 'var(--teal)' }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13.5, fontWeight: n.read ? 500 : 700, color: 'var(--ink)' }}>{n.title}</div>
+                        <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.body}</div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 4 }}>{rel}</div>
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Complete-job confirmation ── */}
+      {completeJobTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300, padding: 20 }} onClick={() => { if (!completingJob) setCompleteJobTarget(null); }}>
+          <div className="portal-card" style={{ width: '100%', maxWidth: 440, display: 'flex', flexDirection: 'column', gap: 14 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--ink)' }}>Mark {jobLabel(completeJobTarget)} as complete?</div>
+            <div style={{ fontSize: 13.5, color: 'var(--ink-mute)', lineHeight: 1.5 }}>All cabinets will be marked complete. This job will move to the archive.</div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+              <button className="btn btn-primary" style={{ flex: 1, justifyContent: 'center', opacity: completingJob ? 0.6 : 1 }} disabled={completingJob} onClick={() => { void handleCompleteJob(completeJobTarget); }}>
+                {completingJob ? 'Completing…' : 'Complete Job'}
+              </button>
+              <button className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }} disabled={completingJob} onClick={() => setCompleteJobTarget(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Permanently delete an archived job ── */}
+      {deleteArchiveTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300, padding: 20 }} onClick={() => setDeleteArchiveTarget(null)}>
+          <div className="portal-card" style={{ width: '100%', maxWidth: 440, display: 'flex', flexDirection: 'column', gap: 14 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--ink)' }}>Delete {jobLabel(deleteArchiveTarget)} permanently?</div>
+            <div style={{ fontSize: 13.5, color: 'var(--ink-mute)', lineHeight: 1.5 }}>This cannot be undone. The job will be removed entirely.</div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+              <button className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setDeleteArchiveTarget(null)}>Cancel</button>
+              <button className="btn" style={{ flex: 1, justifyContent: 'center', background: '#F87171', color: '#1a0606', fontWeight: 700 }} onClick={() => { const t = deleteArchiveTarget; setDeleteArchiveTarget(null); void handleDeleteJob(t.id); }}>Delete</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {toast && <Toast msg={toast.msg} error={toast.error} />}

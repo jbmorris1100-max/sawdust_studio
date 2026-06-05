@@ -196,6 +196,29 @@ type ProdUnit = {
   dueDate: string | null;
 };
 
+// AI label-match result (from /app/api/match-label).
+type ScanAiMatch = {
+  part_name: string;
+  cabinet_unit_id: string;
+  cabinet_label: string;
+  confidence: number;
+};
+type ScanAiResult = {
+  match: ScanAiMatch | null;
+  alternatives: ScanAiMatch[];
+  reasoning: string;
+};
+
+// Prominent "current job" card shown above the quick actions on the crew home.
+type ActiveJobCard = {
+  mode: 'assembly' | 'production';
+  jobNumber: string;
+  jobPath: string;
+  total: number;
+  done: number;                                  // complete (assembly) | cut (production)
+  nextUnit: { id: string; label: string } | null;
+};
+
 // A part is "cut" (visible to Assembly) once production has advanced it past cutting.
 const CUT_STATUSES = ['cut', 'qa_passed', 'in_assembly', 'complete'];
 function isPartCut(s: string | null | undefined): boolean {
@@ -634,10 +657,20 @@ export default function CrewPage() {
   const [assemblyScanDone,      setAssemblyScanDone]      = useState(false);
   // Assembly gating: cabinet whose parts aren't cut yet (blocks the checklist)
   const [assemblyNotReady,      setAssemblyNotReady]      = useState<{ unit: AssemblyCabinetUnit; parts: AssemblyScanPart[] } | null>(null);
+  // AI fuzzy-match result + live decode feedback
+  const [scanAiResult,   setScanAiResult]   = useState<ScanAiResult | null>(null);
+  const [scanShowAlts,   setScanShowAlts]   = useState(false);
+  const [scanFlash,      setScanFlash]      = useState(false);
+  const zxingRef    = useRef<{ reset: () => void } | null>(null);
+  const scanBusyRef = useRef(false);
 
   // ── Production handoff (cut tracking) ──────────────────────────────────────
   const [prodUnits,    setProdUnits]    = useState<ProdUnit[]>([]);
   const [prodLoading,  setProdLoading]  = useState(false);
+
+  // ── Active job card (prominent, above quick actions) ───────────────────────
+  const [activeJob, setActiveJob] = useState<ActiveJobCard | null>(null);
+  const [activeJobLoading, setActiveJobLoading] = useState(true);
   const [prodExpanded, setProdExpanded] = useState<Record<string, boolean>>({});
   const [cutUnit,        setCutUnit]        = useState<ProdUnit | null>(null);
   const [cutParts,       setCutParts]       = useState<ProdPart[]>([]);
@@ -671,6 +704,31 @@ export default function CrewPage() {
   useEffect(() => { try { setSupRead(localStorage.getItem('crew_msg_read_sup') || ''); } catch { /* ignore */ } }, []);
   function markSupRead() { const now = new Date().toISOString(); try { localStorage.setItem('crew_msg_read_sup', now); } catch { /* ignore */ } setSupRead(now); }
   const [replySaving, setReplySaving] = useState(false);
+
+  // Messages screen — full-screen overlay that slides up from the bottom.
+  const [messagesOpen, setMessagesOpen] = useState(false);
+  const [msgMenuOpen,  setMsgMenuOpen]  = useState(false);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Per-device "Clear conversation" — hides messages older than this timestamp
+  // from the crew's view only. localStorage, never the database, so the
+  // supervisor still sees everything. Keyed per tenant.
+  const [msgClearedAt, setMsgClearedAt] = useState('');
+  useEffect(() => {
+    if (!tenant?.id) return;
+    try { setMsgClearedAt(localStorage.getItem(`messages_cleared_${tenant.id}`) || ''); } catch { /* ignore */ }
+  }, [tenant?.id]);
+
+  function openMessages() { setOpenThread(null); setMessagesOpen(true); }
+  function openSupervisorThread() { markSupRead(); setOpenThread('supervisor'); }
+  function closeMessages() { setMessagesOpen(false); setMsgMenuOpen(false); setOpenThread(null); setReplyBody(''); }
+  function clearConversation() {
+    if (!tenant?.id) return;
+    const now = new Date().toISOString();
+    try { localStorage.setItem(`messages_cleared_${tenant.id}`, now); } catch { /* ignore */ }
+    setMsgClearedAt(now);
+    setMsgMenuOpen(false);
+    showToast('Conversation cleared');
+  }
 
   // Load localStorage identity + restore in-progress timers
   useEffect(() => {
@@ -778,14 +836,18 @@ export default function CrewPage() {
     return () => { supabase.removeChannel(msgCh); };
   }, [tenant]);
 
-  // Start / stop the camera stream whenever the camera step becomes active/inactive
+  // Start / stop the camera stream whenever the camera step becomes active/inactive.
+  // The assembly scan uses the ZXing reader (live QR/barcode decode); the damage
+  // and part-log cameras use plain getUserMedia for photo capture.
   useEffect(() => {
-    const isCamera =
+    const isPhotoCamera =
       (modal === 'damage' && dmgScanStep === 'camera') ||
-      (modal === 'parts'  && partsMode === 'log' && partScanStep === 'camera') ||
-      (modal === 'assemblyScan' && assemblyScanStep === 'scan');
-    if (isCamera) {
+      (modal === 'parts'  && partsMode === 'log' && partScanStep === 'camera');
+    const isScanCamera = modal === 'assemblyScan' && assemblyScanStep === 'scan';
+    if (isPhotoCamera) {
       void startCamera();
+    } else if (isScanCamera) {
+      void startZxingScanner();
     } else {
       stopCamera();
     }
@@ -830,6 +892,59 @@ export default function CrewPage() {
         .limit(200);
       if (data) setMessages(data as Message[]);
     } catch (_) {}
+  }, [tenant]);
+
+  // ── Never-miss-a-message: re-fetch on focus + on app open ──────────────────
+  // A push notification can arrive while the app is closed or backgrounded; the
+  // realtime channel won't replay it. So we always re-fetch the latest messages
+  // when the page mounts and whenever it regains visibility. We also clear the
+  // service-worker "has_new_messages" flag that the SW set on push receipt.
+  useEffect(() => {
+    if (!tenant) return;
+
+    async function clearSwMessageFlag() {
+      try {
+        const cache = await caches.open('inlineiq-flags');
+        await cache.delete('/has_new_messages');
+      } catch { /* cache unavailable — ignore */ }
+    }
+
+    function refresh() {
+      void reloadMessages();
+      void clearSwMessageFlag();
+    }
+
+    // Run once on mount (catches messages that landed while the app was closed).
+    refresh();
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', refresh);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [tenant, reloadMessages]);
+
+  // If the crew tapped a message push (or any ?open=messages link), jump
+  // straight to the Messages screen instead of the home screen.
+  useEffect(() => {
+    if (!tenant) return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('open') === 'messages') {
+        markSupRead();
+        setOpenThread('supervisor');
+        setMessagesOpen(true);
+        // Strip the param so a refresh doesn't re-open it.
+        params.delete('open');
+        const qs = params.toString();
+        window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''));
+      }
+    } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenant]);
 
   // ── Production cut-list loader ─────────────────────────────────────────────
@@ -896,6 +1011,76 @@ export default function CrewPage() {
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenant, crewDept, loadProduction]);
+
+  // ── Active job loader (current job card) ───────────────────────────────────
+  // Production: the most recent job with a cabinet still to cut.
+  // Everyone else (Assembly etc.): the most recent job with a cabinet that's
+  // cut and pending assembly.
+  const loadActiveJob = useCallback(async () => {
+    if (!tenant) return;
+    setActiveJobLoading(true);
+    try {
+      const { data } = await supabase
+        .from('cabinet_units')
+        .select('id, unit_label, job_number, status, production_status')
+        .eq('tenant_id', tenant.id)
+        .order('job_number', { ascending: false });
+      const list = (data as { id: string; unit_label: string; job_number: string | null; status: string; production_status: string | null }[]) ?? [];
+      const isProd = crewDept === 'Production';
+
+      const byJob: Record<string, typeof list> = {};
+      list.forEach((u) => { if (u.job_number) (byJob[u.job_number] ??= []).push(u); });
+
+      // Most recent job_number (DESC order preserved) that has a "next" cabinet.
+      let chosen: { jobNumber: string; units: typeof list; next: (typeof list)[number] } | null = null;
+      for (const jobNumber of Object.keys(byJob)) {
+        const units = byJob[jobNumber];
+        const next = isProd
+          ? units.find((u) => !isPartCut(u.production_status))
+          : units.find((u) => isPartCut(u.production_status) && u.status === 'pending');
+        if (next) { chosen = { jobNumber, units, next }; break; }
+      }
+      if (!chosen) { setActiveJob(null); return; }
+
+      let jobPath = `Job ${chosen.jobNumber}`;
+      try {
+        const { data: j } = await supabase
+          .from('jobs').select('job_path')
+          .eq('tenant_id', tenant.id).eq('job_number', chosen.jobNumber).maybeSingle();
+        const p = (j as { job_path: string | null } | null)?.job_path;
+        if (p) jobPath = p;
+      } catch (_) {}
+
+      const total = chosen.units.length;
+      const done = isProd
+        ? chosen.units.filter((u) => isPartCut(u.production_status)).length
+        : chosen.units.filter((u) => u.status === 'complete').length;
+
+      setActiveJob({
+        mode: isProd ? 'production' : 'assembly',
+        jobNumber: chosen.jobNumber,
+        jobPath,
+        total,
+        done,
+        nextUnit: { id: chosen.next.id, label: chosen.next.unit_label },
+      });
+    } catch (_) {
+      setActiveJob(null);
+    } finally {
+      setActiveJobLoading(false);
+    }
+  }, [tenant, crewDept]);
+
+  // Load the active job on mount / dept change, and refresh it as cabinets change.
+  useEffect(() => {
+    if (!tenant) return;
+    void loadActiveJob();
+    const ch = supabase
+      .channel('rt-crew-active-job')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenant.id}` }, () => { void loadActiveJob(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [tenant, loadActiveJob]);
 
   function saveIdentity(name: string, dept: string) {
     localStorage.setItem('crew_name', name);
@@ -1222,22 +1407,84 @@ export default function CrewPage() {
     setModal('assemblyScan');
   }
 
-  async function handleAssemblyScanSearch() {
-    const input = assemblyScanInput.trim();
-    if (!input || assemblyScanSearching || !tenant) return;
+  // Unified "Scan" entry point. Assembly + Production/QC open the unified scan
+  // flow (camera + ZXing + auto-detect). Any other dept falls back to the
+  // generic part log / QC modal.
+  function openScan() {
+    if (crewDept === 'Assembly' || crewDept === 'Production') {
+      openAssemblyScan();
+    } else {
+      void openParts();
+    }
+  }
+
+  // Persist a confirmed match so the shop learns this abbreviation permanently.
+  async function saveLabelMapping(rawLower: string, cabinetUnitId: string, partName: string, confidence: number) {
+    if (!tenant || !rawLower) return;
+    try {
+      await supabase.from('label_mappings').insert({
+        tenant_id:         tenant.id,
+        raw_label:         rawLower,
+        matched_part_name: partName,
+        cabinet_unit_id:   cabinetUnitId,
+        job_number:        null,
+        confidence,
+        confirmed_by:      crewName || null,
+      });
+    } catch (_) { /* learning is best-effort */ }
+  }
+
+  // Load a cabinet from a (possibly AI) match, learn the mapping, clear AI UI.
+  async function confirmScanMatch(m: ScanAiMatch, rawInput: string) {
+    setScanAiResult(null);
+    setScanShowAlts(false);
+    setAssemblyScanSearching(true);
+    try {
+      await loadCabinetUnit(m.cabinet_unit_id);
+      await saveLabelMapping(rawInput.trim().toLowerCase(), m.cabinet_unit_id, m.part_name, m.confidence);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Could not load cabinet', true);
+    } finally {
+      setAssemblyScanSearching(false);
+      scanBusyRef.current = false;
+    }
+  }
+
+  // Unified scan resolver. Order: label_mappings (learned) → exact/fuzzy string
+  // strategies → AI fuzzy match (match-label route) → manual fallback.
+  async function handleAssemblyScanSearch(override?: string) {
+    const input = (override ?? assemblyScanInput).trim();
+    if (!input || !tenant) return;
+    if (scanBusyRef.current) return;
+    scanBusyRef.current = true;
     setAssemblyScanSearching(true);
     setAssemblyScanNotFound(false);
+    setScanAiResult(null);
+    setScanShowAlts(false);
+    const lower = input.toLowerCase();
     try {
+      // Step 1: learned label mappings (instant, no AI cost)
+      try {
+        const { data: lm } = await supabase
+          .from('label_mappings')
+          .select('cabinet_unit_id')
+          .eq('tenant_id', tenant.id)
+          .ilike('raw_label', lower)
+          .order('created_at', { ascending: false })
+          .limit(1).maybeSingle();
+        const lmId = (lm as { cabinet_unit_id: string | null } | null)?.cabinet_unit_id;
+        if (lmId) { await loadCabinetUnit(lmId); return; }
+      } catch (_) { /* table may not exist pre-migration */ }
+
+      // Step 2-3: exact / fuzzy string strategies
       let cabinetUnitId: string | null = null;
 
-      // Strategy 1: exact scan_value match
       const { data: sv } = await supabase
         .from('parts').select('cabinet_unit_id')
         .eq('tenant_id', tenant.id).eq('scan_value', input)
         .limit(1).maybeSingle();
       if (sv) cabinetUnitId = (sv as { cabinet_unit_id: string }).cabinet_unit_id;
 
-      // Strategy 2: part_name ilike
       if (!cabinetUnitId) {
         const { data: pn } = await supabase
           .from('parts').select('cabinet_unit_id')
@@ -1246,7 +1493,6 @@ export default function CrewPage() {
         if (pn) cabinetUnitId = (pn as { cabinet_unit_id: string }).cabinet_unit_id;
       }
 
-      // Strategy 3: unit_label ilike
       if (!cabinetUnitId) {
         const { data: ul } = await supabase
           .from('cabinet_units').select('id')
@@ -1255,7 +1501,6 @@ export default function CrewPage() {
         if (ul) cabinetUnitId = (ul as { id: string }).id;
       }
 
-      // Strategy 4: parse Job/Room/Cabinet format
       if (!cabinetUnitId) {
         const segs = input.split('/').map((s) => s.trim()).filter(Boolean);
         if (segs.length >= 3) {
@@ -1269,18 +1514,42 @@ export default function CrewPage() {
         }
       }
 
-      if (!cabinetUnitId) {
-        setAssemblyScanNotFound(true);
+      if (cabinetUnitId) {
+        await loadCabinetUnit(cabinetUnitId);
+        void saveLabelMapping(lower, cabinetUnitId, input, 100);
         return;
       }
 
-      // Load cabinet unit + parts into the checklist
-      await loadCabinetUnit(cabinetUnitId);
+      // Step 4: AI fuzzy match
+      try {
+        const res = await fetch('/app/api/match-label', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ tenantId: tenant.id, rawLabel: input, jobPath: activeJob?.jobPath ?? null }),
+        });
+        if (res.ok) {
+          const ai = (await res.json()) as ScanAiResult;
+          // >= 95 → auto-load, no confirmation
+          if (ai.match && ai.match.confidence >= 95) {
+            await loadCabinetUnit(ai.match.cabinet_unit_id);
+            void saveLabelMapping(lower, ai.match.cabinet_unit_id, ai.match.part_name, ai.match.confidence);
+            return;
+          }
+          // 85-94 → confirm; < 85 or no single match → show alternatives
+          if (ai.match || (ai.alternatives && ai.alternatives.length > 0)) {
+            setScanAiResult(ai);
+            setScanShowAlts(!ai.match || ai.match.confidence < 85);
+            return;
+          }
+        }
+      } catch (_) { /* AI unavailable — fall through to manual */ }
 
+      setAssemblyScanNotFound(true);
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Search failed', true);
     } finally {
       setAssemblyScanSearching(false);
+      scanBusyRef.current = false;
     }
   }
 
@@ -1641,6 +1910,7 @@ export default function CrewPage() {
   }
 
   function stopCamera() {
+    stopZxingScanner();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
   }
@@ -1971,6 +2241,54 @@ export default function CrewPage() {
     }
   }
 
+  // Live QR / barcode scanner (ZXing). Opens the rear camera, decodes
+  // continuously, and on a hit flashes the viewfinder + auto-runs the match.
+  async function startZxingScanner() {
+    setCameraStarting(true);
+    setCameraError(null);
+    setScanAiResult(null);
+    setScanShowAlts(false);
+    scanBusyRef.current = false;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError('Camera not supported — type the label below instead');
+      setCameraStarting(false);
+      return;
+    }
+    try {
+      const { BrowserMultiFormatReader } = await import('@zxing/library');
+      const reader = new BrowserMultiFormatReader();
+      zxingRef.current = reader as unknown as { reset: () => void };
+      if (!videoRef.current) { setCameraStarting(false); return; }
+      await reader.decodeFromConstraints(
+        { video: { facingMode: 'environment' } },
+        videoRef.current,
+        (result) => {
+          if (!result || scanBusyRef.current) return;
+          const text = result.getText().trim();
+          if (!text) return;
+          setScanFlash(true);
+          setTimeout(() => setScanFlash(false), 350);
+          setAssemblyScanInput(text);
+          void handleAssemblyScanSearch(text);
+        }
+      );
+      setCameraStarting(false);
+    } catch (err) {
+      const isDenied = err instanceof DOMException &&
+        (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError');
+      setCameraError(isDenied
+        ? 'Camera access denied — type the label below instead'
+        : 'Camera not available — type the label below instead');
+      setCameraStarting(false);
+    }
+  }
+
+  function stopZxingScanner() {
+    try { zxingRef.current?.reset(); } catch (_) {}
+    zxingRef.current = null;
+    scanBusyRef.current = false;
+  }
+
   async function captureFromVideo(): Promise<File | null> {
     const video  = videoRef.current;
     const canvas = canvasRef.current;
@@ -2172,9 +2490,12 @@ export default function CrewPage() {
   const activeCrew = clockEntries.filter((e) => !e.clock_out || e.status === 'active');
 
   // Strict dept isolation: only crew's own dept + broadcasts (dept = null)
-  // NEVER include messages from other departments
+  // NEVER include messages from other departments. Messages older than the
+  // local "cleared_at" timestamp are hidden from this device's crew view only.
   const relevantMsgs = messages.filter(
-    (m) => m.dept === null || m.dept === crewDept
+    (m) =>
+      (m.dept === null || m.dept === crewDept) &&
+      (!msgClearedAt || m.created_at > msgClearedAt)
   );
 
   // Supervisor thread: all messages where dept = crewDept OR dept IS NULL
@@ -2199,24 +2520,54 @@ export default function CrewPage() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  const quickActions = [
+  // Exactly 6 cards in a fixed order. Slot 2 ("Scan") is replaced by the build
+  // timer for the Craftsman dept; every other dept keeps the unified Scan card.
+  type QuickAction = { label: string; color: string; bg: string; onClick: () => void; icon: React.ReactNode };
+
+  const scanCard: QuickAction = crewDept === 'Craftsman'
+    ? {
+        label: buildStart ? 'Stop Build Timer' : 'Start Build Timer',
+        color: buildStart ? '#F87171' : '#2DE1C9',
+        bg:    buildStart ? 'rgba(248,113,113,0.08)' : 'rgba(45,225,201,0.08)',
+        onClick: buildStart ? () => { void handleStopTimer(); } : openBuildTimerModal,
+        icon: buildStart
+          ? <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+          : <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
+      }
+    : {
+        label: 'Scan',
+        color: '#5EEAD4', bg: 'rgba(94,234,212,0.08)',
+        onClick: openScan,
+        icon: (
+          <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 7V5a2 2 0 0 1 2-2h2"/>
+            <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
+            <path d="M21 17v2a2 2 0 0 1-2 2h-2"/>
+            <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
+            <line x1="7" y1="12" x2="17" y2="12"/>
+          </svg>
+        ),
+      };
+
+  const quickActions: QuickAction[] = [
     {
       label: 'Clock In / Out',
       color: '#2DE1C9', bg: 'rgba(45,225,201,0.08)',
       onClick: openClock,
       icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
     },
-    {
-      label: 'Log Inventory Need',
-      color: '#5EEAD4', bg: 'rgba(94,234,212,0.08)',
-      onClick: openInventory,
-      icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg>,
-    },
+    scanCard,
     {
       label: 'Report Damage',
       color: '#F87171', bg: 'rgba(248,113,113,0.08)',
       onClick: openDamage,
       icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>,
+    },
+    {
+      label: 'Log Inventory',
+      color: '#5EEAD4', bg: 'rgba(94,234,212,0.08)',
+      onClick: openInventory,
+      icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg>,
     },
     {
       label: 'View Plans',
@@ -2230,39 +2581,6 @@ export default function CrewPage() {
       onClick: openSOPs,
       icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>,
     },
-    {
-      label: 'Scan Part / QC',
-      color: '#60A5FA', bg: 'rgba(96,165,250,0.08)',
-      onClick: openParts,
-      icon: <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>,
-    },
-    ...((crewDept === 'Assembly' || crewDept === 'Production') ? ([
-      {
-        label: 'Assembly Scan',
-        color: '#5EEAD4', bg: 'rgba(94,234,212,0.08)',
-        onClick: openAssemblyScan,
-        icon: (
-          <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M3 7V5a2 2 0 0 1 2-2h2"/>
-            <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
-            <path d="M21 17v2a2 2 0 0 1-2 2h-2"/>
-            <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
-            <line x1="7" y1="12" x2="17" y2="12"/>
-          </svg>
-        ),
-      },
-    ] as { label: string; color: string; bg: string; onClick: () => void; icon: React.ReactNode }[]) : []),
-    ...(crewDept === 'Craftsman' ? ([
-      {
-        label: buildStart ? 'Stop Build Timer' : 'Start Build Timer',
-        color: buildStart ? '#F87171' : '#2DE1C9',
-        bg:    buildStart ? 'rgba(248,113,113,0.08)' : 'rgba(45,225,201,0.08)',
-        onClick: buildStart ? () => { void handleStopTimer(); } : openBuildTimerModal,
-        icon: buildStart
-          ? <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
-          : <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
-      },
-    ] as { label: string; color: string; bg: string; onClick: () => void; icon: React.ReactNode }[]) : []),
   ];
 
   return (
@@ -2350,10 +2668,68 @@ export default function CrewPage() {
             </div>
           </div>
 
+          {/* ── Current job (prominent) ─────────────────────────────────────── */}
+          {!activeJobLoading && (
+            activeJob ? (
+              <div style={{ marginBottom: 32, padding: '18px 20px', borderRadius: 16, background: 'var(--bg-1)', border: '1px solid var(--line)', borderLeft: '3px solid var(--teal)' }}>
+                <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 8 }}>Current Job</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--ink)', lineHeight: 1.15 }}>{activeJob.jobPath.split('/').join(' / ')}</div>
+                {(() => {
+                  const isProd = activeJob.mode === 'production';
+                  const pct = activeJob.total ? Math.round((activeJob.done / activeJob.total) * 100) : 0;
+                  const leftToCut = activeJob.total - activeJob.done;
+                  return (
+                    <>
+                      <div style={{ fontSize: 13.5, color: 'var(--ink-dim)', marginTop: 8 }}>
+                        {isProd
+                          ? `${leftToCut} cabinet${leftToCut === 1 ? '' : 's'} left to cut`
+                          : `${activeJob.done} of ${activeJob.total} cabinet${activeJob.total === 1 ? '' : 's'} complete`}
+                      </div>
+                      <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.07)', overflow: 'hidden', marginTop: 10 }}>
+                        <div style={{ width: `${pct}%`, height: '100%', background: 'var(--teal)', transition: 'width .3s' }} />
+                      </div>
+                      {activeJob.nextUnit && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(45,225,201,0.06)' }}>
+                          <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                            <path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/>
+                          </svg>
+                          <span style={{ fontSize: 13, color: 'var(--ink)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <b>{activeJob.nextUnit.label}</b> {isProd ? 'is ready to cut' : 'is ready to assemble'}
+                          </span>
+                        </div>
+                      )}
+                      <button
+                        onClick={() => {
+                          if (!activeJob.nextUnit) return;
+                          if (isProd) {
+                            const existing = prodUnits.find((u) => u.id === activeJob.nextUnit!.id);
+                            if (existing) { void openCutView(existing); }
+                            else { void openCutView({ id: activeJob.nextUnit.id, unit_label: activeJob.nextUnit.label, job_number: activeJob.jobNumber, cabinet_number: null, room_number: null, status: '', production_status: null, partsTotal: 0, partsCut: 0, jobPath: activeJob.jobPath, dueDate: null }); }
+                          } else {
+                            void openScanForUnit(activeJob.nextUnit.id);
+                          }
+                        }}
+                        className="btn btn-primary"
+                        style={{ width: '100%', justifyContent: 'center', marginTop: 14 }}
+                      >
+                        {isProd ? 'Start cutting' : 'Scan to start'}
+                      </button>
+                    </>
+                  );
+                })()}
+              </div>
+            ) : (
+              <div style={{ marginBottom: 32, padding: '18px 20px', borderRadius: 16, background: 'var(--bg-1)', border: '1px solid var(--line)' }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink-dim)' }}>No active job assigned</div>
+                <button onClick={openPlans} style={{ marginTop: 8, fontSize: 13, color: 'var(--teal)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit', textDecoration: 'underline' }}>View all jobs</button>
+              </div>
+            )
+          )}
+
           {/* Quick actions */}
           <div style={{ marginBottom: 40 }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Quick Actions</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               {quickActions.map(({ label, color, bg, onClick, icon }) => (
                 <button
                   key={label}
@@ -2468,86 +2844,8 @@ export default function CrewPage() {
             </div>
           )}
 
-          {/* ── Messages ──────────────────────────────────────────────────────── */}
-          <div style={{ marginBottom: 32 }}>
-
-            {/* Section header */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-              {openThread !== null && (
-                <button
-                  onClick={() => { setOpenThread(null); setReplyBody(''); }}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: '2px 4px', display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'inherit', fontSize: 13, transition: 'color 0.1s' }}
-                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--ink)'; }}
-                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--ink-mute)'; }}
-                >
-                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
-                  Inbox
-                </button>
-              )}
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
-                {openThread !== null ? 'Supervisor' : 'Messages'}
-              </div>
-            </div>
-
-            {/* Content */}
-            {dataLoading ? (
-              <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
-            ) : openThread === null ? (
-
-              /* ── Inbox: Supervisor thread only ── */
-              <button
-                onClick={() => { markSupRead(); setOpenThread('supervisor'); }}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 13, padding: '14px 16px',
-                  borderRadius: 12, background: 'var(--bg-1)',
-                  border: '1px solid var(--line)',
-                  cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', width: '100%',
-                  transition: 'border-color 0.15s',
-                }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(94,234,212,0.35)'; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line)'; }}
-              >
-                {/* Unread dot */}
-                <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: supUnread > 0 ? 'var(--teal)' : 'transparent' }} />
-                <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'rgba(94,234,212,0.12)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 17, fontWeight: 700 }}>
-                  S
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
-                    <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--ink)' }}>Supervisor</span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                      {supervisorLastMsg && (
-                        <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{formatDate(supervisorLastMsg.created_at)}</span>
-                      )}
-                      {supUnread > 0 && (
-                        <span style={{ minWidth: 20, textAlign: 'center', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 10, background: 'var(--teal)', color: '#04201c' }}>{supUnread}</span>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 13, color: 'var(--ink-mute)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {supervisorLastMsg
-                      ? (supervisorLastMsg.body.length > 65 ? supervisorLastMsg.body.slice(0, 62) + '…' : supervisorLastMsg.body)
-                      : 'No messages yet'
-                    }
-                  </div>
-                </div>
-                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, marginLeft: 4 }}><polyline points="9 18 15 12 9 6"/></svg>
-              </button>
-
-            ) : (
-
-              /* ── Conversation view — iMessage style ── */
-              <div className="portal-card" style={{ padding: '14px 16px' }}>
-                <MessageThread
-                  messages={openThreadMsgs}
-                  selfKind="crew"
-                  sending={replySaving}
-                  placeholder="Message Supervisor…"
-                  onSend={(t) => handleCrewReply(t)}
-                />
-              </div>
-            )}
-          </div>
+          {/* Messages moved to a slide-up overlay (see MessagesScreen below),
+              surfaced by the floating teal "New message from Supervisor" pill. */}
 
           {/* ── Recent Clock Activity ──────────────────────────────────────────── */}
           <div>
@@ -2591,6 +2889,132 @@ export default function CrewPage() {
 
         </main>
       </div>
+
+      {/* ── Floating "New message from Supervisor" pill ───────────────────────
+          Fixed above the footer, shown only while there are unread supervisor
+          messages and the Messages screen isn't already open. */}
+      {supUnread > 0 && !messagesOpen && (
+        <button
+          onClick={openMessages}
+          aria-label="New message from Supervisor"
+          style={{
+            position: 'fixed', left: 16, right: 16, bottom: 20, zIndex: 180,
+            margin: '0 auto', maxWidth: 420,
+            display: 'flex', alignItems: 'center', gap: 10,
+            padding: '12px 16px', borderRadius: 999,
+            background: 'rgba(45,225,201,0.14)', border: '1px solid rgba(45,225,201,0.4)',
+            backdropFilter: 'blur(8px)', cursor: 'pointer', textAlign: 'left',
+            fontFamily: 'inherit', boxShadow: '0 6px 24px rgba(0,0,0,0.4)',
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+          <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600, color: 'var(--teal)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            New message from Supervisor
+          </span>
+          <span style={{ flexShrink: 0, minWidth: 20, textAlign: 'center', fontSize: 11, fontWeight: 700, padding: '1px 7px', borderRadius: 10, background: 'var(--teal)', color: '#04201c' }}>
+            {supUnread}
+          </span>
+        </button>
+      )}
+
+      {/* ── Messages screen — full-screen slide-up overlay ──────────────────── */}
+      {messagesOpen && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 320, background: 'rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column' }} onClick={(e) => { if (e.target === e.currentTarget) closeMessages(); }}>
+          <style>{`@keyframes msgSlideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}`}</style>
+          <div
+            style={{
+              marginTop: 'auto', width: '100%', maxWidth: 560, alignSelf: 'center',
+              height: '92vh', background: '#0a0d10', borderTopLeftRadius: 20, borderTopRightRadius: 20,
+              border: '1px solid var(--line-strong)', borderBottom: 'none',
+              display: 'flex', flexDirection: 'column', overflow: 'hidden',
+              animation: 'msgSlideUp 0.25s ease-out',
+            }}
+          >
+            {/* Header */}
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 10, padding: '16px 18px', borderBottom: '1px solid var(--line)' }}>
+              {openThread !== null && (
+                <button
+                  onClick={() => { setOpenThread(null); setReplyBody(''); setMsgMenuOpen(false); }}
+                  aria-label="Back to inbox"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }}
+                >
+                  <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+                </button>
+              )}
+              <div style={{ flex: 1, fontSize: 17, fontWeight: 700, color: 'var(--ink)' }}>
+                {openThread !== null ? 'Supervisor' : 'Messages'}
+              </div>
+              {openThread !== null && (
+                <button
+                  onClick={() => setMsgMenuOpen((o) => !o)}
+                  aria-label="Conversation menu"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }}
+                >
+                  <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                </button>
+              )}
+              <button onClick={closeMessages} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }}>
+                <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+
+              {/* Clear-conversation menu (three-dot or long-press) */}
+              {msgMenuOpen && (
+                <div style={{ position: 'absolute', top: 54, right: 14, zIndex: 5, width: 260, background: '#11151a', border: '1px solid var(--line-strong)', borderRadius: 14, padding: 16, boxShadow: '0 8px 30px rgba(0,0,0,0.5)' }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)', marginBottom: 6 }}>Clear conversation?</div>
+                  <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', lineHeight: 1.5, marginBottom: 14 }}>
+                    This only clears your view. Supervisor can still see messages.
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={clearConversation} style={{ flex: 1, padding: '9px 0', borderRadius: 9, border: 'none', cursor: 'pointer', background: '#F87171', color: '#1a0606', fontWeight: 700, fontSize: 13, fontFamily: 'inherit' }}>Clear</button>
+                    <button onClick={() => setMsgMenuOpen(false)} style={{ flex: 1, padding: '9px 0', borderRadius: 9, border: '1px solid var(--line-strong)', cursor: 'pointer', background: 'none', color: 'var(--ink-mute)', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Body */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: openThread !== null ? '12px 16px' : '8px' }}>
+              {openThread === null ? (
+                /* Inbox — single Supervisor thread row */
+                <button
+                  onClick={openSupervisorThread}
+                  onContextMenu={(e) => { e.preventDefault(); setMsgMenuOpen(true); }}
+                  onPointerDown={() => { if (longPressTimer.current) clearTimeout(longPressTimer.current); longPressTimer.current = setTimeout(() => setMsgMenuOpen(true), 550); }}
+                  onPointerUp={() => { if (longPressTimer.current) clearTimeout(longPressTimer.current); }}
+                  onPointerLeave={() => { if (longPressTimer.current) clearTimeout(longPressTimer.current); }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 13, padding: '14px 12px', borderRadius: 12, background: 'var(--bg-1)', border: '1px solid var(--line)', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', width: '100%' }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: supUnread > 0 ? 'var(--teal)' : 'transparent' }} />
+                  <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'rgba(94,234,212,0.12)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 17, fontWeight: 700 }}>S</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+                      <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--ink)' }}>Supervisor</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                        {supervisorLastMsg && <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{formatDate(supervisorLastMsg.created_at)}</span>}
+                        {supUnread > 0 && <span style={{ minWidth: 20, textAlign: 'center', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 10, background: 'var(--teal)', color: '#04201c' }}>{supUnread}</span>}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 13, color: 'var(--ink-mute)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {supervisorLastMsg ? (supervisorLastMsg.body.length > 65 ? supervisorLastMsg.body.slice(0, 62) + '…' : supervisorLastMsg.body) : 'No messages yet'}
+                    </div>
+                  </div>
+                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, marginLeft: 4 }}><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+              ) : (
+                <MessageThread
+                  messages={openThreadMsgs}
+                  selfKind="crew"
+                  sending={replySaving}
+                  placeholder="Message Supervisor…"
+                  onSend={(t) => handleCrewReply(t)}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Clock Modal ─────────────────────────────────────────────────────── */}
       {modal === 'clock' && (
@@ -3437,19 +3861,20 @@ export default function CrewPage() {
                   <div style={{ position: 'absolute', top: 14, right: 14, width: 28, height: 28, borderTop: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 3px 0 0', zIndex: 2 }} />
                   <div style={{ position: 'absolute', bottom: 14, left: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderLeft: '2px solid #5EEAD4', borderRadius: '0 0 0 3px', zIndex: 2 }} />
                   <div style={{ position: 'absolute', bottom: 14, right: 14, width: 28, height: 28, borderBottom: '2px solid #5EEAD4', borderRight: '2px solid #5EEAD4', borderRadius: '0 0 3px 0', zIndex: 2 }} />
+                  {/* Teal flash on a successful QR/barcode decode */}
+                  {scanFlash && <div style={{ position: 'absolute', inset: 0, background: 'rgba(45,225,201,0.4)', zIndex: 3, transition: 'opacity 0.2s' }} />}
+                  {!cameraError && !cameraStarting && (
+                    <div style={{ position: 'absolute', bottom: 10, left: 0, right: 0, textAlign: 'center', fontSize: 10.5, color: 'rgba(255,255,255,0.7)', zIndex: 2 }}>Point at a QR or barcode</div>
+                  )}
                 </div>
 
                 <div>
-                  <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginBottom: 7, fontFamily: 'inherit' }}>
-                    Type part label — format: Job / Room / Cabinet / Part
-                  </div>
                   <input
                     className="form-input"
-                    placeholder="e.g. P-26-1001 / R1 / C3 / Left Side"
+                    placeholder="Or type part label..."
                     value={assemblyScanInput}
-                    onChange={(e) => { setAssemblyScanInput(e.target.value); setAssemblyScanNotFound(false); }}
+                    onChange={(e) => { setAssemblyScanInput(e.target.value); setAssemblyScanNotFound(false); setScanAiResult(null); }}
                     onKeyDown={(e) => { if (e.key === 'Enter') void handleAssemblyScanSearch(); }}
-                    autoFocus
                     style={{ width: '100%', fontSize: 15 }}
                   />
                   {assemblyScanNotFound && (
@@ -3458,6 +3883,42 @@ export default function CrewPage() {
                     </div>
                   )}
                 </div>
+
+                {/* ── AI fuzzy-match: confirm (85-94%) or pick from alternatives (<85%) ── */}
+                {scanAiResult && (scanAiResult.match || scanAiResult.alternatives.length > 0) && (
+                  <div style={{ border: '1px solid rgba(45,225,201,0.3)', borderRadius: 12, padding: 16, background: 'rgba(45,225,201,0.04)' }}>
+                    {scanAiResult.match && !scanShowAlts ? (
+                      <>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{scanAiResult.match.part_name}</div>
+                        <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginTop: 2 }}>{scanAiResult.match.cabinet_label}</div>
+                        <div style={{ fontSize: 12, color: 'var(--teal)', marginTop: 6 }}>AI matched with {Math.round(scanAiResult.match.confidence)}% confidence</div>
+                        <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                          <button className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }} onClick={() => void confirmScanMatch(scanAiResult.match!, assemblyScanInput)}>Yes, that&apos;s it</button>
+                          <button className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setScanShowAlts(true)}>No, show options</button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)', marginBottom: 10 }}>We found a few possible matches:</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {[...(scanAiResult.match ? [scanAiResult.match] : []), ...scanAiResult.alternatives]
+                            .filter((m, i, arr) => arr.findIndex((x) => x.cabinet_unit_id === m.cabinet_unit_id && x.part_name === m.part_name) === i)
+                            .map((m, i) => (
+                              <button key={`${m.cabinet_unit_id}-${i}`} onClick={() => void confirmScanMatch(m, assemblyScanInput)}
+                                style={{ textAlign: 'left', padding: '11px 13px', borderRadius: 10, background: 'var(--bg-1)', border: '1px solid var(--line)', cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
+                                <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--ink)' }}>{m.part_name}</div>
+                                <div style={{ fontSize: 11.5, color: 'var(--ink-mute)', marginTop: 2 }}>{m.cabinet_label} · {Math.round(m.confidence)}%</div>
+                              </button>
+                            ))}
+                        </div>
+                        <button onClick={() => { setScanAiResult(null); setScanShowAlts(false); setAssemblyScanNotFound(true); }}
+                          style={{ marginTop: 12, fontSize: 12.5, color: 'var(--ink-mute)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit', textDecoration: 'underline' }}>
+                          None of these
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
 
                 <button
                   className="btn btn-primary"
