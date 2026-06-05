@@ -15,6 +15,7 @@ type CrewMember = {
   joined_at: string | null;
   last_active: string | null;
   notes: string | null;
+  hourly_rate: number | null;
 };
 
 interface Props {
@@ -98,6 +99,7 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
   const [editName,   setEditName]   = useState('');
   const [editDept,   setEditDept]   = useState('');
   const [editRole,   setEditRole]   = useState('crew');
+  const [editRate,   setEditRate]   = useState('');
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [actioning, setActioning] = useState<Record<string, boolean>>({});
 
@@ -108,7 +110,7 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
     try {
       const { data, error } = await supabase
         .from('crew_members')
-        .select('id, tenant_id, name, department, role, status, joined_at, last_active, notes')
+        .select('id, tenant_id, name, department, role, status, joined_at, last_active, notes, hourly_rate')
         .eq('tenant_id', tenant.id)
         .order('name', { ascending: true });
       if (error) throw error;
@@ -196,7 +198,7 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
           status:     'active',
           notes:      addNotes.trim() || null,
         })
-        .select('id, tenant_id, name, department, role, status, joined_at, last_active, notes')
+        .select('id, tenant_id, name, department, role, status, joined_at, last_active, notes, hourly_rate')
         .single();
       if (error) throw error;
       // Optimistic insert (realtime will dedupe).
@@ -217,6 +219,7 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
     setEditName(m.name);
     setEditDept(m.department ?? '');
     setEditRole(m.role ?? 'crew');
+    setEditRate(m.hourly_rate != null ? String(m.hourly_rate) : '');
   }
 
   async function saveEdit(m: CrewMember) {
@@ -224,7 +227,8 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
     if (!name || actioning[m.id]) return;
     setActioning((p) => ({ ...p, [m.id]: true }));
     try {
-      const patch = { name, department: editDept || null, role: editRole };
+      const rate = editRate.trim() === '' ? null : Number(editRate);
+      const patch = { name, department: editDept || null, role: editRole, hourly_rate: (rate != null && !Number.isNaN(rate)) ? rate : null };
       const { error } = await supabase.from('crew_members').update(patch).eq('id', m.id).eq('tenant_id', tenant.id);
       if (error) throw error;
       setMembers((prev) => prev.map((x) => x.id === m.id ? { ...x, ...patch } : x));
@@ -408,6 +412,24 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
                               <select className="form-input" value={editRole} onChange={(e) => setEditRole(e.target.value)} style={{ cursor: 'pointer' }}>
                                 {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                               </select>
+                              {/* Hourly Rate — supervisor only, never sent to crew-facing queries */}
+                              <div>
+                                <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Hourly Rate (supervisor only)</label>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <span style={{ fontSize: 15, color: 'var(--ink-dim)', fontWeight: 600 }}>$</span>
+                                  <input
+                                    className="form-input"
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    placeholder="0.00"
+                                    value={editRate}
+                                    onChange={(e) => setEditRate(e.target.value)}
+                                    style={{ flex: 1 }}
+                                  />
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 5 }}>Never visible to crew members</div>
+                              </div>
                               <div style={{ display: 'flex', gap: 10 }}>
                                 <button className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setEditingId(null)}>Cancel</button>
                                 <button className="btn btn-primary" style={{ flex: 1, justifyContent: 'center', opacity: (!editName.trim() || busy) ? 0.5 : 1 }} onClick={() => void saveEdit(m)} disabled={!editName.trim() || busy}>

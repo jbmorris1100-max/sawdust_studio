@@ -61,6 +61,7 @@ type ReportKey = 'daily' | 'job' | 'weekly' | 'craftsman' | 'damage' | 'inventor
 interface Props {
   tenantId: string;
   showToast: (msg: string, error?: boolean) => void;
+  onGoToCrew?: () => void;
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -562,14 +563,36 @@ function DailyLaborReport({ tenantId, showToast }: Props) {
 
 // ── 2. Job Cost ───────────────────────────────────────────────────────────────
 
-function JobCostReport({ tenantId, showToast }: Props) {
+function JobCostReport({ tenantId, showToast, onGoToCrew }: Props) {
   const [jobs,    setJobs]    = useState<JobRow[]>([]);
   const [selJob,  setSelJob]  = useState('');
   const [clock,   setClock]   = useState<ClockEntry[]>([]);
   const [parts,   setParts]   = useState<PartRow[]>([]);
   const [damage,  setDamage]  = useState<DamageRow[]>([]);
   const [needs,   setNeeds]   = useState<NeedRow[]>([]);
+  const [rates,   setRates]   = useState<Record<string, number>>({}); // worker name (lowercased) → hourly_rate
   const [loading, setLoading] = useState(false);
+
+  // Pay rates are supervisor-only — fetched here in the Reports tab, never on
+  // any crew-facing query.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from('crew_members')
+          .select('name, hourly_rate')
+          .eq('tenant_id', tenantId);
+        if (cancelled) return;
+        const map: Record<string, number> = {};
+        ((data as { name: string | null; hourly_rate: number | null }[]) ?? []).forEach((r) => {
+          if (r.name && r.hourly_rate != null) map[r.name.toLowerCase()] = r.hourly_rate;
+        });
+        setRates(map);
+      } catch { /* rates optional — labor cost just shows "Rate not set" */ }
+    })();
+    return () => { cancelled = true; };
+  }, [tenantId]);
 
   useEffect(() => {
     supabase.from('jobs').select('id, job_number, job_name').eq('tenant_id', tenantId)
@@ -619,6 +642,21 @@ function JobCostReport({ tenantId, showToast }: Props) {
 
   const grandTotal = workerTotals.reduce((s, w) => s + w.hours, 0);
 
+  // Labor cost = hours × hourly_rate (per worker). Workers without a rate show
+  // "Rate not set" and are excluded from cost totals/averages.
+  const laborCosts = useMemo(() => workerTotals.map((w) => {
+    const rate = rates[w.name.toLowerCase()] ?? null;
+    return { ...w, rate, cost: rate != null ? w.hours * rate : null };
+  }), [workerTotals, rates]);
+  const totalLaborCost = laborCosts.reduce((s, w) => s + (w.cost ?? 0), 0);
+  const ratedHours     = laborCosts.filter((w) => w.rate != null).reduce((s, w) => s + w.hours, 0);
+  const avgRate        = ratedHours > 0 ? totalLaborCost / ratedHours : 0;
+  const anyRated       = laborCosts.some((w) => w.rate != null);
+  const deptCost: Record<string, number> = {};
+  laborCosts.forEach((w) => { if (w.cost != null) deptCost[w.dept] = (deptCost[w.dept] ?? 0) + w.cost; });
+  const topDept = Object.entries(deptCost).sort((a, b) => b[1] - a[1])[0] ?? null;
+  const money = (n: number) => `$${n.toFixed(2)}`;
+
   const SubCard = ({ title, count, children }: { title: string; count: number; children: React.ReactNode }) => (
     <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
       <div style={{ padding: '11px 16px', borderBottom: '1px solid var(--line)' }}>
@@ -648,6 +686,15 @@ function JobCostReport({ tenantId, showToast }: Props) {
 
       {selJob && (
         <>
+          {/* Labor cost summary */}
+          {!loading && anyRated && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+              <MetricTile label="Total Labor Cost" value={money(totalLaborCost)} color="#2DE1C9" />
+              <MetricTile label="Avg Hourly Rate" value={money(avgRate)} color="#5EEAD4" />
+              <MetricTile label="Most Expensive Dept" value={topDept ? `${topDept[0]} · ${money(topDept[1])}` : '—'} color="#A78BFA" />
+            </div>
+          )}
+
           {/* Labor */}
           <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
             <div style={{ padding: '11px 16px', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -684,6 +731,45 @@ function JobCostReport({ tenantId, showToast }: Props) {
               </table>
             </div>
           </div>
+
+          {/* Labor Costs — hours × hourly rate per worker */}
+          {!loading && workerTotals.length > 0 && (
+            <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '11px 16px', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Labor Costs</span>
+                {anyRated && <span style={{ fontSize: 13, fontWeight: 700, color: '#2DE1C9' }}>{money(totalLaborCost)} total</span>}
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead><tr>{['Worker', 'Dept', 'Hours', 'Rate', 'Cost'].map((h) => <th key={h} style={thSt}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {laborCosts.map((w, i) => (
+                      <tr key={w.name} style={{ background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent' }}>
+                        <td style={tdBold}>{w.name}</td>
+                        <td style={tdSt}>{w.dept}</td>
+                        <td style={tdSt}>{toHHMM(w.hours)}</td>
+                        <td style={tdSt}>
+                          {w.rate != null ? money(w.rate) : (
+                            onGoToCrew
+                              ? <button onClick={onGoToCrew} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--teal)', fontSize: 12.5, fontFamily: 'inherit', textDecoration: 'underline' }}>Rate not set</button>
+                              : <span style={{ color: 'var(--ink-mute)', fontSize: 12.5 }}>Rate not set</span>
+                          )}
+                        </td>
+                        <td style={tdSt}>{w.cost != null ? money(w.cost) : '—'}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ background: 'rgba(45,225,201,0.04)', borderTop: '2px solid var(--line)' }}>
+                      <td style={{ ...tdBold, color: 'var(--teal)' }}>TOTAL LABOR</td>
+                      <td />
+                      <td style={{ ...tdBold, color: 'var(--teal)' }}>{toHHMM(ratedHours)}</td>
+                      <td />
+                      <td style={{ ...tdBold, color: 'var(--teal)' }}>{money(totalLaborCost)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {!loading && (
             <>
@@ -1293,7 +1379,7 @@ const REPORT_NAV: { key: ReportKey; label: string }[] = [
   { key: 'parts',     label: 'Parts & QC'      },
 ];
 
-export default function ReportsTab({ tenantId, showToast }: Props) {
+export default function ReportsTab({ tenantId, showToast, onGoToCrew }: Props) {
   const [active, setActive] = useState<ReportKey>('daily');
 
   return (
@@ -1321,7 +1407,7 @@ export default function ReportsTab({ tenantId, showToast }: Props) {
       </div>
 
       {active === 'daily'     && <DailyLaborReport     tenantId={tenantId} showToast={showToast} />}
-      {active === 'job'       && <JobCostReport        tenantId={tenantId} showToast={showToast} />}
+      {active === 'job'       && <JobCostReport        tenantId={tenantId} showToast={showToast} onGoToCrew={onGoToCrew} />}
       {active === 'weekly'    && <WeeklySummaryReport  tenantId={tenantId} showToast={showToast} />}
       {active === 'craftsman' && <CraftsmanBuildReport tenantId={tenantId} showToast={showToast} />}
       {active === 'damage'    && <DamageReportLog      tenantId={tenantId} showToast={showToast} />}

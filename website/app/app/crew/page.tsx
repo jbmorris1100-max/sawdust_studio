@@ -9,6 +9,7 @@ import { trialDaysLeft, getDepartments, type Tenant } from '@/lib/auth';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import PushPrompt from '@/components/PushPrompt';
 import OfflineBanner from '@/components/OfflineBanner';
+import MessageThread from '@/components/MessageThread';
 import { enqueue, pendingCount } from '@/lib/offlineQueue';
 import { sendNotify } from '@/lib/notify';
 
@@ -665,6 +666,10 @@ export default function CrewPage() {
   const openThreadRef = useRef<string | null>(null);
   useEffect(() => { openThreadRef.current = openThread; }, [openThread]);
   const [replyBody,   setReplyBody]   = useState('');
+  // Last time the crew opened the Supervisor thread → drives the unread dot.
+  const [supRead,     setSupRead]     = useState('');
+  useEffect(() => { try { setSupRead(localStorage.getItem('crew_msg_read_sup') || ''); } catch { /* ignore */ } }, []);
+  function markSupRead() { const now = new Date().toISOString(); try { localStorage.setItem('crew_msg_read_sup', now); } catch { /* ignore */ } setSupRead(now); }
   const [replySaving, setReplySaving] = useState(false);
 
   // Load localStorage identity + restore in-progress timers
@@ -2051,8 +2056,8 @@ export default function CrewPage() {
 
   // ── Crew reply inside a thread ──────────────────────────────────────────────
 
-  async function handleCrewReply() {
-    const body = replyBody.trim();
+  async function handleCrewReply(overrideBody?: string) {
+    const body = (overrideBody ?? replyBody).trim();
     if (!body || !openThread || replySaving) return;
     setReplySaving(true);
     // Replies always go to crew's own dept so supervisor sees them in the correct thread
@@ -2176,6 +2181,7 @@ export default function CrewPage() {
   const supervisorMsgs = [...relevantMsgs]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const supervisorLastMsg = supervisorMsgs[0] ?? null;
+  const supUnread = relevantMsgs.filter((m) => m.sender_name === 'Supervisor' && m.created_at > supRead).length;
 
   // Conversation messages sorted oldest-first for display
   const openThreadMsgs = openThread === 'supervisor' ? [...supervisorMsgs].reverse() : [];
@@ -2490,9 +2496,9 @@ export default function CrewPage() {
 
               /* ── Inbox: Supervisor thread only ── */
               <button
-                onClick={() => setOpenThread('supervisor')}
+                onClick={() => { markSupRead(); setOpenThread('supervisor'); }}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 14, padding: '16px',
+                  display: 'flex', alignItems: 'center', gap: 13, padding: '14px 16px',
                   borderRadius: 12, background: 'var(--bg-1)',
                   border: '1px solid var(--line)',
                   cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', width: '100%',
@@ -2501,20 +2507,20 @@ export default function CrewPage() {
                 onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(94,234,212,0.35)'; }}
                 onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line)'; }}
               >
-                <div style={{ width: 42, height: 42, borderRadius: 12, background: 'rgba(94,234,212,0.1)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                {/* Unread dot */}
+                <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: supUnread > 0 ? 'var(--teal)' : 'transparent' }} />
+                <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'rgba(94,234,212,0.12)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 17, fontWeight: 700 }}>
+                  S
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>Supervisor</span>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+                    <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--ink)' }}>Supervisor</span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                      {supervisorMsgs.length > 0 && (
-                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: 'rgba(94,234,212,0.12)', color: 'var(--teal)' }}>
-                          {supervisorMsgs.length}
-                        </span>
-                      )}
                       {supervisorLastMsg && (
                         <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{formatDate(supervisorLastMsg.created_at)}</span>
+                      )}
+                      {supUnread > 0 && (
+                        <span style={{ minWidth: 20, textAlign: 'center', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 10, background: 'var(--teal)', color: '#04201c' }}>{supUnread}</span>
                       )}
                     </div>
                   </div>
@@ -2530,61 +2536,15 @@ export default function CrewPage() {
 
             ) : (
 
-              /* ── Conversation view ── */
-              <div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
-                  {openThreadMsgs.length === 0 ? (
-                    <div style={{ fontSize: 13, color: 'var(--ink-mute)', padding: '12px 0' }}>No messages yet.</div>
-                  ) : (
-                    openThreadMsgs.map((msg) => {
-                      const isSelf = msg.sender_name !== 'Supervisor';
-                      return (
-                        <div
-                          key={msg.id}
-                          style={{
-                            padding: '12px 14px', borderRadius: 12,
-                            background: isSelf ? 'rgba(255,255,255,0.02)' : 'rgba(94,234,212,0.04)',
-                            border: isSelf ? '1px solid var(--line)' : '1px solid rgba(94,234,212,0.15)',
-                            alignSelf: isSelf ? 'flex-end' : 'flex-start',
-                            maxWidth: '82%',
-                          }}
-                        >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 5, gap: 12 }}>
-                            <span style={{ fontSize: 12, fontWeight: 700, color: isSelf ? 'var(--ink)' : 'var(--teal)' }}>
-                              {msg.sender_name}
-                            </span>
-                            <span style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0 }}>
-                              {formatTime(msg.created_at)}
-                            </span>
-                          </div>
-                          <p style={{ fontSize: 14, color: 'var(--ink-dim)', margin: 0, lineHeight: 1.55 }}>{msg.body}</p>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-                <div style={{ borderTop: '1px solid var(--line)', paddingTop: 14 }}>
-                  <textarea
-                    className="form-input"
-                    placeholder="Reply to Supervisor…"
-                    value={replyBody}
-                    onChange={(e) => setReplyBody(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleCrewReply(); }}
-                    rows={3}
-                    style={{ resize: 'none', marginBottom: 10 }}
-                  />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>⌘↵ to send</span>
-                    <button
-                      className="btn btn-primary"
-                      style={{ opacity: (!replyBody.trim() || replySaving) ? 0.5 : 1, padding: '8px 20px' }}
-                      onClick={handleCrewReply}
-                      disabled={!replyBody.trim() || replySaving}
-                    >
-                      {replySaving ? 'Sending…' : 'Send'}
-                    </button>
-                  </div>
-                </div>
+              /* ── Conversation view — iMessage style ── */
+              <div className="portal-card" style={{ padding: '14px 16px' }}>
+                <MessageThread
+                  messages={openThreadMsgs}
+                  selfKind="crew"
+                  sending={replySaving}
+                  placeholder="Message Supervisor…"
+                  onSend={(t) => handleCrewReply(t)}
+                />
               </div>
             )}
           </div>

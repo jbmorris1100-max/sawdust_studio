@@ -14,6 +14,7 @@ import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import JobSearch, { type SearchTarget } from '@/components/JobSearch';
 import PushPrompt from '@/components/PushPrompt';
 import OfflineBanner from '@/components/OfflineBanner';
+import MessageThread from '@/components/MessageThread';
 import { sendNotify } from '@/lib/notify';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -546,6 +547,9 @@ export default function SupervisorPage() {
   const [updatingPartId, setUpdatingPartId] = useState<string | null>(null);
   const [nextDeptFor,    setNextDeptFor]    = useState<Record<string, string>>({});
   const [jobs,           setJobs]           = useState<Job[]>([]);
+  // job_number → accumulated labor cost (supervisor-only: pay rates fetched here,
+  // never on a crew query). Only populated for jobs with a rated worker + hours.
+  const [laborByJob,     setLaborByJob]     = useState<Record<string, number>>({});
   const [newJobNum,      setNewJobNum]      = useState('');
   const [newJobName,     setNewJobName]     = useState('');
   const [newJobClient,   setNewJobClient]   = useState('');
@@ -605,6 +609,17 @@ export default function SupervisorPage() {
   const [msgBody,    setMsgBody]    = useState('');
   const [msgDept,    setMsgDept]    = useState('');
   const [sending,    setSending]    = useState(false);
+  // Per-thread last-read timestamps (localStorage) → drives the unread dot/count.
+  const [msgRead,    setMsgRead]    = useState<Record<string, string>>({});
+  const [hoverThread, setHoverThread] = useState<string | null>(null);
+  useEffect(() => { try { const r = localStorage.getItem('sup_msg_read'); if (r) setMsgRead(JSON.parse(r)); } catch { /* ignore */ } }, []);
+  function markThreadRead(key: string) {
+    setMsgRead((prev) => {
+      const next = { ...prev, [key]: new Date().toISOString() };
+      try { localStorage.setItem('sup_msg_read', JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }
 
   // Message thread view — null = inbox, string = dept key ('__broadcast__' for null-dept)
   const [openThread, setOpenThread] = useState<string | null>(null);
@@ -669,6 +684,7 @@ export default function SupervisorPage() {
   const [supInvJobNum,  setSupInvJobNum]  = useState('');
   const [supInvNotes,   setSupInvNotes]   = useState('');
   const [supInvSaving,  setSupInvSaving]  = useState(false);
+  const [showResolvedNeeds, setShowResolvedNeeds] = useState(false);
 
   // Supervisor damage form
   const [supDmgDesc,    setSupDmgDesc]    = useState('');
@@ -838,6 +854,41 @@ export default function SupervisorPage() {
   }, [tenant]);
 
   useEffect(() => { void loadPipeline(); }, [loadPipeline]);
+
+  // ── Labor cost per job (Overview) ───────────────────────────────────────────
+  // Sums hours × hourly_rate per job_number. Pay rates are supervisor-only, so
+  // this query runs only on the supervisor page. Best-effort, tenant-scoped.
+  useEffect(() => {
+    if (!tenant) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [tcRes, cmRes] = await Promise.all([
+          supabase.from('time_clock')
+            .select('worker_name, job_number, total_hours, clock_in, clock_out')
+            .eq('tenant_id', tenant.id).not('job_number', 'is', null).limit(5000),
+          supabase.from('crew_members')
+            .select('name, hourly_rate').eq('tenant_id', tenant.id),
+        ]);
+        if (cancelled) return;
+        const rates: Record<string, number> = {};
+        ((cmRes.data as { name: string | null; hourly_rate: number | null }[]) ?? []).forEach((r) => {
+          if (r.name && r.hourly_rate != null) rates[r.name.toLowerCase()] = r.hourly_rate;
+        });
+        const byJob: Record<string, number> = {};
+        ((tcRes.data as { worker_name: string | null; job_number: string | null; total_hours: number | null; clock_in: string; clock_out: string | null }[]) ?? []).forEach((e) => {
+          if (!e.job_number || !e.worker_name) return;
+          const rate = rates[e.worker_name.toLowerCase()];
+          if (rate == null) return; // only rated workers contribute
+          const hours = e.total_hours ?? (e.clock_out ? Math.max(0, (new Date(e.clock_out).getTime() - new Date(e.clock_in).getTime()) / 3_600_000) : 0);
+          if (hours <= 0) return;
+          byJob[e.job_number] = (byJob[e.job_number] ?? 0) + hours * rate;
+        });
+        setLaborByJob(byJob);
+      } catch (_) { /* best-effort — overview labor is optional */ }
+    })();
+    return () => { cancelled = true; };
+  }, [tenant]);
 
   // ── AI handlers ────────────────────────────────────────────────────────────
 
@@ -1191,8 +1242,8 @@ export default function SupervisorPage() {
 
   // ── Message send ────────────────────────────────────────────────────────────
 
-  async function handleSendMessage() {
-    const body = msgBody.trim();
+  async function handleSendMessage(overrideBody?: string) {
+    const body = (overrideBody ?? msgBody).trim();
     // In a thread: dept is fixed to that thread; in inbox: use the dropdown value
     const dept = openThread !== null
       ? (openThread === '__broadcast__' ? null : openThread)
@@ -2019,6 +2070,11 @@ export default function SupervisorPage() {
   // These must be above the early return so useMemo is never called conditionally
   const openNeeds  = needs.filter((n)  => !['resolved', 'closed', 'received', 'cancelled'].includes((n.status  ?? 'open').toLowerCase()));
   const openDamage = damage.filter((d) => !['resolved', 'closed'].includes((d.status ?? 'open').toLowerCase()));
+  // Inventory view split: active = pending/ordered (default + badge); resolved =
+  // received/cancelled (revealed via the archive toggle). craftsman_material is
+  // never shown in the inventory tab. All rows stay in the DB regardless.
+  const activeNeeds   = needs.filter((n) => ['pending', 'ordered'].includes((n.status ?? 'pending').toLowerCase()));
+  const resolvedNeeds = needs.filter((n) => ['received', 'cancelled'].includes((n.status ?? '').toLowerCase()));
 
   const proactiveFlags = useMemo((): ProactiveFlag[] => {
     const flags: ProactiveFlag[] = [];
@@ -2072,7 +2128,7 @@ export default function SupervisorPage() {
     { key: 'crew',          label: 'Crew' },
     { key: 'assembly',      label: 'Assembly' },
     { key: 'messages',      label: 'Messages',    count: messages.length },
-    { key: 'needs',         label: 'Inventory',   count: openNeeds.length },
+    { key: 'needs',         label: 'Inventory',   count: activeNeeds.length },
     { key: 'damage',        label: 'Damage',      count: openDamage.length },
     { key: 'plans',         label: 'Plans',       count: plans.length > 0 ? plans.length : undefined },
     { key: 'sops',          label: 'SOPs',        count: sops.length > 0 ? sops.length : undefined },
@@ -2667,6 +2723,9 @@ export default function SupervisorPage() {
                         {j.install_date && j.install_date !== j.due_date && (
                           <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>Install {new Date(j.install_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
                         )}
+                        {(() => { const c = laborByJob[j.job_number]; return c && c > 0 ? (
+                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--teal)' }}>Labor to date: ${c.toFixed(2)}</span>
+                        ) : null; })()}
                       </div>
                       <button
                         onClick={() => { void handleDeleteJob(j.id); }}
@@ -2721,7 +2780,7 @@ export default function SupervisorPage() {
                   <button
                     className="btn btn-primary"
                     style={{ alignSelf: 'flex-end', padding: '12px 20px', opacity: (!msgBody.trim() || sending) ? 0.5 : 1 }}
-                    onClick={handleSendMessage}
+                    onClick={() => handleSendMessage()}
                     disabled={!msgBody.trim() || sending}
                   >
                     {sending ? 'Sending…' : 'Send'}
@@ -2737,64 +2796,56 @@ export default function SupervisorPage() {
                 <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No messages yet. Send the first message above.</div>
               ) : (
                 <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
-                  {msgThreads.map(({ deptKey, label, count, lastMsg }, i) => (
-                    <div
-                      key={deptKey}
-                      style={{
-                        display: 'flex', alignItems: 'center',
-                        borderBottom: i < msgThreads.length - 1 ? '1px solid var(--line)' : 'none',
-                      }}
-                    >
-                      {/* Clickable row area */}
+                  {msgThreads.map(({ deptKey, label, lastMsg }, i) => {
+                    const lastRead = msgRead[deptKey] ?? '';
+                    const unread = threadMap[deptKey].filter((m) => m.sender_name !== 'Supervisor' && m.created_at > lastRead).length;
+                    const initial = (label.trim()[0] ?? '?').toUpperCase();
+                    return (
                       <div
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => { setOpenThread(deptKey); setMsgBody(''); }}
-                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { setOpenThread(deptKey); setMsgBody(''); } }}
-                        style={{
-                          flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 14, padding: '16px 20px',
-                          cursor: 'pointer',
-                          transition: 'background 0.1s',
-                        }}
-                        onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'rgba(94,234,212,0.03)'; }}
-                        onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'none'; }}
+                        key={deptKey}
+                        onMouseEnter={() => setHoverThread(deptKey)}
+                        onMouseLeave={() => setHoverThread(null)}
+                        style={{ display: 'flex', alignItems: 'center', borderBottom: i < msgThreads.length - 1 ? '1px solid var(--line)' : 'none', background: hoverThread === deptKey ? 'rgba(94,234,212,0.03)' : 'none', transition: 'background 0.1s' }}
                       >
-                        <div style={{ width: 40, height: 40, borderRadius: 12, background: 'rgba(94,234,212,0.08)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                          <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                        </div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{label}</span>
-                            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 10, background: 'rgba(94,234,212,0.1)', color: 'var(--teal)' }}>
-                              {count}
-                            </span>
+                        {/* Clickable row area */}
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => { markThreadRead(deptKey); setOpenThread(deptKey); setMsgBody(''); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { markThreadRead(deptKey); setOpenThread(deptKey); setMsgBody(''); } }}
+                          style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 13, padding: '14px 16px 14px 20px', cursor: 'pointer' }}
+                        >
+                          {/* Unread dot */}
+                          <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: unread > 0 ? 'var(--teal)' : 'transparent' }} />
+                          {/* Dept-initial avatar */}
+                          <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'rgba(94,234,212,0.12)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 17, fontWeight: 700 }}>
+                            {initial}
                           </div>
-                          <div style={{ fontSize: 13, color: 'var(--ink-mute)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            <span style={{ color: lastMsg.sender_name === 'Supervisor' ? 'var(--teal)' : 'var(--ink-dim)', fontWeight: 600 }}>{lastMsg.sender_name}:</span>{' '}
-                            {lastMsg.body.length > 80 ? lastMsg.body.slice(0, 77) + '…' : lastMsg.body}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--ink)', marginBottom: 2 }}>{label}</div>
+                            <div style={{ fontSize: 13, color: 'var(--ink-mute)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              <span style={{ color: lastMsg.sender_name === 'Supervisor' ? 'var(--teal)' : 'var(--ink-dim)', fontWeight: 600 }}>{lastMsg.sender_name}:</span>{' '}
+                              {lastMsg.body.length > 80 ? lastMsg.body.slice(0, 77) + '…' : lastMsg.body}
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5, flexShrink: 0 }}>
+                            <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{relativeTime(lastMsg.created_at)}</span>
+                            {unread > 0 && (
+                              <span style={{ minWidth: 20, textAlign: 'center', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 10, background: 'var(--teal)', color: '#04201c' }}>{unread}</span>
+                            )}
                           </div>
                         </div>
-                        <div style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0, marginRight: 4 }}>
-                          {formatDate(lastMsg.created_at)}
-                        </div>
-                        <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: 'var(--ink-mute)', flexShrink: 0 }}><polyline points="9 18 15 12 9 6"/></svg>
+                        {/* Thread delete — appears on hover (desktop) */}
+                        <button
+                          onClick={() => handleDeleteThread(deptKey, label)}
+                          title={`Delete all ${label} messages`}
+                          style={{ flexShrink: 0, marginRight: 16, background: 'none', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 6, padding: '4px 8px', cursor: 'pointer', color: '#F87171', fontSize: 11, fontFamily: 'inherit', opacity: hoverThread === deptKey ? 1 : 0.35, transition: 'opacity 0.12s' }}
+                        >
+                          Delete
+                        </button>
                       </div>
-                      {/* Thread delete button */}
-                      <button
-                        onClick={() => handleDeleteThread(deptKey, label)}
-                        title={`Delete all ${label} messages`}
-                        style={{
-                          flexShrink: 0, marginRight: 16, background: 'none', border: '1px solid rgba(248,113,113,0.3)',
-                          borderRadius: 6, padding: '4px 8px', cursor: 'pointer', color: '#F87171', fontSize: 11,
-                          fontFamily: 'inherit', transition: 'background 0.1s, border-color 0.1s',
-                        }}
-                        onMouseEnter={(e) => { const b = e.currentTarget; b.style.background = 'rgba(248,113,113,0.08)'; b.style.borderColor = '#F87171'; }}
-                        onMouseLeave={(e) => { const b = e.currentTarget; b.style.background = 'none'; b.style.borderColor = 'rgba(248,113,113,0.3)'; }}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -2820,62 +2871,15 @@ export default function SupervisorPage() {
                 </span>
               </div>
 
-              {/* Bubble conversation — same structure as crew page */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {openThreadMsgs.length === 0 ? (
-                  <div style={{ fontSize: 13, color: 'var(--ink-mute)', padding: '12px 0' }}>No messages in this thread.</div>
-                ) : (
-                  openThreadMsgs.map((msg) => {
-                    const isSelf = msg.sender_name === 'Supervisor';
-                    return (
-                      <div
-                        key={msg.id}
-                        style={{
-                          padding: '12px 14px', borderRadius: 12,
-                          background: isSelf ? 'rgba(94,234,212,0.04)' : 'rgba(255,255,255,0.02)',
-                          border: isSelf ? '1px solid rgba(94,234,212,0.15)' : '1px solid var(--line)',
-                          alignSelf: isSelf ? 'flex-start' : 'flex-end',
-                          maxWidth: '82%',
-                          opacity: msg.id.startsWith('opt-') ? 0.6 : 1,
-                        }}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 5, gap: 12 }}>
-                          <span style={{ fontSize: 12, fontWeight: 700, color: isSelf ? 'var(--teal)' : 'var(--ink)' }}>
-                            {msg.sender_name}
-                          </span>
-                          <span style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0 }}>
-                            {formatTime(msg.created_at)}
-                          </span>
-                        </div>
-                        <p style={{ fontSize: 14, color: 'var(--ink-dim)', margin: 0, lineHeight: 1.55 }}>{msg.body}</p>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-
-              {/* Reply box — same structure as crew page */}
-              <div style={{ borderTop: '1px solid var(--line)', paddingTop: 14 }}>
-                <textarea
-                  className="form-input"
-                  placeholder={`Reply to ${openThreadLabel}…`}
-                  value={msgBody}
-                  onChange={(e) => setMsgBody(e.target.value)}
-                  rows={3}
-                  style={{ resize: 'none', marginBottom: 10, width: '100%' }}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSendMessage(); }}
+              {/* iMessage-style conversation + pinned input */}
+              <div className="portal-card" style={{ padding: '14px 16px' }}>
+                <MessageThread
+                  messages={openThreadMsgs}
+                  selfKind="supervisor"
+                  sending={sending}
+                  placeholder={`Message ${openThreadLabel}…`}
+                  onSend={(t) => handleSendMessage(t)}
                 />
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>⌘↵ to send</span>
-                  <button
-                    className="btn btn-primary"
-                    style={{ opacity: (!msgBody.trim() || sending) ? 0.5 : 1, padding: '8px 20px' }}
-                    onClick={handleSendMessage}
-                    disabled={!msgBody.trim() || sending}
-                  >
-                    {sending ? 'Sending…' : 'Reply'}
-                  </button>
-                </div>
               </div>
             </div>
           )}
@@ -2938,8 +2942,8 @@ export default function SupervisorPage() {
               </div>
               {dataLoading ? (
                 <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
-              ) : needs.length === 0 ? (
-                <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>No inventory needs logged.</div>
+              ) : activeNeeds.length === 0 ? (
+                <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>No active inventory needs. Resolved items are hidden.</div>
               ) : (
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
@@ -2950,9 +2954,8 @@ export default function SupervisorPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {needs.map((n) => {
+                    {activeNeeds.map((n) => {
                       const s = (n.status ?? 'pending').toLowerCase();
-                      const isActionable = !['received', 'cancelled'].includes(s);
                       const busy = actioning[n.id];
                       return (
                         <tr key={n.id} style={{ borderBottom: '1px solid var(--line)' }}>
@@ -2964,20 +2967,45 @@ export default function SupervisorPage() {
                           <td style={{ ...tdStyle }}><StatusBadge status={n.status} /></td>
                           <td style={{ ...tdStyle, paddingRight: 20 }}>
                             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                              {isActionable && s !== 'ordered' && (
+                              {s !== 'ordered' && (
                                 <ActionBtn label="Mark Ordered" color="#5EEAD4" onClick={() => handleNeedStatus(n.id, 'ordered')} disabled={busy} />
                               )}
-                              {isActionable && (
-                                <ActionBtn label="Received" color="#34D399" onClick={() => handleNeedStatus(n.id, 'received')} disabled={busy} />
-                              )}
-                              {isActionable && (
-                                <ActionBtn label="Cancel" color="#F87171" onClick={() => handleNeedStatus(n.id, 'cancelled')} disabled={busy} />
-                              )}
+                              <ActionBtn label="Received" color="#34D399" onClick={() => handleNeedStatus(n.id, 'received')} disabled={busy} />
+                              <ActionBtn label="Cancel" color="#F87171" onClick={() => handleNeedStatus(n.id, 'cancelled')} disabled={busy} />
                             </div>
                           </td>
                         </tr>
                       );
                     })}
+                  </tbody>
+                </table>
+              )}
+
+              {/* Archive toggle — reveals received / cancelled items (kept in DB) */}
+              {resolvedNeeds.length > 0 && (
+                <div style={{ padding: '12px 20px', borderTop: '1px solid var(--line)' }}>
+                  <button
+                    onClick={() => setShowResolvedNeeds((v) => !v)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--teal)', fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit', padding: 0 }}
+                  >
+                    {showResolvedNeeds ? 'Hide resolved' : `Show resolved items (${resolvedNeeds.length})`}
+                  </button>
+                </div>
+              )}
+              {showResolvedNeeds && resolvedNeeds.length > 0 && (
+                <table style={{ width: '100%', borderCollapse: 'collapse', borderTop: '1px solid var(--line)' }}>
+                  <tbody>
+                    {resolvedNeeds.map((n) => (
+                      <tr key={n.id} style={{ borderBottom: '1px solid var(--line)', opacity: 0.5 }}>
+                        <td style={{ ...tdBold, textDecoration: 'line-through' }}>{n.item}</td>
+                        <td style={tdStyle}>{n.dept ?? '—'}</td>
+                        <td style={tdStyle}>{n.job_number ?? '—'}</td>
+                        <td style={tdStyle}>{n.qty ?? '—'}</td>
+                        <td style={tdStyle}>{formatDate(n.created_at)}</td>
+                        <td style={{ ...tdStyle }}><StatusBadge status={n.status} /></td>
+                        <td style={{ ...tdStyle, paddingRight: 20 }} />
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               )}
@@ -4093,7 +4121,7 @@ export default function SupervisorPage() {
 
           {/* ── Reports tab ──────────────────────────────────────────────── */}
           {tab === 'reports' && tenant && (
-            <ReportsTab tenantId={tenant.id} showToast={showToast} />
+            <ReportsTab tenantId={tenant.id} showToast={showToast} onGoToCrew={() => setTab('crew')} />
           )}
 
           {/* ── Settings tab ─────────────────────────────────────────────── */}
