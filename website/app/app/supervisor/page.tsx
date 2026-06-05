@@ -393,6 +393,14 @@ function Toast({ msg, error }: { msg: string; error?: boolean }) {
   );
 }
 
+// Title-case a job path segment-by-segment (e.g. "JOHNSON/kitchen" → "Johnson/Kitchen")
+function titleCasePath(path: string): string {
+  return path
+    .split('/')
+    .map((seg) => seg.trim().toLowerCase().replace(/\b[a-z]/g, (ch) => ch.toUpperCase()))
+    .join('/');
+}
+
 function StatusBadge({ status }: { status: string | null }) {
   const s = (status ?? 'open').toLowerCase();
   const map: Record<string, { color: string; bg: string }> = {
@@ -799,7 +807,7 @@ export default function SupervisorPage() {
           .from('jobs').select('job_number, job_path, due_date, status')
           .eq('tenant_id', tenant.id).eq('status', 'active').limit(500);
         ((jrows as { job_number: string; job_path: string | null; due_date: string | null }[]) ?? []).forEach((j) => {
-          jobMeta[j.job_number] = { jobPath: j.job_path || `Job ${j.job_number}`, dueDate: j.due_date ?? null };
+          jobMeta[j.job_number] = { jobPath: j.job_path || j.job_number, dueDate: j.due_date ?? null };
         });
       } catch (_) {}
 
@@ -808,8 +816,9 @@ export default function SupervisorPage() {
       rows.forEach((c) => {
         const jn = c.job_number ?? 'unassigned';
         const meta = jobMeta[jn];
-        // Only surface jobs that still exist & are active (have meta) — otherwise group loosely
-        const row = (byJob[jn] ??= { jobNumber: jn, jobPath: meta?.jobPath || `Job ${jn}`, dueDate: meta?.dueDate ?? null, cabinetsTotal: 0, production: 0, assembly: 0, finishing: 0, done: 0, cabinetsCut: 0 });
+        const rawPath = meta?.jobPath || jn;          // no "Job " prefix
+        const key = rawPath.toLowerCase();            // group by lowercased path → merges case duplicates
+        const row = (byJob[key] ??= { jobNumber: jn, jobPath: titleCasePath(rawPath), dueDate: meta?.dueDate ?? null, cabinetsTotal: 0, production: 0, assembly: 0, finishing: 0, done: 0, cabinetsCut: 0 });
         row.cabinetsTotal++;
         if (cut(c.production_status)) row.cabinetsCut++;
         if (c.status === 'complete') row.done++;
@@ -3141,7 +3150,11 @@ export default function SupervisorPage() {
                     {planJobOpen && planJobId !== '__new__' && (() => {
                       const q = planJobQuery.trim().toLowerCase();
                       const sorted = [...jobs].sort((a, b) => jobLabel(a).localeCompare(jobLabel(b)));
-                      const matches = (planJobId || q === '') ? sorted : sorted.filter((j) => jobLabel(j).toLowerCase().includes(q));
+                      const matches = (planJobId || q === '') ? sorted : sorted.filter((j) =>
+                        (j.job_path  ?? '').toLowerCase().includes(q) ||
+                        (j.job_name  ?? '').toLowerCase().includes(q) ||
+                        (j.job_number ?? '').toLowerCase().includes(q)
+                      );
                       return (
                         <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 30, marginTop: 4, maxHeight: 240, overflowY: 'auto', background: 'var(--bg-2, #14181c)', border: '1px solid var(--line)', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
                           {matches.length === 0 && (
