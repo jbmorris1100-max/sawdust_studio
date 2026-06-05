@@ -393,12 +393,14 @@ function Toast({ msg, error }: { msg: string; error?: boolean }) {
   );
 }
 
+// Title-case every word in a string (e.g. "johnson residence" → "Johnson Residence")
+function toTitleCase(str: string): string {
+  return str.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.slice(1).toLowerCase());
+}
+
 // Title-case a job path segment-by-segment (e.g. "JOHNSON/kitchen" → "Johnson/Kitchen")
 function titleCasePath(path: string): string {
-  return path
-    .split('/')
-    .map((seg) => seg.trim().toLowerCase().replace(/\b[a-z]/g, (ch) => ch.toUpperCase()))
-    .join('/');
+  return path.split('/').map((seg) => toTitleCase(seg.trim())).join('/');
 }
 
 function StatusBadge({ status }: { status: string | null }) {
@@ -1142,8 +1144,8 @@ export default function SupervisorPage() {
 
   async function handleAddJob() {
     const num    = newJobNum.trim();
-    const client = newJobClient.trim();
-    const room   = newJobRoom.trim();
+    const client = toTitleCase(newJobClient.trim());
+    const room   = toTitleCase(newJobRoom.trim());
     if ((!num && !client) || addingJob || !tenant) return;
     const jobPath   = client ? (room ? `${client}/${room}` : client) : null;
     const jobNumber = num || jobPath || client; // job_number is NOT NULL
@@ -1516,8 +1518,8 @@ export default function SupervisorPage() {
 
   // Human-friendly label for a job in the selector ("Client / Room").
   function jobLabel(j: Job): string {
-    if (j.job_path) return j.job_path.split('/').join(' / ');
-    return j.job_name || j.job_number;
+    if (j.job_path) return titleCasePath(j.job_path).split('/').join(' / ');
+    return toTitleCase(j.job_name || j.job_number);
   }
 
   // Resolve the job_path used to group a plan: prefer the value stored on the
@@ -1573,8 +1575,8 @@ export default function SupervisorPage() {
 
       if (planJobId === '__new__') {
         // Create a new job record first, then attach the file to it.
-        const client = planNewClient.trim();
-        const room   = planNewRoom.trim();
+        const client = toTitleCase(planNewClient.trim());
+        const room   = toTitleCase(planNewRoom.trim());
         if (!client) { showToast('Client name is required for a new job', true); return; }
         jobPath   = room ? `${client}/${room}` : client;
         jobNumber = jobPath;
@@ -2610,9 +2612,11 @@ export default function SupervisorPage() {
                 <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <input className="form-input" placeholder="Client name *" value={newJobClient}
-                      onChange={(e) => setNewJobClient(e.target.value)} style={{ flex: '1 1 160px' }} />
+                      onChange={(e) => setNewJobClient(e.target.value)}
+                      onBlur={(e) => setNewJobClient(toTitleCase(e.target.value))} style={{ flex: '1 1 160px' }} />
                     <input className="form-input" placeholder="Room / Area  e.g. Kitchen, Master Bath" value={newJobRoom}
-                      onChange={(e) => setNewJobRoom(e.target.value)} style={{ flex: '1 1 160px' }} />
+                      onChange={(e) => setNewJobRoom(e.target.value)}
+                      onBlur={(e) => setNewJobRoom(toTitleCase(e.target.value))} style={{ flex: '1 1 160px' }} />
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <input className="form-input" placeholder="Job / Project # (optional)" value={newJobNum}
@@ -2649,8 +2653,8 @@ export default function SupervisorPage() {
                   jobs.filter((j) => j.status === 'active').map((j) => (
                     <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 20px', borderBottom: '1px solid var(--line)' }}>
                       <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{j.job_path ? j.job_path.split('/').join(' / ') : j.job_number}</span>
-                        {j.job_name && !j.job_path && <span style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{j.job_name}</span>}
+                        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{j.job_path ? titleCasePath(j.job_path).split('/').join(' / ') : j.job_number}</span>
+                        {j.job_name && !j.job_path && <span style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{toTitleCase(j.job_name)}</span>}
                         <SourceBadge source={j.source} />
                         {j.due_date && (() => { const m = dueMeta(j.due_date); return (
                           <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: `${m.color}22`, color: m.color, ...(m.overdue ? { animation: 'craftsPulse 1.4s ease-in-out infinite' } : {}) }}>
@@ -3196,11 +3200,11 @@ export default function SupervisorPage() {
                     </div>
                     <div>
                       <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Client Name *</label>
-                      <input className="form-input" placeholder="e.g. Johnson" value={planNewClient} onChange={(e) => setPlanNewClient(e.target.value)} autoFocus />
+                      <input className="form-input" placeholder="e.g. Johnson" value={planNewClient} onChange={(e) => setPlanNewClient(e.target.value)} onBlur={(e) => setPlanNewClient(toTitleCase(e.target.value))} autoFocus />
                     </div>
                     <div>
                       <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Room / Area</label>
-                      <input className="form-input" placeholder="e.g. Kitchen (optional)" value={planNewRoom} onChange={(e) => setPlanNewRoom(e.target.value)} />
+                      <input className="form-input" placeholder="e.g. Kitchen (optional)" value={planNewRoom} onChange={(e) => setPlanNewRoom(e.target.value)} onBlur={(e) => setPlanNewRoom(toTitleCase(e.target.value))} />
                     </div>
                   </div>
                 )}
@@ -3363,7 +3367,7 @@ export default function SupervisorPage() {
                     return Object.entries(groups).map(([jobKey, items]) => (
                       <div key={jobKey}>
                         <div style={{ padding: '10px 20px', background: 'rgba(167,139,250,0.05)', borderBottom: '1px solid var(--line)', fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#A78BFA' }}>
-                          {jobKey.split('/').join(' / ')}
+                          {titleCasePath(jobKey).split('/').join(' / ')}
                         </div>
                         {items.map((p) => {
                           const superseded = p.is_current === false;
