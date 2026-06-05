@@ -4084,6 +4084,7 @@ export default function SupervisorPage() {
           {tab === 'integrations' && tenant && (
             <IntegrationsTab
               tenantId={tenant.id}
+              shopName={tenant.shop_name}
               showToast={showToast}
               jobs={jobs}
               setJobs={setJobs}

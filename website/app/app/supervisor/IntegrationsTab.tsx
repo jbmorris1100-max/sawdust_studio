@@ -14,6 +14,7 @@ type Job = {
 
 interface Props {
   tenantId: string;
+  shopName?: string | null;
   showToast: (msg: string, error?: boolean) => void;
   jobs: Job[];
   setJobs: React.Dispatch<React.SetStateAction<Job[]>>;
@@ -320,7 +321,7 @@ function CsvImportCard({
 
 // ── Main IntegrationsTab ──────────────────────────────────────────────────────
 
-export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs }: Props) {
+export default function IntegrationsTab({ tenantId, shopName, showToast, jobs, setJobs }: Props) {
   const [openCard, setOpenCard] = useState<CardKey | null>(null);
 
   // Data sharing opt-in
@@ -794,70 +795,151 @@ export default function IntegrationsTab({ tenantId, showToast, jobs, setJobs }: 
 
       {/* File uploads (PDFs + CSV cut lists) now live in the Plans tab. */}
 
-      {/* ── QR Codes ── */}
-      <div className="portal-card" style={{ padding: '20px 24px' }}>
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 6 }}>
-          QR Clock-in
-        </div>
-        <p style={{ fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6, margin: '0 0 18px' }}>
-          Print QR codes to post around your shop. Workers scan to clock in and out automatically. Full QR generation coming soon.
-        </p>
+      {/* ── QR Clock-In Stations ── */}
+      <QrClockStations tenantId={tenantId} shopName={shopName} showToast={showToast} />
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
-          {[
-            { label: 'Shop Entrance',  action: 'clock_in',  location: 'shop_entrance' },
-            { label: 'Shop Exit',      action: 'clock_out', location: 'shop_exit' },
-            { label: 'Breakroom In',   action: 'break_start', location: 'breakroom' },
-            { label: 'Breakroom Out',  action: 'break_end',   location: 'breakroom' },
-          ].map(({ label, action, location }) => {
-            const url = `${typeof window !== 'undefined' ? window.location.origin : ''}/app/scan?action=${action}&location=${location}&tenant=${tenantId}`;
-            return (
-              <div
-                key={label}
-                style={{
-                  padding: '16px', borderRadius: 12,
-                  border: '1px solid var(--line)',
-                  display: 'flex', flexDirection: 'column', gap: 10,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(94,234,212,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--teal)', flexShrink: 0 }}>
-                    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M3 7V5a2 2 0 0 1 2-2h2"/>
-                      <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
-                      <path d="M21 17v2a2 2 0 0 1-2 2h-2"/>
-                      <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
-                      <rect x="7" y="7" width="3" height="3"/>
-                      <rect x="14" y="7" width="3" height="3"/>
-                      <rect x="7" y="14" width="3" height="3"/>
-                    </svg>
-                  </div>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{label}</span>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--ink-mute)', wordBreak: 'break-all', fontFamily: 'monospace', background: 'rgba(255,255,255,0.03)', borderRadius: 6, padding: '6px 8px' }}>
-                  {url}
-                </div>
-                <button
-                  onClick={() => { void navigator.clipboard?.writeText(url); }}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    padding: '7px 12px', borderRadius: 7,
-                    background: 'rgba(94,234,212,0.07)', border: '1px solid rgba(94,234,212,0.2)',
-                    color: 'var(--teal)', fontSize: 12, fontWeight: 600,
-                    cursor: 'pointer', fontFamily: 'inherit', alignSelf: 'flex-start',
-                  }}
-                >
-                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                  </svg>
-                  Copy URL
-                </button>
-              </div>
-            );
-          })}
-        </div>
+    </div>
+  );
+}
+
+// ── QR Clock-In Stations ──────────────────────────────────────────────────────
+// Printable QR codes posted around the shop. Each encodes a /scan URL that the
+// crew member's phone opens to clock in/out or start/end a break automatically.
+// QR images are generated by the free, CORS-enabled api.qrserver.com service —
+// no extra package and CORS allows fetching the PNG for the Download button.
+
+type Station = { label: string; desc: string; action: string };
+
+const STATIONS: Station[] = [
+  { label: 'Shop Entrance', desc: 'Scans clock crew IN',  action: 'clock_in' },
+  { label: 'Shop Exit',     desc: 'Scans clock crew OUT', action: 'clock_out' },
+  { label: 'Breakroom In',  desc: 'Scans start break',    action: 'break_start' },
+  { label: 'Breakroom Out', desc: 'Scans end break',      action: 'break_end' },
+];
+
+const PRINT_NOTE: Record<string, string> = {
+  clock_in:    'Scan to clock in',
+  clock_out:   'Scan to clock out',
+  break_start: 'Scan to start your break',
+  break_end:   'Scan to end your break',
+};
+
+function qrImageUrl(data: string, size: number): string {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=10&data=${encodeURIComponent(data)}`;
+}
+
+function slug(s: string): string {
+  return (s || 'Shop').trim().replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '') || 'Shop';
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+}
+
+function QrClockStations({ tenantId, shopName, showToast }: { tenantId: string; shopName?: string | null; showToast: (msg: string, error?: boolean) => void }) {
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'https://inlineiq.app';
+  const scanUrl = (action: string) => `${origin}/scan?action=${action}&tenant=${tenantId}`;
+  const shop = shopName || 'Your Shop';
+
+  async function download(station: Station) {
+    try {
+      const res = await fetch(qrImageUrl(scanUrl(station.action), 600));
+      if (!res.ok) throw new Error('QR fetch failed');
+      const blob = await res.blob();
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = `${slug(shop)}_${slug(station.label)}_qr.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(href);
+    } catch {
+      showToast('Could not download QR code', true);
+    }
+  }
+
+  function print(station: Station) {
+    const w = window.open('', '_blank', 'width=620,height=820');
+    if (!w) { showToast('Allow pop-ups to print QR codes', true); return; }
+    const qr = qrImageUrl(scanUrl(station.action), 800);
+    const note = PRINT_NOTE[station.action] ?? '';
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(shop)} — ${escapeHtml(station.label)}</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #ffffff; color: #0a0d10; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+  .card { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px 32px; text-align: center; }
+  .shop { font-size: 26px; font-weight: 800; margin-bottom: 28px; }
+  .qr { width: 400px; height: 400px; }
+  .loc { font-size: 36px; font-weight: 800; margin-top: 28px; }
+  .act { font-size: 18px; color: #4b5563; margin-top: 10px; }
+  .note { font-size: 15px; color: #6b7280; margin-top: 4px; }
+  .brand { margin-top: 44px; font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: #9ca3af; }
+  @media print { @page { margin: 0; } .card { min-height: 100vh; } }
+</style></head>
+<body><div class="card">
+  <div class="shop">${escapeHtml(shop)}</div>
+  <img class="qr" src="${qr}" alt="Clock-in QR code" onload="setTimeout(function(){ window.focus(); window.print(); }, 250)" />
+  <div class="loc">${escapeHtml(station.label)}</div>
+  <div class="act">${escapeHtml(station.desc)}</div>
+  <div class="note">${escapeHtml(note)}</div>
+  <div class="brand">Powered by InlineIQ</div>
+</div></body></html>`);
+    w.document.close();
+  }
+
+  const btnStyle: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+    flex: 1, padding: '8px 10px', borderRadius: 8, cursor: 'pointer',
+    fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit',
+    background: 'rgba(94,234,212,0.07)', border: '1px solid rgba(94,234,212,0.22)', color: 'var(--teal)',
+  };
+
+  return (
+    <div className="portal-card" style={{ padding: '20px 24px' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 6 }}>
+        Shop Clock-In Stations
       </div>
+      <p style={{ fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6, margin: '0 0 18px' }}>
+        Print these QR codes and post them around your shop. Crew scan to clock in and out automatically — no phone navigation needed.
+      </p>
 
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
+        {STATIONS.map((station) => (
+          <div
+            key={station.label}
+            style={{
+              padding: '18px 16px', borderRadius: 12, border: '1px solid var(--line)',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center',
+            }}
+          >
+            <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{station.label}</span>
+            <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{station.desc}</span>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={qrImageUrl(scanUrl(station.action), 200)}
+              alt={`${station.label} QR code`}
+              width={200}
+              height={200}
+              style={{ width: 200, height: 200, borderRadius: 8, background: '#fff', padding: 6 }}
+            />
+            <div style={{ display: 'flex', gap: 8, width: '100%', marginTop: 2 }}>
+              <button onClick={() => print(station)} style={btnStyle}>
+                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>
+                </svg>
+                Print
+              </button>
+              <button onClick={() => void download(station)} style={btnStyle}>
+                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                Download
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
