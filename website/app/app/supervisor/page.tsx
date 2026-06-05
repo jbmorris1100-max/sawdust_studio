@@ -559,6 +559,7 @@ export default function SupervisorPage() {
 
   // Plans upload
   const [planFile,      setPlanFile]      = useState<File | null>(null);
+  const [planDropHover, setPlanDropHover] = useState(false);
   const [planJobNum,    setPlanJobNum]    = useState('');   // resolved job_number for the upload
   // Job/Project smart selector: '' = none · '__new__' = create · else a jobs.id
   const [planJobId,     setPlanJobId]     = useState<string>('');
@@ -3245,12 +3246,50 @@ export default function SupervisorPage() {
 
                 <div style={{ marginBottom: 14 }}>
                   <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>File (PDF, CSV, image, SVG, DXF, XML, HTML, or spreadsheet) *</label>
-                  <input
-                    type="file"
-                    accept=".pdf,.csv,.svg,.html,.dxf,.xml,.xlsx,.xls,.jpg,.jpeg,.png,.webp"
-                    onChange={(e) => setPlanFile(e.target.files?.[0] ?? null)}
-                    style={{ fontSize: 13, color: 'var(--ink-dim)', width: '100%' }}
-                  />
+                  <label
+                    onDragOver={(e) => { e.preventDefault(); setPlanDropHover(true); }}
+                    onDragLeave={() => setPlanDropHover(false)}
+                    onDrop={(e) => { e.preventDefault(); setPlanDropHover(false); const f = e.dataTransfer.files?.[0]; if (f) setPlanFile(f); }}
+                    style={{
+                      position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                      gap: 8, width: '100%', padding: 24, borderRadius: 12, cursor: 'pointer',
+                      border: `1.5px dashed ${planDropHover ? '#5EEAD4' : '#2DE1C9'}`,
+                      background: planDropHover ? '#13302d' : '#0f1f1e',
+                      transition: 'border-color 120ms ease, background 120ms ease',
+                    }}
+                    onMouseEnter={() => setPlanDropHover(true)}
+                    onMouseLeave={() => setPlanDropHover(false)}
+                  >
+                    <input
+                      type="file"
+                      accept=".pdf,.csv,.svg,.html,.dxf,.xml,.xlsx,.xls,.jpg,.jpeg,.png,.webp"
+                      onChange={(e) => setPlanFile(e.target.files?.[0] ?? null)}
+                      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
+                    />
+                    {planFile ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, zIndex: 1 }}>
+                        <span style={{ fontSize: 14, color: '#2DE1C9', fontWeight: 600, wordBreak: 'break-all' }}>{planFile.name}</span>
+                        <button
+                          type="button"
+                          aria-label="Clear file"
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setPlanFile(null); }}
+                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, borderRadius: 6, background: 'rgba(45,225,201,0.12)', border: 'none', color: '#2DE1C9', cursor: 'pointer', flexShrink: 0 }}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#2DE1C9" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                          <polyline points="17 8 12 3 7 8"/>
+                          <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                        <span style={{ fontSize: 14, color: '#2DE1C9' }}>Drop file here or tap to browse</span>
+                        <span style={{ fontSize: 11, color: '#8BA5A0', textAlign: 'center' }}>PDF, CSV, SVG, DXF, XML, HTML, images, spreadsheets</span>
+                      </>
+                    )}
+                  </label>
                 </div>
                 <button
                   className="btn btn-primary"
