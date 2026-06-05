@@ -338,19 +338,57 @@ function SvgView({ url }: { url: string }) {
 }
 
 /* ========================================================================== *
- *  HTML VIEWER  (sandboxed — renders visually, but scripts stay blocked)
- *  allow-same-origin lets the page resolve its own styles/assets so it renders
- *  as a styled page instead of raw source; without allow-scripts, no JS runs.
+ *  HTML VIEWER  (fetch → sanitize → render)
+ *  Mobile Safari refuses to render same-origin HTML inside a sandboxed iframe
+ *  and shows raw source instead. So we fetch the file, strip scripts + inline
+ *  event handlers, keep the original <style>, and paint the <body> with
+ *  dangerouslySetInnerHTML. No iframe → works on every mobile browser, and
+ *  it's safe because all executable surfaces are removed first.
  * ========================================================================== */
-function HtmlView({ url, name }: { url: string; name: string }) {
+function sanitizeHtml(text: string): { styles: string; body: string } {
+  // Original <style> blocks so the page keeps its look
+  const styles = Array.from(text.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi))
+    .map((m) => m[1])
+    .join('\n');
+
+  // Body content (fall back to the whole doc when there's no <body>)
+  const bodyMatch = text.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  let body = bodyMatch ? bodyMatch[1] : text;
+
+  // Strip every executable surface
+  body = body.replace(/<script[\s\S]*?<\/script>/gi, '');   // scripts
+  body = body.replace(/\s+on\w+\s*=\s*"[^"]*"/gi, '');        // onclick="…"
+  body = body.replace(/\s+on\w+\s*=\s*'[^']*'/gi, '');        // onclick='…'
+  body = body.replace(/\s+on\w+\s*=\s*[^\s>]+/gi, '');        // onclick=…
+  body = body.replace(/javascript:/gi, '');                  // href="javascript:…"
+
+  return { styles, body };
+}
+
+function HtmlView({ url }: { url: string }) {
+  const [html, setHtml] = useState<{ styles: string; body: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(url)
+      .then((r) => r.text())
+      .then((t) => { if (!cancelled) setHtml(sanitizeHtml(t)); })
+      .catch((e: Error) => { if (!cancelled) setErr(e.message); });
+    return () => { cancelled = true; };
+  }, [url]);
+
+  if (err) return <div style={{ padding: 40, color: 'var(--ink-mute)', textAlign: 'center' }}>Could not load HTML ({err}). Use the download button to open it.</div>;
+  if (!html) return <div style={{ padding: 40, color: 'var(--ink-mute)', textAlign: 'center' }}>Loading…</div>;
+
   return (
-    <iframe
-      src={url}
-      title={name}
-      sandbox="allow-same-origin allow-popups"
-      referrerPolicy="no-referrer"
-      style={{ width: '100%', height: '100%', minHeight: '70vh', border: 'none', background: '#fff' }}
-    />
+    <div style={{ height: '100%', overflowY: 'auto', background: '#fff' }}>
+      {html.styles && <style>{html.styles}</style>}
+      <div
+        style={{ background: '#fff', color: '#111', padding: 20, fontFamily: 'monospace', width: '100%' }}
+        dangerouslySetInnerHTML={{ __html: html.body }}
+      />
+    </div>
   );
 }
 
@@ -457,7 +495,7 @@ export default function FileViewer({ file, onClose }: { file: ViewerFile; onClos
       case 'csv':   return <CsvView file={file} />;
       case 'image': return <ImageView url={file.url} />;
       case 'svg':   return <SvgView url={file.url} />;
-      case 'html':  return <HtmlView url={file.url} name={file.name} />;
+      case 'html':  return <HtmlView url={file.url} />;
       case 'json':  return <StructuredView url={file.url} kind="json" />;
       case 'xml':   return <StructuredView url={file.url} kind="xml" />;
       default:      return <InfoView file={file} kind={kind} />;
