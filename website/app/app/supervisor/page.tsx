@@ -79,6 +79,7 @@ type DamageReport = {
 type JobDrawing = {
   id: string;
   job_number: string | null;
+  job_path: string | null;
   label: string | null;
   file_url: string | null;
   file_name: string | null;
@@ -95,7 +96,7 @@ type JobDrawing = {
 type CsvRow = Record<string, string>;
 
 const JOB_DRAWING_COLS =
-  'id, tenant_id, job_number, label, file_url, file_name, uploaded_by, created_at, file_type, departments, parsed, version, superseded_by, is_current';
+  'id, tenant_id, job_number, job_path, label, file_url, file_name, uploaded_by, created_at, file_type, departments, parsed, version, superseded_by, is_current';
 
 function parsePlanCSV(text: string): { headers: string[]; rows: CsvRow[] } {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
@@ -548,7 +549,15 @@ export default function SupervisorPage() {
 
   // Plans upload
   const [planFile,      setPlanFile]      = useState<File | null>(null);
-  const [planJobNum,    setPlanJobNum]    = useState('');
+  const [planJobNum,    setPlanJobNum]    = useState('');   // resolved job_number for the upload
+  // Job/Project smart selector: '' = none · '__new__' = create · else a jobs.id
+  const [planJobId,     setPlanJobId]     = useState<string>('');
+  const [planJobQuery,  setPlanJobQuery]  = useState('');   // text shown in the selector input
+  const [planJobOpen,   setPlanJobOpen]   = useState(false);
+  const [planNewClient, setPlanNewClient] = useState('');   // create-new: Client Name (required)
+  const [planNewRoom,   setPlanNewRoom]   = useState('');   // create-new: Room/Area (optional)
+  // Carries the resolved job context through the version-conflict prompt.
+  const [pendingJobCtx, setPendingJobCtx] = useState<{ jobNumber: string; jobPath: string | null } | null>(null);
   const [planLabel,     setPlanLabel]     = useState('');
   const [planUploading, setPlanUploading] = useState(false);
   const [planDepts,     setPlanDepts]     = useState<string[]>(['all']);
@@ -1496,9 +1505,47 @@ export default function SupervisorPage() {
     return planLabel.trim() || planFile?.name || '';
   }
 
+  // Human-friendly label for a job in the selector ("Client / Room").
+  function jobLabel(j: Job): string {
+    if (j.job_path) return j.job_path.split('/').join(' / ');
+    return j.job_name || j.job_number;
+  }
+
+  // Resolve the job_path used to group a plan: prefer the value stored on the
+  // drawing, else look it up from the jobs table by job_number, else fall back.
+  function planJobPath(p: JobDrawing): string {
+    if (p.job_path && p.job_path.trim()) return p.job_path;
+    const job = jobs.find((j) => j.job_number === p.job_number);
+    if (job) return job.job_path || job.job_name || job.job_number;
+    return p.job_number || 'No Job / Project';
+  }
+
+  // Reset the Job/Project selector back to its empty state.
+  function resetPlanJobSelector() {
+    setPlanJobId('');
+    setPlanJobQuery('');
+    setPlanJobNum('');
+    setPlanNewClient('');
+    setPlanNewRoom('');
+    setPlanJobOpen(false);
+  }
+
+  // Upload is allowed once a job is chosen: an existing one, or a new one with a client name.
+  const planJobReady = planJobId === '__new__' ? !!planNewClient.trim() : !!planJobNum.trim();
+
+  // Pick an existing job from the selector dropdown.
+  function selectPlanJob(j: Job) {
+    setPlanJobId(j.id);
+    setPlanJobNum(j.job_number);
+    setPlanJobQuery(jobLabel(j));
+    setPlanJobOpen(false);
+    // Auto-fill the room context from the job when available (job_path drives grouping).
+    setPlanNewRoom(j.room_name ?? '');
+  }
+
   // Find a current plan with the same job + name (case-insensitive) → version conflict.
-  function findDuplicatePlan(): JobDrawing | null {
-    const job  = planJobNum.trim().toLowerCase();
+  function findDuplicatePlan(jobNumber: string): JobDrawing | null {
+    const job  = jobNumber.trim().toLowerCase();
     const name = planNameFor().toLowerCase();
     if (!job || !name) return null;
     return plans.find((p) =>
@@ -1508,19 +1555,69 @@ export default function SupervisorPage() {
     ) ?? null;
   }
 
+  // Resolve the job context (existing or freshly-created) then upload.
   async function handlePlanUpload() {
-    if (!planFile || !planJobNum.trim() || planUploading) return;
-    // A current plan with the same job + name already exists → ask how to proceed.
-    const dup = findDuplicatePlan();
-    if (dup) { setVersionConflict(dup); return; }
-    await performPlanUpload(null);
+    if (!planFile || planUploading || !tenant) return;
+    try {
+      let jobNumber = '';
+      let jobPath: string | null = null;
+
+      if (planJobId === '__new__') {
+        // Create a new job record first, then attach the file to it.
+        const client = planNewClient.trim();
+        const room   = planNewRoom.trim();
+        if (!client) { showToast('Client name is required for a new job', true); return; }
+        jobPath   = room ? `${client}/${room}` : client;
+        jobNumber = jobPath;
+        try {
+          const insert: Record<string, unknown> = {
+            job_number:  jobNumber,
+            job_name:    room ? `${client} — ${room}` : client,
+            client_name: client,
+            job_path:    jobPath,
+            status:      'active',
+            tenant_id:   tenant.id,
+          };
+          if (room) insert.room_name = room;
+          const { data, error } = await supabase
+            .from('jobs')
+            .insert(insert)
+            .select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, install_date')
+            .single();
+          if (error) throw error;
+          const created = data as Job;
+          setJobs((prev) => [created, ...prev]);
+          jobNumber = created.job_number;
+          jobPath   = created.job_path ?? jobPath;
+        } catch (err: unknown) {
+          showToast(err instanceof Error ? err.message : 'Could not create job', true);
+          return;
+        }
+      } else if (planJobId) {
+        const job = jobs.find((j) => j.id === planJobId);
+        if (!job) { showToast('Select a job or create a new one', true); return; }
+        jobNumber = job.job_number;
+        jobPath   = job.job_path ?? job.job_name ?? null;
+      } else {
+        showToast('Select a job or create a new one', true);
+        return;
+      }
+
+      // A current plan with the same job + name already exists → ask how to proceed.
+      const dup = findDuplicatePlan(jobNumber);
+      if (dup) { setPendingJobCtx({ jobNumber, jobPath }); setVersionConflict(dup); return; }
+      await performPlanUpload(null, jobNumber, jobPath);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Upload failed', true);
+    }
   }
 
   // Perform the actual upload. When `replace` is provided, the new file becomes
   // version N+1 and the old record is marked superseded.
-  async function performPlanUpload(replace: JobDrawing | null) {
-    if (!planFile || !planJobNum.trim() || planUploading) return;
+  async function performPlanUpload(replace: JobDrawing | null, jobNumber: string, jobPath: string | null) {
+    if (!planFile || !jobNumber.trim() || planUploading) return;
     setVersionConflict(null);
+    setPendingJobCtx(null);
     setPlanUploading(true);
     try {
       const ext      = (planFile.name.split('.').pop() ?? 'bin').toLowerCase();
@@ -1531,10 +1628,10 @@ export default function SupervisorPage() {
       const { data: { publicUrl } } = supabase.storage.from('job-plans').getPublicUrl(path);
       const departments = planDepts.length ? planDepts : ['all'];
       const newVersion = replace ? (replace.version ?? 1) + 1 : 1;
-      const { data: inserted, error: dbErr } = await supabase.from('job_drawings').insert({
+      const insert: Record<string, unknown> = {
         tenant_id:   tenant!.id,
-        job_id:      planJobNum.trim(),          // job_id is NOT NULL — mirror the job/project value
-        job_number:  planJobNum.trim(),
+        job_id:      jobNumber.trim(),          // job_id is NOT NULL — mirror the job/project value
+        job_number:  jobNumber.trim(),
         label:       planLabel.trim() || planFile.name,  // label is NOT NULL — fall back to the file name
         file_url:    publicUrl,
         file_name:   planFile.name,
@@ -1543,7 +1640,9 @@ export default function SupervisorPage() {
         uploaded_by: 'Supervisor',
         version:     newVersion,
         is_current:  true,
-      }).select(JOB_DRAWING_COLS).single();
+      };
+      if (jobPath) insert.job_path = jobPath;   // denormalized for consistent grouping
+      const { data: inserted, error: dbErr } = await supabase.from('job_drawings').insert(insert).select(JOB_DRAWING_COLS).single();
       if (dbErr) throw dbErr;
 
       // Supersede the old version: point it at the new record and hide it from "current".
@@ -1571,7 +1670,7 @@ export default function SupervisorPage() {
           setPlanAiMissing([]);
           setPlanCountdown(null);
           setPlanPendingId((inserted as JobDrawing).id);
-          setPlanPendingJobNum(planJobNum.trim());
+          setPlanPendingJobNum(jobNumber.trim());
           showToast('CSV uploaded — map the columns to build the cut list');
           // Fire-and-forget AI auto-detection to pre-fill the mapper.
           void runAiColumnMapping(headers, rows);
@@ -1580,7 +1679,7 @@ export default function SupervisorPage() {
         setPlanLabel('');
       } else {
         setPlanFile(null);
-        setPlanJobNum('');
+        resetPlanJobSelector();
         setPlanLabel('');
         setPlanDepts(['all']);
         showToast(newVersion > 1 ? `Version ${newVersion} uploaded` : 'Plan uploaded');
@@ -1782,7 +1881,7 @@ export default function SupervisorPage() {
       setPlans((prev) => prev.map((p) => p.id === planPendingId ? { ...p, parsed: true } : p));
 
       cancelPlanMapper();
-      setPlanJobNum('');
+      resetPlanJobSelector();
       setPlanDepts(['all']);
       showToast(`Cut list parsed — ${unitsInserted} cabinet units and ${partsInserted} parts created`);
     } catch (err: unknown) {
@@ -3027,15 +3126,71 @@ export default function SupervisorPage() {
                 </p>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
-                  <div>
+                  {/* Job / Project — smart selector */}
+                  <div style={{ position: 'relative' }}>
                     <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Job / Project *</label>
-                    <input className="form-input" placeholder="Enter job or project name" value={planJobNum} onChange={(e) => setPlanJobNum(e.target.value)} />
+                    <input
+                      className="form-input"
+                      placeholder="Select or search a job…"
+                      value={planJobId === '__new__' ? '' : planJobQuery}
+                      readOnly={planJobId === '__new__'}
+                      onChange={(e) => { setPlanJobQuery(e.target.value); setPlanJobId(''); setPlanJobNum(''); setPlanJobOpen(true); }}
+                      onFocus={() => { if (planJobId !== '__new__') setPlanJobOpen(true); }}
+                      onBlur={() => setTimeout(() => setPlanJobOpen(false), 150)}
+                    />
+                    {planJobOpen && planJobId !== '__new__' && (() => {
+                      const q = planJobQuery.trim().toLowerCase();
+                      const sorted = [...jobs].sort((a, b) => jobLabel(a).localeCompare(jobLabel(b)));
+                      const matches = (planJobId || q === '') ? sorted : sorted.filter((j) => jobLabel(j).toLowerCase().includes(q));
+                      return (
+                        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 30, marginTop: 4, maxHeight: 240, overflowY: 'auto', background: 'var(--bg-2, #14181c)', border: '1px solid var(--line)', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
+                          {matches.length === 0 && (
+                            <div style={{ padding: '10px 12px', fontSize: 12.5, color: 'var(--ink-mute)' }}>No matching jobs</div>
+                          )}
+                          {matches.map((j) => (
+                            <button
+                              key={j.id}
+                              type="button"
+                              onMouseDown={(e) => { e.preventDefault(); selectPlanJob(j); }}
+                              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 12px', background: planJobId === j.id ? 'rgba(94,234,212,0.08)' : 'none', border: 'none', borderBottom: '1px solid var(--line)', color: 'var(--ink-dim)', fontSize: 13, fontFamily: 'inherit', cursor: 'pointer' }}
+                            >
+                              {jobLabel(j)}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onMouseDown={(e) => { e.preventDefault(); setPlanJobId('__new__'); setPlanJobNum(''); setPlanJobQuery(''); setPlanNewClient(''); setPlanNewRoom(''); setPlanJobOpen(false); }}
+                            style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', background: 'rgba(167,139,250,0.06)', border: 'none', color: '#A78BFA', fontSize: 13, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}
+                          >
+                            + Create new job
+                          </button>
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div>
                     <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Plan name / description</label>
                     <input className="form-input" placeholder="e.g. Kitchen Layout, Cut List, Elevation Views" value={planLabel} onChange={(e) => setPlanLabel(e.target.value)} />
                   </div>
                 </div>
+
+                {/* Create-new-job inline fields */}
+                {planJobId === '__new__' && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12, padding: '12px 14px', border: '1px solid rgba(167,139,250,0.3)', borderRadius: 10, background: 'rgba(167,139,250,0.04)' }}>
+                    <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#A78BFA' }}>New Job</span>
+                      <button type="button" onClick={resetPlanJobSelector} style={{ background: 'none', border: 'none', color: 'var(--ink-mute)', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit' }}>Choose existing instead</button>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Client Name *</label>
+                      <input className="form-input" placeholder="e.g. Johnson" value={planNewClient} onChange={(e) => setPlanNewClient(e.target.value)} autoFocus />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Room / Area</label>
+                      <input className="form-input" placeholder="e.g. Kitchen (optional)" value={planNewRoom} onChange={(e) => setPlanNewRoom(e.target.value)} />
+                    </div>
+                  </div>
+                )}
 
                 {/* Departments multi-select */}
                 <div style={{ marginBottom: 12 }}>
@@ -3080,9 +3235,9 @@ export default function SupervisorPage() {
                 </div>
                 <button
                   className="btn btn-primary"
-                  style={{ opacity: (!planFile || !planJobNum.trim() || planUploading) ? 0.5 : 1, padding: '10px 24px' }}
+                  style={{ opacity: (!planFile || !planJobReady || planUploading) ? 0.5 : 1, padding: '10px 24px' }}
                   onClick={handlePlanUpload}
-                  disabled={!planFile || !planJobNum.trim() || planUploading}
+                  disabled={!planFile || !planJobReady || planUploading}
                 >
                   {planUploading ? 'Uploading…' : 'Upload Plan'}
                 </button>
@@ -3184,16 +3339,18 @@ export default function SupervisorPage() {
               ) : (
                 <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
                   {(() => {
+                    // Group by job_path so every file for the same job lands together,
+                    // regardless of how the job was named when each file was uploaded.
                     const groups: Record<string, JobDrawing[]> = {};
                     plans.forEach((p) => {
-                      const k = p.job_number || 'No Job / Project';
+                      const k = planJobPath(p);
                       if (!groups[k]) groups[k] = [];
                       groups[k].push(p);
                     });
                     return Object.entries(groups).map(([jobKey, items]) => (
                       <div key={jobKey}>
                         <div style={{ padding: '10px 20px', background: 'rgba(167,139,250,0.05)', borderBottom: '1px solid var(--line)', fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#A78BFA' }}>
-                          {jobKey}
+                          {jobKey.split('/').join(' / ')}
                         </div>
                         {items.map((p) => {
                           const superseded = p.is_current === false;
@@ -4274,13 +4431,13 @@ export default function SupervisorPage() {
               A plan named <b style={{ color: 'var(--ink)' }}>{versionConflict.label || versionConflict.file_name}</b> already exists for this job. What would you like to do?
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <button className="btn btn-primary" style={{ justifyContent: 'center' }} onClick={() => void performPlanUpload(versionConflict)}>
+              <button className="btn btn-primary" style={{ justifyContent: 'center' }} onClick={() => { if (pendingJobCtx) void performPlanUpload(versionConflict, pendingJobCtx.jobNumber, pendingJobCtx.jobPath); }}>
                 Replace (new version v{(versionConflict.version ?? 1) + 1})
               </button>
-              <button className="btn btn-ghost" style={{ justifyContent: 'center' }} onClick={() => void performPlanUpload(null)}>
+              <button className="btn btn-ghost" style={{ justifyContent: 'center' }} onClick={() => { if (pendingJobCtx) void performPlanUpload(null, pendingJobCtx.jobNumber, pendingJobCtx.jobPath); }}>
                 Keep both
               </button>
-              <button className="btn btn-ghost" style={{ justifyContent: 'center', color: 'var(--ink-mute)' }} onClick={() => setVersionConflict(null)}>
+              <button className="btn btn-ghost" style={{ justifyContent: 'center', color: 'var(--ink-mute)' }} onClick={() => { setVersionConflict(null); setPendingJobCtx(null); }}>
                 Cancel
               </button>
             </div>
