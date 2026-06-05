@@ -636,6 +636,9 @@ export default function SupervisorPage() {
   // Per-thread last-read timestamps (localStorage) → drives the unread dot/count.
   const [msgRead,    setMsgRead]    = useState<Record<string, string>>({});
   const [hoverThread, setHoverThread] = useState<string | null>(null);
+  // Inbox "New Message" composer + in-conversation three-dot menu.
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [convMenuOpen, setConvMenuOpen] = useState(false);
   useEffect(() => { try { const r = localStorage.getItem('sup_msg_read'); if (r) setMsgRead(JSON.parse(r)); } catch { /* ignore */ } }, []);
   function markThreadRead(key: string) {
     setMsgRead((prev) => {
@@ -2939,49 +2942,45 @@ export default function SupervisorPage() {
           {tab === 'messages' && openThread === null && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-              {/* Compose new message */}
-              <div className="portal-card">
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>New Message</div>
-                <div style={{ marginBottom: 10 }}>
-                  <select
-                    className="form-input"
-                    value={msgDept}
-                    onChange={(e) => setMsgDept(e.target.value)}
-                    style={{ width: '100%', cursor: 'pointer' }}
-                  >
-                    <option value="">All Departments (broadcast)</option>
-                    {departments.map((d) => (
-                      <option key={d} value={d}>{d}</option>
-                    ))}
-                  </select>
-                </div>
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <textarea
-                    className="form-input"
-                    placeholder="Type a message to your crew…"
-                    value={msgBody}
-                    onChange={(e) => setMsgBody(e.target.value)}
-                    rows={2}
-                    style={{ flex: 1, resize: 'vertical', minHeight: 64 }}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSendMessage(); }}
-                  />
-                  <button
-                    className="btn btn-primary"
-                    style={{ alignSelf: 'flex-end', padding: '12px 20px', opacity: (!msgBody.trim() || sending) ? 0.5 : 1 }}
-                    onClick={() => handleSendMessage()}
-                    disabled={!msgBody.trim() || sending}
-                  >
-                    {sending ? 'Sending…' : 'Send'}
-                  </button>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 8 }}>⌘↵ or Ctrl+Enter to send</div>
+              {/* New Message — opens a conversation for the chosen department */}
+              <div>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => setComposeOpen((o) => !o)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
+                >
+                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  New Message
+                </button>
+                {composeOpen && (
+                  <div className="portal-card" style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <select
+                      className="form-input"
+                      value={msgDept}
+                      onChange={(e) => setMsgDept(e.target.value)}
+                      style={{ flex: '1 1 220px', cursor: 'pointer' }}
+                    >
+                      <option value="">All Departments (broadcast)</option>
+                      {departments.map((d) => (
+                        <option key={d} value={d}>{d}</option>
+                      ))}
+                    </select>
+                    <button
+                      className="btn btn-primary"
+                      style={{ flexShrink: 0 }}
+                      onClick={() => { const key = msgDept || '__broadcast__'; markThreadRead(key); setOpenThread(key); setComposeOpen(false); setConvMenuOpen(false); setMsgBody(''); }}
+                    >
+                      Open conversation
+                    </button>
+                  </div>
+                )}
               </div>
 
-              {/* Thread list */}
+              {/* Thread list — one row per department, fully tappable, no delete here */}
               {dataLoading ? (
                 <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
               ) : msgThreads.length === 0 ? (
-                <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No messages yet. Send the first message above.</div>
+                <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No messages yet. Tap New Message to start a conversation.</div>
               ) : (
                 <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
                   {msgThreads.map(({ deptKey, label, lastMsg }, i) => {
@@ -2991,46 +2990,33 @@ export default function SupervisorPage() {
                     return (
                       <div
                         key={deptKey}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => { markThreadRead(deptKey); setOpenThread(deptKey); setConvMenuOpen(false); setMsgBody(''); }}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { markThreadRead(deptKey); setOpenThread(deptKey); setConvMenuOpen(false); setMsgBody(''); } }}
                         onMouseEnter={() => setHoverThread(deptKey)}
                         onMouseLeave={() => setHoverThread(null)}
-                        style={{ display: 'flex', alignItems: 'center', borderBottom: i < msgThreads.length - 1 ? '1px solid var(--line)' : 'none', background: hoverThread === deptKey ? 'rgba(94,234,212,0.03)' : 'none', transition: 'background 0.1s' }}
+                        style={{ display: 'flex', alignItems: 'center', gap: 13, padding: '14px 20px', cursor: 'pointer', borderBottom: i < msgThreads.length - 1 ? '1px solid var(--line)' : 'none', background: hoverThread === deptKey ? 'rgba(94,234,212,0.03)' : 'none', transition: 'background 0.1s' }}
                       >
-                        {/* Clickable row area */}
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => { markThreadRead(deptKey); setOpenThread(deptKey); setMsgBody(''); }}
-                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { markThreadRead(deptKey); setOpenThread(deptKey); setMsgBody(''); } }}
-                          style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 13, padding: '14px 16px 14px 20px', cursor: 'pointer' }}
-                        >
-                          {/* Unread dot */}
-                          <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: unread > 0 ? 'var(--teal)' : 'transparent' }} />
-                          {/* Dept-initial avatar */}
-                          <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'rgba(94,234,212,0.12)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 17, fontWeight: 700 }}>
-                            {initial}
-                          </div>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--ink)', marginBottom: 2 }}>{label}</div>
-                            <div style={{ fontSize: 13, color: 'var(--ink-mute)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              <span style={{ color: lastMsg.sender_name === 'Supervisor' ? 'var(--teal)' : 'var(--ink-dim)', fontWeight: 600 }}>{lastMsg.sender_name}:</span>{' '}
-                              {lastMsg.body.length > 80 ? lastMsg.body.slice(0, 77) + '…' : lastMsg.body}
-                            </div>
-                          </div>
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5, flexShrink: 0 }}>
-                            <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{relativeTime(lastMsg.created_at)}</span>
-                            {unread > 0 && (
-                              <span style={{ minWidth: 20, textAlign: 'center', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 10, background: 'var(--teal)', color: '#04201c' }}>{unread}</span>
-                            )}
+                        {/* Unread dot */}
+                        <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: unread > 0 ? 'var(--teal)' : 'transparent' }} />
+                        {/* Dept-initial avatar */}
+                        <div style={{ width: 44, height: 44, borderRadius: '50%', background: 'rgba(94,234,212,0.12)', color: 'var(--teal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 18, fontWeight: 700 }}>
+                          {initial}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)', marginBottom: 2 }}>{label}</div>
+                          <div style={{ fontSize: 13, color: 'var(--ink-mute)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <span style={{ color: lastMsg.sender_name === 'Supervisor' ? 'var(--teal)' : 'var(--ink-dim)', fontWeight: 600 }}>{lastMsg.sender_name}:</span>{' '}
+                            {lastMsg.body.length > 80 ? lastMsg.body.slice(0, 77) + '…' : lastMsg.body}
                           </div>
                         </div>
-                        {/* Thread delete — appears on hover (desktop) */}
-                        <button
-                          onClick={() => handleDeleteThread(deptKey, label)}
-                          title={`Delete all ${label} messages`}
-                          style={{ flexShrink: 0, marginRight: 16, background: 'none', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 6, padding: '4px 8px', cursor: 'pointer', color: '#F87171', fontSize: 11, fontFamily: 'inherit', opacity: hoverThread === deptKey ? 1 : 0.35, transition: 'opacity 0.12s' }}
-                        >
-                          Delete
-                        </button>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5, flexShrink: 0 }}>
+                          <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{relativeTime(lastMsg.created_at)}</span>
+                          {unread > 0 && (
+                            <span style={{ minWidth: 20, textAlign: 'center', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 10, background: 'var(--teal)', color: '#04201c' }}>{unread}</span>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
@@ -3043,20 +3029,38 @@ export default function SupervisorPage() {
           {tab === 'messages' && openThread !== null && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-              {/* Back + thread header — same style as crew page */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              {/* Header: < Back · dept name (center) · three-dot menu */}
+              <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 10 }}>
                 <button
-                  onClick={() => { setOpenThread(null); setMsgBody(''); }}
+                  onClick={() => { setOpenThread(null); setMsgBody(''); setConvMenuOpen(false); }}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: '2px 4px', display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'inherit', fontSize: 13, transition: 'color 0.1s' }}
                   onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--ink)'; }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--ink-mute)'; }}
                 >
                   <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
-                  Inbox
+                  Back
                 </button>
-                <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>
+                <span style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>
                   {openThreadLabel}
                 </span>
+                <button
+                  onClick={() => setConvMenuOpen((o) => !o)}
+                  aria-label="Conversation menu"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }}
+                >
+                  <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                </button>
+                {convMenuOpen && (
+                  <div style={{ position: 'absolute', top: 32, right: 0, zIndex: 20, minWidth: 200, background: '#11151a', border: '1px solid var(--line-strong)', borderRadius: 12, padding: 6, boxShadow: '0 8px 30px rgba(0,0,0,0.5)' }}>
+                    <button
+                      onClick={() => { setConvMenuOpen(false); void handleDeleteThread(openThread, openThreadLabel); }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', textAlign: 'left', padding: '10px 12px', borderRadius: 8, background: 'none', border: 'none', cursor: 'pointer', color: '#F87171', fontSize: 13.5, fontWeight: 600, fontFamily: 'inherit' }}
+                    >
+                      <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                      Delete all messages
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* iMessage-style conversation + pinned input */}

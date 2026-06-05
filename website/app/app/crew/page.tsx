@@ -2802,6 +2802,32 @@ export default function CrewPage() {
                 </button>
               ))}
             </div>
+
+            {/* Full-width Messages button — always accessible */}
+            <button
+              onClick={openMessages}
+              style={{
+                marginTop: 12, width: '100%', minHeight: 64,
+                display: 'flex', alignItems: 'center', gap: 14, padding: '16px 18px',
+                background: 'var(--bg-1)', border: '1px solid var(--line)', borderRadius: 14,
+                cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                transition: 'border-color 0.15s, background 0.15s',
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line-strong)'; (e.currentTarget as HTMLButtonElement).style.background = '#0e1418'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line)'; (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-1)'; }}
+            >
+              <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(45,225,201,0.08)', color: '#2DE1C9', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+              </div>
+              <span style={{ flex: 1, fontSize: 15, fontWeight: 600, color: 'var(--ink)' }}>Messages</span>
+              {supUnread > 0 && (
+                <span style={{ flexShrink: 0, minWidth: 22, textAlign: 'center', fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 12, background: 'var(--teal)', color: '#04201c' }}>
+                  {supUnread}
+                </span>
+              )}
+            </button>
           </div>
 
           {/* ── Production · Cut List ──────────────────────────────────────────── */}
