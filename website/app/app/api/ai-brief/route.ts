@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-const MODEL = 'claude-sonnet-4-6';
+const MODEL = 'claude-sonnet-4-20250514';
 
 type CrewRow    = { worker_name: string; dept: string; clock_in: string };
 type NeedRow    = { item: string; dept: string | null; qty: number | null; status: string | null };

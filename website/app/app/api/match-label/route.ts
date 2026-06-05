@@ -8,7 +8,7 @@ import { createClient } from '@supabase/supabase-js';
 // returns a best match + alternatives. label_mappings is checked on the client
 // BEFORE this route is ever called (instant, no AI cost).
 
-const MODEL = 'claude-sonnet-4-6';
+const MODEL = 'claude-sonnet-4-20250514';
 
 type Candidate = {
   part_name: string;
