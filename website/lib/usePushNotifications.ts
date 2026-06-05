@@ -22,6 +22,40 @@ export function pushSupported(): boolean {
   );
 }
 
+// Upsert a push subscription row keyed by endpoint. On-conflict 'endpoint'
+// means an existing row's dept / user_name are refreshed in place — used both
+// on first subscribe and when re-tagging the dept after a switch.
+// Never throws: all failures are swallowed so callers can fire-and-forget.
+export async function upsertPushSubscription(opts: {
+  tenantId: string;
+  userType: 'supervisor' | 'crew';
+  userName?: string;
+  dept?: string | null;
+  subscription: PushSubscription;
+}): Promise<boolean> {
+  try {
+    const subJson = opts.subscription.toJSON();
+    if (!subJson.endpoint || !subJson.keys?.p256dh || !subJson.keys?.auth) return false;
+    const { error } = await supabase.from('push_subscriptions').upsert(
+      {
+        tenant_id: opts.tenantId,
+        user_type: opts.userType,
+        user_name: opts.userName ?? null,
+        dept: opts.dept ?? null,
+        endpoint: subJson.endpoint,
+        p256dh: subJson.keys.p256dh,
+        auth: subJson.keys.auth,
+      },
+      { onConflict: 'endpoint' }
+    );
+    if (error) throw error;
+    return true;
+  } catch (e) {
+    console.error('Push subscription upsert failed:', e);
+    return false;
+  }
+}
+
 export function usePushNotifications({
   tenantId,
   userType,
@@ -69,20 +103,7 @@ export function usePushNotifications({
         }));
 
       // Save to Supabase
-      const subJson = sub.toJSON();
-      if (!subJson.endpoint || !subJson.keys?.p256dh || !subJson.keys?.auth) return;
-      await supabase.from('push_subscriptions').upsert(
-        {
-          tenant_id: tenantId,
-          user_type: userType,
-          user_name: userName ?? null,
-          dept: dept ?? null,
-          endpoint: subJson.endpoint,
-          p256dh: subJson.keys.p256dh,
-          auth: subJson.keys.auth,
-        },
-        { onConflict: 'endpoint' }
-      );
+      await upsertPushSubscription({ tenantId, userType, userName, dept, subscription: sub });
 
       setSubscribed(true);
     } catch (e) {

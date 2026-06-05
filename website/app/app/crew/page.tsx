@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
+import { upsertPushSubscription } from '@/lib/usePushNotifications';
 import { trialDaysLeft, getDepartments, type Tenant } from '@/lib/auth';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import PushPrompt from '@/components/PushPrompt';
@@ -494,6 +495,31 @@ export default function CrewPage() {
   const crewDeptRef = useRef('');
   useEffect(() => { crewDeptRef.current = crewDept; }, [crewDept]);
 
+  // Self-heal stale/null-dept push subscriptions: once the crew's dept and
+  // tenant are known and notifications are already granted, re-tag this
+  // device's subscription with the current dept. Idempotent and best-effort —
+  // never blocks the UI. (Fixes rows created before dept tracking existed.)
+  useEffect(() => {
+    if (!crewDept || !tenant?.id) return;
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (!sub || cancelled) return;
+        await upsertPushSubscription({
+          tenantId: tenant.id, userType: 'crew',
+          userName: crewName || undefined, dept: crewDept, subscription: sub,
+        });
+      } catch (e) {
+        console.error('Push dept sync failed:', e);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crewDept, tenant?.id]);
+
   // New-message notification banner
   const [msgNotification, setMsgNotification] = useState<string | null>(null);
   const notifTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -952,6 +978,20 @@ export default function CrewPage() {
         dept: newDept, previousDept: crewDept || null,
       });
     }
+    // Re-tag this device's push subscription with the new dept so notifications
+    // follow the crew member. Best-effort — never blocks the dept switch.
+    try {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          await upsertPushSubscription({
+            tenantId: tenant!.id, userType: 'crew',
+            userName: crewName || undefined, dept: newDept, subscription: sub,
+          });
+        }
+      }
+    } catch (_) { /* push update failed — dept switch already applied */ }
     closeModal();
     showToast(`Department changed to ${newDept}`);
   }
