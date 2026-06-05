@@ -26,10 +26,12 @@ export function usePushNotifications({
   tenantId,
   userType,
   userName,
+  dept,
 }: {
   tenantId: string;
   userType: 'supervisor' | 'crew';
   userName?: string;
+  dept?: string;
 }) {
   const [permission, setPermission] = useState<NotificationPermission>('default');
   const [subscribed, setSubscribed] = useState(false);
@@ -74,6 +76,7 @@ export function usePushNotifications({
           tenant_id: tenantId,
           user_type: userType,
           user_name: userName ?? null,
+          dept: dept ?? null,
           endpoint: subJson.endpoint,
           p256dh: subJson.keys.p256dh,
           auth: subJson.keys.auth,

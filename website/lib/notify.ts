@@ -6,6 +6,7 @@ export type NotifyTarget = 'supervisor' | 'crew' | 'all';
 export function sendNotify(payload: {
   tenant_id: string;
   target: NotifyTarget;
+  dept_target?: string;
   title: string;
   body: string;
   url?: string;

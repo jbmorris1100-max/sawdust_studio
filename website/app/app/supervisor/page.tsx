@@ -1219,9 +1219,11 @@ export default function SupervisorPage() {
       if (error) throw error;
       setMessages((prev) => prev.map((m) => m.id === optimistic.id ? data as Message : m));
       // Notify crew of the new message (fire-and-forget).
+      // A dept-scoped message only pings that dept's crew; a broadcast (dept === null) pings all crew.
       sendNotify({
         tenant_id: tenant!.id,
         target: 'crew',
+        ...(dept ? { dept_target: dept } : {}),
         title: 'New Message',
         body: `Supervisor: ${body.slice(0, 50)}`,
         url: '/app/crew',

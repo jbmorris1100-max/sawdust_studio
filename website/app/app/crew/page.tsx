@@ -1437,6 +1437,15 @@ export default function CrewPage() {
             tenant_id: tenant.id,
           });
         } catch (_) {}
+        // Push notify only the Assembly crew.
+        sendNotify({
+          tenant_id: tenant.id,
+          target: 'crew',
+          dept_target: 'Assembly',
+          title: 'Ready for Assembly',
+          body: `${cutUnit.unit_label} — ${cutUnit.jobPath} is ready for assembly`,
+          url: '/app/crew',
+        });
         setProdFlash('Cabinet ready for assembly');
         setTimeout(() => { setProdFlash(null); closeCutView(); void loadProduction(); }, 2000);
       } else {
@@ -2239,7 +2248,7 @@ export default function CrewPage() {
 
         <OfflineBanner tenantId={tenant?.id} onSynced={() => { void reloadClock(); }} />
 
-        {tenant && <PushPrompt tenantId={tenant.id} userType="crew" userName={crewName || undefined} />}
+        {tenant && <PushPrompt tenantId={tenant.id} userType="crew" userName={crewName || undefined} dept={crewDept || undefined} />}
 
         <main style={{ flex: 1, padding: '40px 24px', maxWidth: 900, margin: '0 auto', width: '100%' }}>
 

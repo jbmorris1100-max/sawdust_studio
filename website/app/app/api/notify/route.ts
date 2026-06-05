@@ -40,6 +40,7 @@ export async function POST(req: Request) {
   let payload: {
     tenant_id?: string;
     target?: Target;
+    dept_target?: string;
     title?: string;
     body?: string;
     url?: string;
@@ -50,7 +51,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
-  const { tenant_id, target = 'all', title, body, url: clickUrl } = payload;
+  const { tenant_id, target = 'all', dept_target, title, body, url: clickUrl } = payload;
   if (!tenant_id || !title || !body) {
     return NextResponse.json({ error: 'tenant_id, title and body required' }, { status: 400 });
   }
@@ -62,8 +63,14 @@ export async function POST(req: Request) {
     .from('push_subscriptions')
     .select('id, endpoint, p256dh, auth')
     .eq('tenant_id', tenant_id);
-  if (target === 'supervisor' || target === 'crew') {
-    query = query.eq('user_type', target);
+  if (target === 'supervisor') {
+    query = query.eq('user_type', 'supervisor');
+  } else if (target === 'crew') {
+    query = query.eq('user_type', 'crew');
+    // dept_target narrows to one dept's crew; absent → all crew.
+    if (dept_target) {
+      query = query.eq('dept', dept_target);
+    }
   }
 
   const { data: subs, error } = await query;

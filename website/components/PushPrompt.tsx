@@ -34,12 +34,14 @@ export default function PushPrompt({
   tenantId,
   userType,
   userName,
+  dept,
 }: {
   tenantId: string;
   userType: 'supervisor' | 'crew';
   userName?: string;
+  dept?: string;
 }) {
-  const { permission, subscribe } = usePushNotifications({ tenantId, userType, userName });
+  const { permission, subscribe } = usePushNotifications({ tenantId, userType, userName, dept });
   const [visible, setVisible] = useState(false);
   const [howToOpen, setHowToOpen] = useState(false);
   const [enabling, setEnabling] = useState(false);
