@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Inter_Tight, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 
@@ -13,6 +13,14 @@ const jetbrainsMono = JetBrains_Mono({
   subsets: ['latin'],
   weight: ['400', '500'],
 });
+
+// viewport-fit=cover is required for env(safe-area-inset-*) to resolve on iPhone.
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+  themeColor: '#050608',
+};
 
 export const metadata: Metadata = {
   title: 'InlineIQ — Keep your shop sharp.',

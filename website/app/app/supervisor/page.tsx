@@ -2320,7 +2320,7 @@ export default function SupervisorPage() {
 
         {tenant && <PushPrompt tenantId={tenant.id} userType="supervisor" userName="Supervisor" />}
 
-        <main style={{ flex: 1, padding: '40px 24px', maxWidth: 1100, margin: '0 auto', width: '100%', overflowX: 'hidden' }}>
+        <main style={{ flex: 1, padding: '40px 24px 96px', maxWidth: 1100, margin: '0 auto', width: '100%', overflowX: 'hidden' }}>
 
           {/* Header */}
           <div style={{ marginBottom: 32, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
@@ -3133,7 +3133,8 @@ export default function SupervisorPage() {
               ) : activeNeeds.length === 0 ? (
                 <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>No active inventory needs. Resolved items are hidden.</div>
               ) : (
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <div className="table-scroll">
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid var(--line)' }}>
                       {['Item', 'Department', 'Job / Project', 'Qty', 'Date', 'Status', ''].map((h) => (
@@ -3167,6 +3168,7 @@ export default function SupervisorPage() {
                     })}
                   </tbody>
                 </table>
+                </div>
               )}
 
               {/* Archive toggle — reveals received / cancelled items (kept in DB) */}
@@ -3181,7 +3183,8 @@ export default function SupervisorPage() {
                 </div>
               )}
               {showResolvedNeeds && resolvedNeeds.length > 0 && (
-                <table style={{ width: '100%', borderCollapse: 'collapse', borderTop: '1px solid var(--line)' }}>
+                <div className="table-scroll">
+                <table style={{ width: '100%', borderCollapse: 'collapse', borderTop: '1px solid var(--line)', minWidth: 560 }}>
                   <tbody>
                     {resolvedNeeds.map((n) => (
                       <tr key={n.id} style={{ borderBottom: '1px solid var(--line)', opacity: 0.5 }}>
@@ -3196,6 +3199,7 @@ export default function SupervisorPage() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
             </div>
             </>

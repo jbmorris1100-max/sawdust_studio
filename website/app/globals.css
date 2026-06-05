@@ -606,3 +606,16 @@ footer {
   width: 100%;
   max-width: 100vw;
 }
+
+/* ── Mobile audit final pass ────────────────────────────────── */
+/* Nothing may push the page sideways. */
+html, body { max-width: 100vw; }
+
+@media (max-width: 768px) {
+  /* 44px minimum tap targets for primary controls. */
+  .btn { min-height: 44px; }
+  .form-input, select.form-input { min-height: 44px; }
+  /* Any data table left on a small screen scrolls inside its own box, never
+     the page. (Most tables already convert to cards via .crew-cards-wrap.) */
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+}

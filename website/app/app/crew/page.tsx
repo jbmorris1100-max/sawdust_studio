@@ -661,6 +661,8 @@ export default function CrewPage() {
   const [scanAiResult,   setScanAiResult]   = useState<ScanAiResult | null>(null);
   const [scanShowAlts,   setScanShowAlts]   = useState(false);
   const [scanFlash,      setScanFlash]      = useState(false);
+  // Auto-detect couldn't decide Assembly vs Production/QC → ask the crew.
+  const [scanChoiceUnit, setScanChoiceUnit] = useState<(AssemblyCabinetUnit & { production_status?: string | null }) | null>(null);
   const zxingRef    = useRef<{ reset: () => void } | null>(null);
   const scanBusyRef = useRef(false);
 
@@ -1260,7 +1262,7 @@ export default function CrewPage() {
   }
 
   // Load a cabinet unit + its parts into the assembly scan checklist.
-  async function loadCabinetUnit(cabinetUnitId: string) {
+  async function loadCabinetUnit(cabinetUnitId: string, force = false) {
     const [unitRes, partsRes] = await Promise.all([
       supabase.from('cabinet_units')
         .select('id, unit_label, job_number, cabinet_number, room_number, status, production_status')
@@ -1276,11 +1278,12 @@ export default function CrewPage() {
 
     // ── Production gate ──────────────────────────────────────────────────────
     // Assembly may only open the checklist once Production has cut the cabinet.
-    // Cabinets already in assembly/flagged/complete are grandfathered in.
+    // Cabinets already in assembly/flagged/complete are grandfathered in. The
+    // auto-detect router passes force=true once the crew has chosen the flow.
     const alreadyStarted = ['in_assembly', 'flagged', 'complete'].includes(unit.status);
     const cabinetCut = isPartCut(unit.production_status);
     const allPartsCut = parts.length > 0 && parts.every((p) => isPartCut(p.production_status));
-    if (!alreadyStarted && !cabinetCut && !allPartsCut) {
+    if (!force && !alreadyStarted && !cabinetCut && !allPartsCut) {
       setAssemblyNotReady({ unit, parts });
       return;
     }
@@ -1402,6 +1405,9 @@ export default function CrewPage() {
     setAssemblyScanNotFound(false);
     setAssemblyScanDone(false);
     setAssemblyNotReady(null);
+    setScanAiResult(null);
+    setScanShowAlts(false);
+    setScanChoiceUnit(null);
     setCameraError(null);
     setCameraStarting(false);
     setModal('assemblyScan');
@@ -1440,7 +1446,7 @@ export default function CrewPage() {
     setScanShowAlts(false);
     setAssemblyScanSearching(true);
     try {
-      await loadCabinetUnit(m.cabinet_unit_id);
+      await routeScanToFlow(m.cabinet_unit_id);
       await saveLabelMapping(rawInput.trim().toLowerCase(), m.cabinet_unit_id, m.part_name, m.confidence);
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Could not load cabinet', true);
@@ -1448,6 +1454,51 @@ export default function CrewPage() {
       setAssemblyScanSearching(false);
       scanBusyRef.current = false;
     }
+  }
+
+  // Open the Production cut flow (cut view) for a matched cabinet, closing the
+  // unified scan modal first so the cut-view overlay takes over.
+  async function openProductionCutFlow(unit: AssemblyCabinetUnit & { production_status?: string | null }) {
+    let jobPath = unit.job_number ? `Job ${unit.job_number}` : 'Unassigned';
+    try {
+      if (unit.job_number && tenant) {
+        const { data: j } = await supabase.from('jobs').select('job_path').eq('tenant_id', tenant.id).eq('job_number', unit.job_number).maybeSingle();
+        const p = (j as { job_path: string | null } | null)?.job_path;
+        if (p) jobPath = p;
+      }
+    } catch (_) {}
+    const prodUnit: ProdUnit = {
+      id: unit.id, unit_label: unit.unit_label, job_number: unit.job_number,
+      cabinet_number: unit.cabinet_number, room_number: unit.room_number,
+      status: unit.status, production_status: unit.production_status ?? null,
+      partsTotal: 0, partsCut: 0, jobPath, dueDate: null,
+    };
+    setScanChoiceUnit(null);
+    closeModal();
+    await openCutView(prodUnit);
+  }
+
+  // Auto-detect the right flow for a scanned cabinet (FIX 2):
+  //   in_assembly / flagged       → QC check (parts + flagging)
+  //   cut + pending               → Assembly checklist (auto-check parts)
+  //   not_cut / cutting           → Production cut view (mark parts cut)
+  //   otherwise indeterminate     → ask the crew (Assembly | Production/QC)
+  async function routeScanToFlow(cabinetUnitId: string) {
+    if (!tenant) return;
+    const { data, error } = await supabase.from('cabinet_units')
+      .select('id, unit_label, job_number, cabinet_number, room_number, status, production_status')
+      .eq('id', cabinetUnitId).single();
+    if (error) throw error;
+    const unit = data as AssemblyCabinetUnit & { production_status?: string | null };
+    const status = unit.status;
+    const ps = unit.production_status ?? null;
+    const cut = isPartCut(ps);
+
+    if (status === 'in_assembly' || status === 'flagged') { await loadCabinetUnit(cabinetUnitId, true); return; }
+    if (cut && (status === 'pending' || status === 'complete' || !status)) { await loadCabinetUnit(cabinetUnitId, true); return; }
+    if (ps === 'not_cut' || ps === 'cutting' || (!cut && ps)) { await openProductionCutFlow(unit); return; }
+    if (cut) { await loadCabinetUnit(cabinetUnitId, true); return; }
+    setScanChoiceUnit(unit);
   }
 
   // Unified scan resolver. Order: label_mappings (learned) → exact/fuzzy string
@@ -1461,6 +1512,7 @@ export default function CrewPage() {
     setAssemblyScanNotFound(false);
     setScanAiResult(null);
     setScanShowAlts(false);
+    setScanChoiceUnit(null);
     const lower = input.toLowerCase();
     try {
       // Step 1: learned label mappings (instant, no AI cost)
@@ -1473,7 +1525,7 @@ export default function CrewPage() {
           .order('created_at', { ascending: false })
           .limit(1).maybeSingle();
         const lmId = (lm as { cabinet_unit_id: string | null } | null)?.cabinet_unit_id;
-        if (lmId) { await loadCabinetUnit(lmId); return; }
+        if (lmId) { await routeScanToFlow(lmId); return; }
       } catch (_) { /* table may not exist pre-migration */ }
 
       // Step 2-3: exact / fuzzy string strategies
@@ -1515,7 +1567,7 @@ export default function CrewPage() {
       }
 
       if (cabinetUnitId) {
-        await loadCabinetUnit(cabinetUnitId);
+        await routeScanToFlow(cabinetUnitId);
         void saveLabelMapping(lower, cabinetUnitId, input, 100);
         return;
       }
@@ -1531,7 +1583,7 @@ export default function CrewPage() {
           const ai = (await res.json()) as ScanAiResult;
           // >= 95 → auto-load, no confirmation
           if (ai.match && ai.match.confidence >= 95) {
-            await loadCabinetUnit(ai.match.cabinet_unit_id);
+            await routeScanToFlow(ai.match.cabinet_unit_id);
             void saveLabelMapping(lower, ai.match.cabinet_unit_id, ai.match.part_name, ai.match.confidence);
             return;
           }
@@ -2736,7 +2788,7 @@ export default function CrewPage() {
                   onClick={onClick}
                   style={{
                     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                    gap: 10, padding: '20px 16px',
+                    gap: 10, padding: '18px 16px', minHeight: 96,
                     background: 'var(--bg-1)', border: '1px solid var(--line)',
                     borderRadius: 14, cursor: 'pointer',
                     transition: 'border-color 0.15s, background 0.15s',
@@ -2745,7 +2797,7 @@ export default function CrewPage() {
                   onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line-strong)'; (e.currentTarget as HTMLButtonElement).style.background = '#0e1418'; }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line)'; (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-1)'; }}
                 >
-                  <div style={{ width: 40, height: 40, borderRadius: 12, background: bg, color, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{icon}</div>
+                  <div style={{ width: 44, height: 44, borderRadius: 12, background: bg, color, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{icon}</div>
                   <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{label}</span>
                 </button>
               ))}
@@ -2898,7 +2950,7 @@ export default function CrewPage() {
           onClick={openMessages}
           aria-label="New message from Supervisor"
           style={{
-            position: 'fixed', left: 16, right: 16, bottom: 20, zIndex: 180,
+            position: 'fixed', left: 16, right: 16, bottom: 'calc(20px + env(safe-area-inset-bottom))', zIndex: 180,
             margin: '0 auto', maxWidth: 420,
             display: 'flex', alignItems: 'center', gap: 10,
             padding: '12px 16px', borderRadius: 999,
@@ -2926,9 +2978,10 @@ export default function CrewPage() {
           <div
             style={{
               marginTop: 'auto', width: '100%', maxWidth: 560, alignSelf: 'center',
-              height: '92vh', background: '#0a0d10', borderTopLeftRadius: 20, borderTopRightRadius: 20,
+              height: '92dvh', maxHeight: '92dvh', background: '#0a0d10', borderTopLeftRadius: 20, borderTopRightRadius: 20,
               border: '1px solid var(--line-strong)', borderBottom: 'none',
               display: 'flex', flexDirection: 'column', overflow: 'hidden',
+              paddingBottom: 'env(safe-area-inset-bottom)',
               animation: 'msgSlideUp 0.25s ease-out',
             }}
           >
@@ -3883,6 +3936,18 @@ export default function CrewPage() {
                     </div>
                   )}
                 </div>
+
+                {/* ── Auto-detect couldn't decide → pick the flow manually ── */}
+                {scanChoiceUnit && (
+                  <div style={{ border: '1px solid var(--line-strong)', borderRadius: 12, padding: 16, background: 'var(--bg-1)' }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{scanChoiceUnit.unit_label}</div>
+                    <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginTop: 4, marginBottom: 14 }}>Which step is this?</div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }} onClick={() => { const u = scanChoiceUnit; setScanChoiceUnit(null); void loadCabinetUnit(u.id, true); }}>Assembly</button>
+                      <button className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }} onClick={() => { void openProductionCutFlow(scanChoiceUnit); }}>Production / QC</button>
+                    </div>
+                  </div>
+                )}
 
                 {/* ── AI fuzzy-match: confirm (85-94%) or pick from alternatives (<85%) ── */}
                 {scanAiResult && (scanAiResult.match || scanAiResult.alternatives.length > 0) && (
