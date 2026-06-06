@@ -258,6 +258,7 @@ type PipelineRow = {
   finishing: number;    // finishing
   done: number;         // complete
   cabinetsCut: number;  // production_status cut+
+  splitDepts: string[]; // depts involved in any split units for this job (badge display)
 };
 
 type NotificationRow = {
@@ -418,6 +419,22 @@ function toTitleCase(str: string): string {
 // Title-case a job path segment-by-segment (e.g. "JOHNSON/kitchen" → "Johnson/Kitchen")
 function titleCasePath(path: string): string {
   return path.split('/').map((seg) => toTitleCase(seg.trim())).join('/');
+}
+
+// Display label + accent color for a cabinet's assigned department (split badges).
+function deptLabel(dept: string | null | undefined): string {
+  if (!dept) return '';
+  const d = dept.toLowerCase();
+  return d.charAt(0).toUpperCase() + d.slice(1);
+}
+function deptColor(label: string): string {
+  switch (label.toLowerCase()) {
+    case 'craftsman':  return '#5EEAD4';
+    case 'assembly':   return '#60A5FA';
+    case 'finishing':  return '#FBBF24';
+    case 'production': return '#8BA5A0';
+    default:           return '#A78BFA';
+  }
 }
 
 function StatusBadge({ status }: { status: string | null }) {
@@ -855,10 +872,10 @@ export default function SupervisorPage() {
     try {
       const { data: cabs } = await supabase
         .from('cabinet_units')
-        .select('job_number, status, production_status')
+        .select('job_number, status, production_status, is_split, assigned_dept')
         .eq('tenant_id', tenant.id)
         .limit(5000);
-      const rows = (cabs as { job_number: string | null; status: string | null; production_status: string | null }[]) ?? [];
+      const rows = (cabs as { job_number: string | null; status: string | null; production_status: string | null; is_split?: boolean | null; assigned_dept?: string | null }[]) ?? [];
       if (rows.length === 0) { setPipeline([]); return; }
 
       // Archived jobs never appear in the pipeline.
@@ -887,13 +904,18 @@ export default function SupervisorPage() {
         const meta = jobMeta[jn];
         const rawPath = meta?.jobPath || jn;          // no "Job " prefix
         const key = rawPath.toLowerCase();            // group by lowercased path → merges case duplicates
-        const row = (byJob[key] ??= { jobNumber: jn, jobPath: titleCasePath(rawPath), dueDate: meta?.dueDate ?? null, cabinetsTotal: 0, production: 0, assembly: 0, finishing: 0, done: 0, cabinetsCut: 0 });
+        const row = (byJob[key] ??= { jobNumber: jn, jobPath: titleCasePath(rawPath), dueDate: meta?.dueDate ?? null, cabinetsTotal: 0, production: 0, assembly: 0, finishing: 0, done: 0, cabinetsCut: 0, splitDepts: [] });
         row.cabinetsTotal++;
         if (cut(c.production_status)) row.cabinetsCut++;
         if (c.status === 'complete') row.done++;
         else if (c.status === 'finishing') row.finishing++;
         else if (c.status === 'in_assembly' || c.status === 'flagged') row.assembly++;
         else row.production++;
+        // Track the depts a split touches so the row can badge them (e.g. [Craftsman] [Assembly]).
+        if (c.is_split) {
+          const label = deptLabel(c.assigned_dept);
+          if (label && !row.splitDepts.includes(label)) row.splitDepts.push(label);
+        }
       });
       setPipeline(Object.values(byJob).sort((a, b) => {
         const ad = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
@@ -2457,6 +2479,13 @@ export default function SupervisorPage() {
                           {p.dueDate && (() => { const m = dueMeta(p.dueDate); return (
                             <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: `${m.color}22`, color: m.color, ...(m.overdue ? { animation: 'craftsPulse 1.4s ease-in-out infinite' } : {}) }}>Due {m.label}</span>
                           ); })()}
+                          {/* Split dept badges — which depts share this job's split cabinets */}
+                          {p.splitDepts.map((d) => {
+                            const c = deptColor(d);
+                            return (
+                              <span key={d} style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: `${c}22`, color: c, border: `1px solid ${c}40` }}>{d}</span>
+                            );
+                          })}
                           <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{p.cabinetsTotal} cabinet{p.cabinetsTotal === 1 ? '' : 's'}</span>
                         </div>
                         {/* 4-segment pipeline bar: Production | Assembly | Finishing | Done */}
