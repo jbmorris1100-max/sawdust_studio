@@ -647,6 +647,17 @@ export default function SupervisorPage() {
       return next;
     });
   }
+  // Mark every department thread read (called when the Messages tab is opened)
+  // so the tab badge drops to 0 once the supervisor has looked at messages.
+  function markAllThreadsRead() {
+    setMsgRead((prev) => {
+      const now = new Date().toISOString();
+      const next = { ...prev };
+      new Set(messages.map((m) => m.dept ?? '__broadcast__')).forEach((k) => { next[k] = now; });
+      try { localStorage.setItem('sup_msg_read', JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }
 
   // Message thread view — null = inbox, string = dept key ('__broadcast__' for null-dept)
   const [openThread, setOpenThread] = useState<string | null>(null);
@@ -893,14 +904,14 @@ export default function SupervisorPage() {
   // ── Notification center ─────────────────────────────────────────────────────
   const loadNotifications = useCallback(async () => {
     if (!tenant) return;
-    const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     try {
       const { data } = await supabase
         .from('notifications')
         .select('*')
         .eq('tenant_id', tenant.id)
         .in('target_type', ['supervisor', 'all'])
-        .gte('created_at', sevenDaysAgo)
+        .gte('created_at', since24h)
         .order('created_at', { ascending: false })
         .limit(100);
       if (data) setNotifications(data as NotificationRow[]);
@@ -929,10 +940,10 @@ export default function SupervisorPage() {
 
   async function markAllNotificationsRead() {
     if (!tenant) return;
-    const unreadIds = notifications.filter((n) => !n.read).map((n) => n.id);
-    if (unreadIds.length === 0) return;
+    if (!notifications.some((n) => !n.read)) return;
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-    try { await supabase.from('notifications').update({ read: true }).in('id', unreadIds); } catch (_) {}
+    // Clear every unread notification for this tenant (not just the loaded page).
+    try { await supabase.from('notifications').update({ read: true }).eq('tenant_id', tenant.id).eq('read', false); } catch (_) {}
   }
 
   // ── Labor cost per job (Overview) ───────────────────────────────────────────
@@ -2248,11 +2259,16 @@ export default function SupervisorPage() {
   const isTrial = tenant?.subscription_status === 'trial';
   const days = trialDaysLeft(tenant?.trial_ends_at ?? null);
 
+  // Unread = crew messages newer than this thread's last-read timestamp.
+  const unreadMessages = messages.filter(
+    (m) => m.sender_name !== 'Supervisor' && m.created_at > (msgRead[m.dept ?? '__broadcast__'] ?? '')
+  ).length;
+
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: 'overview',      label: 'Overview' },
     { key: 'crew',          label: 'Crew' },
     { key: 'assembly',      label: 'Assembly' },
-    { key: 'messages',      label: 'Messages',    count: messages.length },
+    { key: 'messages',      label: 'Messages',    count: unreadMessages > 0 ? unreadMessages : undefined },
     { key: 'needs',         label: 'Inventory',   count: activeNeeds.length },
     { key: 'damage',        label: 'Damage',      count: openDamage.length },
     { key: 'plans',         label: 'Plans',       count: plans.length > 0 ? plans.length : undefined },
@@ -2341,7 +2357,7 @@ export default function SupervisorPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               {/* Notification bell */}
               <button
-                onClick={() => setNotifOpen(true)}
+                onClick={() => { setNotifOpen(true); void markAllNotificationsRead(); }}
                 aria-label="Notifications"
                 style={{ position: 'relative', background: 'none', border: '1px solid var(--line)', borderRadius: 10, cursor: 'pointer', color: 'var(--ink-dim)', padding: '8px 10px', display: 'flex', alignItems: 'center' }}
               >
@@ -2389,7 +2405,7 @@ export default function SupervisorPage() {
             {tabs.map(({ key, label, count }) => (
               <button
                 key={key}
-                onClick={() => { setTab(key); setOpenThread(null); setMsgBody(''); }}
+                onClick={() => { setTab(key); setOpenThread(null); setMsgBody(''); if (key === 'messages') markAllThreadsRead(); }}
                 style={{ padding: '10px 18px', fontSize: 13, fontWeight: 600, color: tab === key ? 'var(--teal)' : 'var(--ink-mute)', background: 'none', border: 'none', cursor: 'pointer', borderBottom: tab === key ? '2px solid var(--teal)' : '2px solid transparent', marginBottom: -1, display: 'flex', alignItems: 'center', gap: 7, transition: 'color 0.15s', fontFamily: 'inherit' }}
               >
                 {label}
@@ -3027,7 +3043,7 @@ export default function SupervisorPage() {
 
           {/* ── Messages tab — Conversation ───────────────────────────────────── */}
           {tab === 'messages' && openThread !== null && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16, overflowX: 'hidden', maxWidth: '100%' }}>
 
               {/* Header: < Back · dept name (center) · three-dot menu */}
               <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -3064,7 +3080,7 @@ export default function SupervisorPage() {
               </div>
 
               {/* iMessage-style conversation + pinned input */}
-              <div className="portal-card" style={{ padding: '14px 16px' }}>
+              <div className="portal-card" style={{ padding: '14px 16px', overflowX: 'hidden', maxWidth: '100%' }}>
                 <MessageThread
                   messages={openThreadMsgs}
                   selfKind="supervisor"
@@ -4460,6 +4476,7 @@ export default function SupervisorPage() {
                     setOpenThread(null);
                     setMsgBody('');
                     setMoreOpen(false);
+                    if (key === 'messages') markAllThreadsRead();
                   }
                 }}
                 style={{
@@ -4562,7 +4579,7 @@ export default function SupervisorPage() {
               ).map(({ key, label, icon }) => (
                 <button
                   key={key}
-                  onClick={() => { setTab(key); setOpenThread(null); setMsgBody(''); setMoreOpen(false); }}
+                  onClick={() => { setTab(key); setOpenThread(null); setMsgBody(''); setMoreOpen(false); if (key === 'messages') markAllThreadsRead(); }}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 16,
                     width: '100%', padding: '15px 24px',

@@ -720,7 +720,7 @@ export default function CrewPage() {
     try { setMsgClearedAt(localStorage.getItem(`messages_cleared_${tenant.id}`) || ''); } catch { /* ignore */ }
   }, [tenant?.id]);
 
-  function openMessages() { setOpenThread(null); setMessagesOpen(true); }
+  function openMessages() { markSupRead(); setOpenThread(null); setMessagesOpen(true); }
   function openSupervisorThread() { markSupRead(); setOpenThread('supervisor'); }
   function closeMessages() { setMessagesOpen(false); setMsgMenuOpen(false); setOpenThread(null); setReplyBody(''); }
   function clearConversation() {
@@ -2925,37 +2925,6 @@ export default function CrewPage() {
           {/* Messages moved to a slide-up overlay (see MessagesScreen below),
               surfaced by the floating teal "New message from Supervisor" pill. */}
 
-          {/* ── Recent Clock Activity ──────────────────────────────────────────── */}
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Recent Clock Activity</div>
-            <div className="portal-card">
-              {dataLoading ? (
-                <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
-              ) : clockEntries.length === 0 ? (
-                <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No clock activity yet.</div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {clockEntries.map((entry) => (
-                    <div key={entry.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderRadius: 10, background: 'rgba(94,234,212,0.03)', border: '1px solid var(--line)' }}>
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{entry.worker_name}</div>
-                        <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{entry.dept}</div>
-                      </div>
-                      <div style={{ textAlign: 'right' }}>
-                        {entry.clock_out ? (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-mute)', background: 'rgba(255,255,255,0.04)', padding: '3px 8px', borderRadius: 6 }}>Out {formatTime(entry.clock_out)}</span>
-                        ) : (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: '#2DE1C9', background: 'rgba(45,225,201,0.1)', padding: '3px 8px', borderRadius: 6 }}>In since {formatTime(entry.clock_in)}</span>
-                        )}
-                        <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 3 }}>{formatDate(entry.clock_in)}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
           {/* ── Minimal app footer ───────────────────────────────────────── */}
           <div style={{ marginTop: 40, paddingTop: 20, borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'center', gap: 10, fontSize: 12, color: 'var(--ink-mute)' }}>
             <span>© 2026 InlineIQ</span>
@@ -3054,7 +3023,7 @@ export default function CrewPage() {
             </div>
 
             {/* Body */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: openThread !== null ? '12px 16px' : '8px' }}>
+            <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: openThread !== null ? '12px 16px' : '8px' }}>
               {openThread === null ? (
                 /* Inbox — single Supervisor thread row */
                 <button
