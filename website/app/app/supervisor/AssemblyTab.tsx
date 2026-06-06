@@ -1,5 +1,6 @@
 'use client';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import type { CSSProperties } from 'react';
 import { supabase } from '@/lib/supabase';
 import { DEFAULT_DEPARTMENTS } from '@/lib/auth';
 
@@ -43,6 +44,7 @@ type Job = {
   job_number: string;
   job_name: string | null;
   status: string;
+  job_path?: string | null;
 };
 
 interface Props {
@@ -89,24 +91,90 @@ const IcoFlag = () => (
     <line x1="4" y1="22" x2="4" y2="15"/>
   </svg>
 );
+// Thin-stroke right chevron — rotates 90° when its branch is expanded.
+const IcoChevron = ({ open, size = 16 }: { open: boolean; size?: number }) => (
+  <svg
+    width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+    style={{ flexShrink: 0, transition: 'transform 0.2s ease', transform: open ? 'rotate(90deg)' : 'rotate(0deg)' }}
+  >
+    <polyline points="9 6 15 12 9 18"/>
+  </svg>
+);
+// Filled teal checkmark — part complete.
+const IcoCheckFilled = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="#5EEAD4" stroke="#04201c" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10" fill="#5EEAD4" stroke="none"/>
+    <polyline points="17 9 10.5 15.5 7 12" fill="none"/>
+  </svg>
+);
+// Teal ring — part in assembly.
+const IcoRing = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5EEAD4" strokeWidth="2"><circle cx="12" cy="12" r="9"/></svg>
+);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// Production pipeline status for a cabinet unit:
+//   not_cut/pending → grey · cutting → amber · cut → teal · in_assembly → blue · complete → green · flagged → red
 function statusMeta(status: string): { label: string; color: string; bg: string; border: string } {
   switch (status) {
     case 'complete':    return { label: 'Complete',    color: '#34D399', bg: 'rgba(52,211,153,0.1)',   border: 'rgba(52,211,153,0.25)' };
-    case 'in_assembly': return { label: 'In Assembly', color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)',   border: 'rgba(94,234,212,0.25)' };
+    case 'in_assembly': return { label: 'In Assembly', color: '#60A5FA', bg: 'rgba(96,165,250,0.1)',   border: 'rgba(96,165,250,0.25)' };
+    case 'cut':         return { label: 'Cut',         color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)',   border: 'rgba(94,234,212,0.25)' };
+    case 'cutting':     return { label: 'Cutting',     color: '#FBBF24', bg: 'rgba(251,191,36,0.1)',   border: 'rgba(251,191,36,0.3)'  };
     case 'flagged':     return { label: 'Flagged',     color: '#F87171', bg: 'rgba(248,113,113,0.1)',  border: 'rgba(248,113,113,0.3)' };
-    default:            return { label: 'Pending',     color: '#8BA5A0', bg: 'rgba(95,111,108,0.1)',   border: 'rgba(95,111,108,0.2)' };
+    default:            return { label: 'Not Cut',     color: '#8BA5A0', bg: 'rgba(95,111,108,0.1)',   border: 'rgba(95,111,108,0.2)' };
   }
 }
 
 function partStatusIcon(status: string, flagType: string | null) {
-  if (flagType === 'damaged')    return <span style={{ color: '#F87171' }}><IcoDamaged /></span>;
-  if (flagType === 'missing')    return <span style={{ color: '#FBBF24' }}><IcoMissing /></span>;
-  if (flagType === 'wrong_part') return <span style={{ color: '#F87171' }}><IcoWrong /></span>;
-  if (status === 'checked' || status === 'complete') return <span style={{ color: '#34D399' }}><IcoCheck /></span>;
-  return <span style={{ color: '#8BA5A0' }}><IcoPending /></span>;
+  if (flagType === 'damaged')    return <span style={{ color: '#F87171', display: 'flex' }}><IcoDamaged /></span>;
+  if (flagType === 'missing')    return <span style={{ color: '#FBBF24', display: 'flex' }}><IcoMissing /></span>;
+  if (flagType === 'wrong_part') return <span style={{ color: '#F87171', display: 'flex' }}><IcoWrong /></span>;
+  if (status === 'complete')     return <span style={{ display: 'flex' }}><IcoCheckFilled /></span>;          // filled teal check
+  if (status === 'in_assembly')  return <span style={{ display: 'flex' }}><IcoRing /></span>;                 // teal ring
+  if (status === 'checked' || status === 'cut') return <span style={{ color: '#5EEAD4', display: 'flex' }}><IcoCheck /></span>; // teal check
+  return <span style={{ color: '#5F6F6C', display: 'flex' }}><IcoPending /></span>;                            // empty circle
+}
+
+// One-line status summary like "0 cut · 0 in assembly · 13 pending" for a group of units.
+function statusSummary(us: CabinetUnit[]): string {
+  const cut     = us.filter((u) => u.status === 'cut').length;
+  const inAsm   = us.filter((u) => u.status === 'in_assembly').length;
+  const pending = us.filter((u) => u.status === 'pending' || u.status === 'not_cut' || u.status === 'cutting' || !u.status).length;
+  const segs = [`${cut} cut`, `${inAsm} in assembly`, `${pending} pending`];
+  const complete = us.filter((u) => u.status === 'complete').length;
+  const flagged  = us.filter((u) => u.status === 'flagged').length;
+  if (complete > 0) segs.push(`${complete} complete`);
+  if (flagged > 0)  segs.push(`${flagged} flagged`);
+  return segs.join(' · ');
+}
+
+// Fraction (0–1) of units in a group that are complete — drives the group progress bar.
+function groupProgress(us: CabinetUnit[]): number {
+  if (us.length === 0) return 0;
+  return us.filter((u) => u.status === 'complete').length / us.length;
+}
+
+// Shared style for an expandable drill-down row. indent: px of left padding added per level.
+function rowStyle(indent: number, flagged: boolean, divider: boolean): CSSProperties {
+  return {
+    width: '100%', display: 'flex', alignItems: 'center', gap: 11,
+    padding: '13px 20px', paddingLeft: 20 + indent,
+    background: flagged ? 'rgba(248,113,113,0.035)' : 'none',
+    border: 'none',
+    borderTop: divider ? '1px solid var(--line)' : 'none',
+    cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', color: 'var(--ink)',
+  };
+}
+
+// Thin full-width progress bar shown on Job / Room rows.
+function ProgressBar({ value, flagged }: { value: number; flagged: boolean }) {
+  return (
+    <div style={{ height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginTop: 6 }}>
+      <div style={{ height: '100%', width: `${Math.round(value * 100)}%`, background: flagged ? '#F87171' : value >= 1 ? '#34D399' : '#5EEAD4', borderRadius: 2, transition: 'width 0.4s ease' }} />
+    </div>
+  );
 }
 
 function dimLabel(p: AssemblyPart): string {
@@ -119,12 +187,15 @@ function dimLabel(p: AssemblyPart): string {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export default function AssemblyTab({ tenantId, showToast, departments }: Props) {
+export default function AssemblyTab({ tenantId, showToast, departments, jobs }: Props) {
   const deptOptions = departments && departments.length ? departments : DEFAULT_DEPARTMENTS;
   const [units,       setUnits]       = useState<CabinetUnit[]>([]);
   const [allParts,    setAllParts]    = useState<AssemblyPart[]>([]);
   const [loading,     setLoading]     = useState(true);
-  const [expandedId,  setExpandedId]  = useState<string | null>(null);
+  // Drill-down expansion — only one branch open per level (Job → Room → Cabinet → Parts).
+  const [expandedJob,  setExpandedJob]  = useState<string | null>(null);
+  const [expandedRoom, setExpandedRoom] = useState<string | null>(null);  // key: `${jobKey}::${roomKey}`
+  const [expandedCab,  setExpandedCab]  = useState<string | null>(null);  // cabinet unit id
 
   // Message team state
   const [msgUnitId,  setMsgUnitId]  = useState<string | null>(null);
@@ -231,31 +302,61 @@ export default function AssemblyTab({ tenantId, showToast, departments }: Props)
   // ── Computed data ──────────────────────────────────────────────────────────
 
   const unitParts = (unitId: string) => allParts.filter((p) => p.cabinet_unit_id === unitId);
-  const checkedCount = (unitId: string) => allParts.filter((p) => p.cabinet_unit_id === unitId && p.status !== 'pending').length;
 
-  // Flagged units first, then by created_at desc
-  const sortedUnits = [...units].sort((a, b) => {
-    if (a.status === 'flagged' && b.status !== 'flagged') return -1;
-    if (b.status === 'flagged' && a.status !== 'flagged') return 1;
-    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-  });
+  // Human label for a job_number, resolved from the jobs table (Client / Room path).
+  const jobLabelFor = (jobNumber: string): string => {
+    const j = (jobs ?? []).find((x) => x.job_number === jobNumber);
+    if (j) {
+      if (j.job_path && j.job_path.trim()) return j.job_path.split('/').map((s) => s.trim()).filter(Boolean).join(' / ');
+      if (j.job_name && j.job_name.trim()) return j.job_name.trim();
+    }
+    return jobNumber === 'No Job' ? 'No Job' : `Job ${jobNumber}`;
+  };
 
-  // Group by job_number
-  const grouped: Record<string, CabinetUnit[]> = {};
-  sortedUnits.forEach((u) => {
+  // Cabinets sorted flagged-first (flagged float to the top of every room group), then newest.
+  const sortCabs = (list: CabinetUnit[]) =>
+    [...list].sort((a, b) => {
+      if (a.status === 'flagged' && b.status !== 'flagged') return -1;
+      if (b.status === 'flagged' && a.status !== 'flagged') return 1;
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+
+  // LEVEL 1 — group all units by job_number (null → "No Job").
+  const byJob: Record<string, CabinetUnit[]> = {};
+  units.forEach((u) => {
     const k = u.job_number || 'No Job';
-    if (!grouped[k]) grouped[k] = [];
-    grouped[k].push(u);
+    if (!byJob[k]) byJob[k] = [];
+    byJob[k].push(u);
+  });
+  // Jobs with any flagged cabinet float to the top, then alphabetical by label.
+  const jobKeys = Object.keys(byJob).sort((a, b) => {
+    const af = byJob[a].some((u) => u.status === 'flagged');
+    const bf = byJob[b].some((u) => u.status === 'flagged');
+    if (af !== bf) return af ? -1 : 1;
+    return jobLabelFor(a).localeCompare(jobLabelFor(b));
   });
 
-  // Per-job status overview counts
-  const jobStatusCounts = (jobUnits: CabinetUnit[]) => ({
-    flagged:  jobUnits.filter((u) => u.status === 'flagged').length,
-    complete: jobUnits.filter((u) => u.status === 'complete').length,
-    active:   jobUnits.filter((u) => u.status !== 'flagged' && u.status !== 'complete').length,
-  });
+  // LEVEL 2 — within a job, group by room_number (null → "General").
+  const roomsForJob = (jobUnits: CabinetUnit[]): [string, CabinetUnit[]][] => {
+    const byRoom: Record<string, CabinetUnit[]> = {};
+    jobUnits.forEach((u) => {
+      const rk = u.room_number || 'General';
+      if (!byRoom[rk]) byRoom[rk] = [];
+      byRoom[rk].push(u);
+    });
+    return Object.keys(byRoom)
+      .sort((a, b) => {
+        const af = byRoom[a].some((u) => u.status === 'flagged');
+        const bf = byRoom[b].some((u) => u.status === 'flagged');
+        if (af !== bf) return af ? -1 : 1;
+        if (a === 'General') return 1;
+        if (b === 'General') return -1;
+        return a.localeCompare(b, undefined, { numeric: true });
+      })
+      .map((rk) => [rk, sortCabs(byRoom[rk])] as [string, CabinetUnit[]]);
+  };
 
-  const flaggedUnits = sortedUnits.filter((u) => u.status === 'flagged');
+  const flaggedUnits = units.filter((u) => u.status === 'flagged');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -300,7 +401,7 @@ export default function AssemblyTab({ tenantId, showToast, departments }: Props)
         </div>
       )}
 
-      {/* ── Cabinet Units ─────────────────────────────────────────────────── */}
+      {/* ── Drill-down: Jobs → Rooms → Cabinets → Parts ──────────────────── */}
       {loading ? (
         <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading assembly data…</div>
       ) : units.length === 0 ? (
@@ -308,170 +409,144 @@ export default function AssemblyTab({ tenantId, showToast, departments }: Props)
           No cabinet units yet. Upload a CSV cut list in the <strong style={{ color: 'var(--ink-dim)' }}>Plans</strong> tab to get started.
         </div>
       ) : (
-        Object.entries(grouped).map(([jobKey, jobUnits]) => {
-          const counts = jobStatusCounts(jobUnits);
-          return (
-          <div key={jobKey} className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
-            <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--line)', background: 'rgba(94,234,212,0.03)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#5EEAD4' }}>
-                Job {jobKey}
-              </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11 }}>
-                {counts.flagged > 0 && <span style={{ color: '#F87171', fontWeight: 700 }}>{counts.flagged} flagged</span>}
-                {counts.complete > 0 && <span style={{ color: '#34D399', fontWeight: 700 }}>{counts.complete} complete</span>}
-                {counts.active > 0 && <span style={{ color: 'var(--ink-mute)' }}>{counts.active} in progress</span>}
-                <span style={{ color: 'var(--ink-mute)' }}>· {jobUnits.length} unit{jobUnits.length !== 1 ? 's' : ''}</span>
-              </div>
-            </div>
+        <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
+          {jobKeys.map((jobKey, ji) => {
+            const jobUnits   = byJob[jobKey];
+            const jobOpen    = expandedJob === jobKey;
+            const rooms      = roomsForJob(jobUnits);
+            const jobFlagged = jobUnits.some((u) => u.status === 'flagged');
+            return (
+              <div key={jobKey} style={{ borderTop: ji > 0 ? '1px solid var(--line)' : 'none' }}>
 
-            {jobUnits.map((unit) => {
-              const sm        = statusMeta(unit.status);
-              const parts     = unitParts(unit.id);
-              const total     = parts.length;
-              const checked   = checkedCount(unit.id);
-              const pct       = total > 0 ? (checked / total) * 100 : 0;
-              const isOpen    = expandedId === unit.id;
-              const isFlagged = unit.status === 'flagged';
-              const flaggedParts = parts.filter((p) => p.flag_type);
-
-              return (
-                <div
-                  key={unit.id}
-                  style={{
-                    borderBottom: '1px solid var(--line)',
-                    borderLeft: isFlagged ? '3px solid #F87171' : '3px solid transparent',
-                  }}
-                >
-                  {/* Unit header row */}
-                  <button
-                    onClick={() => setExpandedId(isOpen ? null : unit.id)}
-                    style={{
-                      width: '100%', display: 'flex', alignItems: 'center', gap: 14,
-                      padding: '14px 20px', background: 'none', border: 'none',
-                      cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
-                    }}
-                  >
-                    {/* Pulse indicator for flagged */}
-                    {isFlagged && (
-                      <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#F87171', flexShrink: 0, animation: 'flagPulse 1.5s ease-in-out infinite' }} />
-                    )}
-
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 5, flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>
-                          {unit.room_number ? `Room ${unit.room_number} — ` : ''}
-                          {unit.cabinet_number ? `Cabinet ${unit.cabinet_number}` : unit.unit_label}
-                        </span>
-                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: sm.color, background: sm.bg, border: `1px solid ${sm.border}` }}>
-                          {sm.label}
-                        </span>
-                        <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{total} part{total !== 1 ? 's' : ''}</span>
-                      </div>
-
-                      {/* Progress bar */}
-                      <div style={{ height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
-                        <div style={{
-                          height: '100%',
-                          width: `${pct}%`,
-                          background: unit.status === 'flagged' ? '#F87171' : unit.status === 'complete' ? '#34D399' : '#5EEAD4',
-                          borderRadius: 2,
-                          transition: 'width 0.4s ease',
-                        }} />
-                      </div>
-                      <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 3 }}>{checked}/{total} checked</div>
+                {/* LEVEL 1 — Job */}
+                <button onClick={() => { setExpandedJob(jobOpen ? null : jobKey); setExpandedRoom(null); setExpandedCab(null); }} style={rowStyle(0, jobFlagged, false)}>
+                  <IcoChevron open={jobOpen} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{jobLabelFor(jobKey)}</span>
+                      <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{jobUnits.length} unit{jobUnits.length !== 1 ? 's' : ''}</span>
                     </div>
+                    <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 3 }}>{statusSummary(jobUnits)}</div>
+                    <ProgressBar value={groupProgress(jobUnits)} flagged={jobFlagged} />
+                  </div>
+                </button>
 
-                    <svg
-                      width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="2" strokeLinecap="round"
-                      style={{ flexShrink: 0, transition: 'transform 0.2s', transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
-                    >
-                      <polyline points="6 9 12 15 18 9"/>
-                    </svg>
-                  </button>
+                {/* LEVEL 2 — Rooms */}
+                {jobOpen && rooms.map(([roomKey, roomUnits]) => {
+                  const roomId      = `${jobKey}::${roomKey}`;
+                  const roomOpen    = expandedRoom === roomId;
+                  const roomFlagged = roomUnits.some((u) => u.status === 'flagged');
+                  return (
+                    <div key={roomId}>
+                      <button onClick={() => { setExpandedRoom(roomOpen ? null : roomId); setExpandedCab(null); }} style={rowStyle(16, roomFlagged, true)}>
+                        <IcoChevron open={roomOpen} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--ink)' }}>{roomKey === 'General' ? 'General' : `Room ${roomKey}`}</span>
+                            <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{roomUnits.length} unit{roomUnits.length !== 1 ? 's' : ''}</span>
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 3 }}>{statusSummary(roomUnits)}</div>
+                          <ProgressBar value={groupProgress(roomUnits)} flagged={roomFlagged} />
+                        </div>
+                      </button>
 
-                  {/* Expanded parts list */}
-                  {isOpen && (
-                    <div style={{ padding: '0 20px 16px 20px', background: 'rgba(255,255,255,0.015)' }}>
-                      {parts.length === 0 ? (
-                        <div style={{ fontSize: 13, color: 'var(--ink-mute)', padding: '8px 0' }}>No parts loaded for this unit.</div>
-                      ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-                          {parts.map((part) => (
-                            <div
-                              key={part.id}
-                              style={{
-                                display: 'flex', alignItems: 'center', gap: 12,
-                                padding: '9px 0',
-                                borderBottom: '1px solid rgba(255,255,255,0.04)',
-                              }}
-                            >
-                              <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
-                                {partStatusIcon(part.status, part.flag_type)}
-                              </div>
+                      {/* LEVEL 3 — Cabinets */}
+                      {roomOpen && roomUnits.map((unit) => {
+                        const sm           = statusMeta(unit.status);
+                        const parts        = unitParts(unit.id);
+                        const total        = parts.length;
+                        const cabOpen      = expandedCab === unit.id;
+                        const isFlagged    = unit.status === 'flagged';
+                        const flaggedParts = parts.filter((p) => p.flag_type);
+                        return (
+                          <div key={unit.id} style={{ borderLeft: isFlagged ? '3px solid #F87171' : '3px solid transparent' }}>
+                            <button onClick={() => setExpandedCab(cabOpen ? null : unit.id)} style={rowStyle(32, isFlagged, true)}>
+                              <IcoChevron open={cabOpen} />
+                              {isFlagged && <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#F87171', flexShrink: 0, animation: 'flagPulse 1.5s ease-in-out infinite' }} />}
                               <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: 13, fontWeight: 600, color: part.flag_type ? '#F87171' : 'var(--ink)' }}>
-                                  {part.part_name}
-                                  {part.quantity > 1 && <span style={{ fontWeight: 400, color: 'var(--ink-mute)', marginLeft: 6 }}>×{part.quantity}</span>}
-                                </div>
-                                {(dimLabel(part) || part.material) && (
-                                  <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>
-                                    {dimLabel(part)}{part.material ? (dimLabel(part) ? ` · ${part.material}` : part.material) : ''}
-                                  </div>
+                                <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>
+                                  {unit.cabinet_number ? `${unit.cabinet_number} — ${unit.unit_label}` : unit.unit_label}
+                                </span>
+                                <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 10 }}>{total} part{total !== 1 ? 's' : ''}</span>
+                              </div>
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: sm.color, background: sm.bg, border: `1px solid ${sm.border}`, flexShrink: 0 }}>
+                                {sm.label}
+                              </span>
+                            </button>
+
+                            {/* LEVEL 4 — Parts */}
+                            {cabOpen && (
+                              <div style={{ padding: '4px 20px 14px 51px', background: 'rgba(255,255,255,0.015)' }}>
+                                {parts.length === 0 ? (
+                                  <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', padding: '8px 0' }}>No parts loaded for this unit.</div>
+                                ) : (
+                                  parts.map((part) => (
+                                    <div key={part.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                                      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
+                                        {partStatusIcon(part.status, part.flag_type)}
+                                      </div>
+                                      <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ fontSize: 13, fontWeight: 600, color: part.flag_type ? '#F87171' : 'var(--ink)' }}>
+                                          {part.part_name}
+                                          {part.quantity > 1 && <span style={{ fontWeight: 400, color: 'var(--ink-mute)', marginLeft: 6 }}>×{part.quantity}</span>}
+                                        </div>
+                                        {(dimLabel(part) || part.material) && (
+                                          <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>
+                                            {dimLabel(part)}{part.material ? (dimLabel(part) ? ` · ${part.material}` : part.material) : ''}
+                                          </div>
+                                        )}
+                                        {part.flag_type && (
+                                          <div style={{ fontSize: 11, color: '#F87171', marginTop: 2 }}>
+                                            {part.flag_type.replace('_', ' ')}
+                                            {part.flag_notes ? ` — ${part.flag_notes}` : ''}
+                                          </div>
+                                        )}
+                                        {part.checked_by && (
+                                          <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>by {part.checked_by}</div>
+                                        )}
+                                      </div>
+                                      {part.flag_type && <span style={{ color: '#F87171', flexShrink: 0, display: 'flex' }}><IcoFlag /></span>}
+                                    </div>
+                                  ))
                                 )}
-                                {part.flag_type && (
-                                  <div style={{ fontSize: 11, color: '#F87171', marginTop: 2 }}>
-                                    {part.flag_type.replace('_', ' ')}
-                                    {part.flag_notes ? ` — ${part.flag_notes}` : ''}
+
+                                {/* Message Team for flagged cabinet */}
+                                {isFlagged && (
+                                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+                                    {flaggedParts.length > 0 && (
+                                      <div style={{ marginBottom: 10 }}>
+                                        {flaggedParts.map((p) => (
+                                          <div key={p.id} style={{ fontSize: 12, color: '#F87171', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                                            <IcoFlag />
+                                            {p.part_name}: {(p.flag_type ?? '').replace('_', ' ')}
+                                            {p.flag_notes ? ` — ${p.flag_notes}` : ''}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <button
+                                      onClick={() => openMsgModal(unit)}
+                                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px', borderRadius: 8, background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', color: '#F87171', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                                    >
+                                      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                                      </svg>
+                                      Message Team
+                                    </button>
                                   </div>
-                                )}
-                                {part.checked_by && (
-                                  <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>by {part.checked_by}</div>
                                 )}
                               </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Message Team for flagged */}
-                      {isFlagged && (
-                        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
-                          {flaggedParts.length > 0 && (
-                            <div style={{ marginBottom: 10 }}>
-                              {flaggedParts.map((p) => (
-                                <div key={p.id} style={{ fontSize: 12, color: '#F87171', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                                  <IcoFlag />
-                                  {p.part_name}: {(p.flag_type ?? '').replace('_', ' ')}
-                                  {p.flag_notes ? ` — ${p.flag_notes}` : ''}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          <button
-                            onClick={() => openMsgModal(unit)}
-                            style={{
-                              display: 'flex', alignItems: 'center', gap: 8,
-                              padding: '8px 16px', borderRadius: 8,
-                              background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
-                              color: '#F87171', fontSize: 12, fontWeight: 700,
-                              cursor: 'pointer', fontFamily: 'inherit',
-                            }}
-                          >
-                            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                            </svg>
-                            Message Team
-                          </button>
-                        </div>
-                      )}
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          );
-        })
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
       )}
 
       {/* ── Message Team Modal ────────────────────────────────────────────── */}

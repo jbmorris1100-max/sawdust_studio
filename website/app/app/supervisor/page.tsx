@@ -46,6 +46,7 @@ type Message = {
   dept: string | null;
   body: string;
   created_at: string;
+  read_at: string | null;
 };
 
 type InventoryNeed = {
@@ -633,30 +634,33 @@ export default function SupervisorPage() {
   const [msgBody,    setMsgBody]    = useState('');
   const [msgDept,    setMsgDept]    = useState('');
   const [sending,    setSending]    = useState(false);
-  // Per-thread last-read timestamps (localStorage) → drives the unread dot/count.
-  const [msgRead,    setMsgRead]    = useState<Record<string, string>>({});
   const [hoverThread, setHoverThread] = useState<string | null>(null);
   // Inbox "New Message" composer + in-conversation three-dot menu.
   const [composeOpen, setComposeOpen] = useState(false);
   const [convMenuOpen, setConvMenuOpen] = useState(false);
-  useEffect(() => { try { const r = localStorage.getItem('sup_msg_read'); if (r) setMsgRead(JSON.parse(r)); } catch { /* ignore */ } }, []);
-  function markThreadRead(key: string) {
-    setMsgRead((prev) => {
-      const next = { ...prev, [key]: new Date().toISOString() };
-      try { localStorage.setItem('sup_msg_read', JSON.stringify(next)); } catch { /* ignore */ }
-      return next;
-    });
-  }
-  // Mark every department thread read (called when the Messages tab is opened)
-  // so the tab badge drops to 0 once the supervisor has looked at messages.
-  function markAllThreadsRead() {
-    setMsgRead((prev) => {
-      const now = new Date().toISOString();
-      const next = { ...prev };
-      new Set(messages.map((m) => m.dept ?? '__broadcast__')).forEach((k) => { next[k] = now; });
-      try { localStorage.setItem('sup_msg_read', JSON.stringify(next)); } catch { /* ignore */ }
-      return next;
-    });
+  // Mark every unread crew message in a thread as read in Supabase (persists across
+  // devices/sessions). Optimistically clears them locally so the counter drops instantly;
+  // realtime UPDATE events keep other open sessions in sync.
+  async function markThreadRead(key: string) {
+    const dept = key === '__broadcast__' ? null : key;
+    const unread = messages.filter(
+      (m) => (m.dept ?? '__broadcast__') === key && m.sender_name !== 'Supervisor' && !m.read_at,
+    );
+    if (unread.length === 0) return;
+    const now = new Date().toISOString();
+    const ids = new Set(unread.map((m) => m.id));
+    setMessages((prev) => prev.map((m) => (ids.has(m.id) ? { ...m, read_at: now } : m)));
+    if (!tenant) return;
+    try {
+      let q = supabase
+        .from('messages')
+        .update({ read_at: now })
+        .eq('tenant_id', tenant.id)
+        .neq('sender_name', 'Supervisor')
+        .is('read_at', null);
+      q = dept === null ? q.is('dept', null) : q.eq('dept', dept);
+      await q;
+    } catch { /* optimistic update already applied; realtime will reconcile */ }
   }
 
   // Message thread view — null = inbox, string = dept key ('__broadcast__' for null-dept)
@@ -794,7 +798,7 @@ export default function SupervisorPage() {
     try {
       const [crewRes, msgRes, needsRes, damageRes] = await Promise.all([
         supabase.from('time_clock').select('id, worker_name, dept, clock_in, status').eq('tenant_id', tenant.id).is('clock_out', null).order('clock_in', { ascending: true }),
-        supabase.from('messages').select('id, sender_name, dept, body, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
+        supabase.from('messages').select('id, sender_name, dept, body, created_at, read_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
         supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
         supabase.from('damage_reports').select('id, part_name, job_id, dept, notes, photo_url, status, created_at, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
       ]);
@@ -1393,6 +1397,7 @@ export default function SupervisorPage() {
       dept,
       body,
       created_at:  new Date().toISOString(),
+      read_at:     null,
     };
     setMessages((prev) => [optimistic, ...prev]);
     setMsgBody('');
@@ -1403,7 +1408,7 @@ export default function SupervisorPage() {
         dept,
         body,
         tenant_id: tenant!.id,
-      }).select('id, sender_name, dept, body, created_at').single();
+      }).select('id, sender_name, dept, body, created_at, read_at').single();
       if (error) throw error;
       setMessages((prev) => prev.map((m) => m.id === optimistic.id ? data as Message : m));
       // Notify crew of the new message (fire-and-forget).
@@ -2259,9 +2264,10 @@ export default function SupervisorPage() {
   const isTrial = tenant?.subscription_status === 'trial';
   const days = trialDaysLeft(tenant?.trial_ends_at ?? null);
 
-  // Unread = crew messages newer than this thread's last-read timestamp.
+  // True unread = crew messages (sender ≠ Supervisor) the supervisor hasn't opened yet
+  // (read_at IS NULL). Persisted in Supabase, so it survives across devices/sessions.
   const unreadMessages = messages.filter(
-    (m) => m.sender_name !== 'Supervisor' && m.created_at > (msgRead[m.dept ?? '__broadcast__'] ?? '')
+    (m) => m.sender_name !== 'Supervisor' && !m.read_at
   ).length;
 
   const tabs: { key: Tab; label: string; count?: number }[] = [
@@ -2382,7 +2388,7 @@ export default function SupervisorPage() {
           <div className="kpi-grid" style={{ gap: 12, marginBottom: 32 }}>
             {[
               { label: 'Crew Clocked In',      value: dataLoading ? '—' : String(activeCrew.length),  color: '#2DE1C9' },
-              { label: 'Messages',              value: dataLoading ? '—' : String(messages.length),    color: '#5EEAD4' },
+              { label: 'Unread Messages',       value: dataLoading ? '—' : String(unreadMessages),     color: '#5EEAD4' },
               { label: 'Open Inventory Needs',  value: dataLoading ? '—' : String(openNeeds.length),   color: '#FBBF24' },
               { label: 'Open Damage Reports',   value: dataLoading ? '—' : String(openDamage.length),  color: '#F87171' },
             ].map(({ label, value, color }) => (
@@ -2405,7 +2411,7 @@ export default function SupervisorPage() {
             {tabs.map(({ key, label, count }) => (
               <button
                 key={key}
-                onClick={() => { setTab(key); setOpenThread(null); setMsgBody(''); if (key === 'messages') markAllThreadsRead(); }}
+                onClick={() => { setTab(key); setOpenThread(null); setMsgBody(''); }}
                 style={{ padding: '10px 18px', fontSize: 13, fontWeight: 600, color: tab === key ? 'var(--teal)' : 'var(--ink-mute)', background: 'none', border: 'none', cursor: 'pointer', borderBottom: tab === key ? '2px solid var(--teal)' : '2px solid transparent', marginBottom: -1, display: 'flex', alignItems: 'center', gap: 7, transition: 'color 0.15s', fontFamily: 'inherit' }}
               >
                 {label}
@@ -3000,8 +3006,7 @@ export default function SupervisorPage() {
               ) : (
                 <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
                   {msgThreads.map(({ deptKey, label, lastMsg }, i) => {
-                    const lastRead = msgRead[deptKey] ?? '';
-                    const unread = threadMap[deptKey].filter((m) => m.sender_name !== 'Supervisor' && m.created_at > lastRead).length;
+                    const unread = threadMap[deptKey].filter((m) => m.sender_name !== 'Supervisor' && !m.read_at).length;
                     const initial = (label.trim()[0] ?? '?').toUpperCase();
                     return (
                       <div
@@ -4476,7 +4481,6 @@ export default function SupervisorPage() {
                     setOpenThread(null);
                     setMsgBody('');
                     setMoreOpen(false);
-                    if (key === 'messages') markAllThreadsRead();
                   }
                 }}
                 style={{
@@ -4579,7 +4583,7 @@ export default function SupervisorPage() {
               ).map(({ key, label, icon }) => (
                 <button
                   key={key}
-                  onClick={() => { setTab(key); setOpenThread(null); setMsgBody(''); setMoreOpen(false); if (key === 'messages') markAllThreadsRead(); }}
+                  onClick={() => { setTab(key); setOpenThread(null); setMsgBody(''); setMoreOpen(false); }}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 16,
                     width: '100%', padding: '15px 24px',
