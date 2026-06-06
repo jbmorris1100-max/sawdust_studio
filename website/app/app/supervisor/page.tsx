@@ -2086,6 +2086,16 @@ export default function SupervisorPage() {
       await supabase.from('job_drawings').update({ parsed: true }).eq('id', planPendingId);
       setPlans((prev) => prev.map((p) => p.id === planPendingId ? { ...p, parsed: true } : p));
 
+      // Fire-and-forget AI classification — assigns each new unit to craftsman vs
+      // standard production. Never awaited, never blocks the upload flow.
+      try {
+        void fetch('/app/api/classify-units', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ tenantId: tenant!.id, jobNumber }),
+        }).catch(() => {});
+      } catch { /* classification unavailable — ignore */ }
+
       cancelPlanMapper();
       resetPlanJobSelector();
       setPlanDepts(['all']);

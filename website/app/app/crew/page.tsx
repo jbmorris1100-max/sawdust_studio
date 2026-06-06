@@ -9,6 +9,7 @@ import { trialDaysLeft, getDepartments, type Tenant } from '@/lib/auth';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import PushPrompt from '@/components/PushPrompt';
 import OfflineBanner from '@/components/OfflineBanner';
+import CraftsmanBuilds from './CraftsmanBuilds';
 import MessageThread from '@/components/MessageThread';
 import { enqueue, pendingCount } from '@/lib/offlineQueue';
 import { sendNotify } from '@/lib/notify';
@@ -2721,7 +2722,10 @@ export default function CrewPage() {
           </div>
 
           {/* ── Current job (prominent) ─────────────────────────────────────── */}
-          {!activeJobLoading && (
+          {/* Craftsman dept gets a build-centric view instead of the generic job card. */}
+          {crewDept === 'Craftsman' && tenant ? (
+            <CraftsmanBuilds tenantId={tenant.id} crewName={crewName} timeClockId={activeTimeClockId} showToast={showToast} />
+          ) : !activeJobLoading && (
             activeJob ? (
               <div style={{ marginBottom: 32, padding: '18px 20px', borderRadius: 16, background: 'var(--bg-1)', border: '1px solid var(--line)', borderLeft: '3px solid var(--teal)' }}>
                 <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 8 }}>Current Job</div>

@@ -18,6 +18,10 @@ type CabinetUnit = {
   flagged_reason: string | null;
   completed_at: string | null;
   created_at: string;
+  assigned_dept: string | null;
+  is_split: boolean | null;
+  split_from_id: string | null;
+  parent_unit_id: string | null;
 };
 
 type AssemblyPart = {
@@ -119,6 +123,8 @@ const IcoRing = () => (
 function statusMeta(status: string): { label: string; color: string; bg: string; border: string } {
   switch (status) {
     case 'complete':    return { label: 'Complete',    color: '#34D399', bg: 'rgba(52,211,153,0.1)',   border: 'rgba(52,211,153,0.25)' };
+    case 'finishing':   return { label: 'Finishing',   color: '#FBBF24', bg: 'rgba(251,191,36,0.1)',   border: 'rgba(251,191,36,0.3)'  };
+    case 'building':    return { label: 'Building',    color: '#60A5FA', bg: 'rgba(96,165,250,0.1)',   border: 'rgba(96,165,250,0.25)' };
     case 'in_assembly': return { label: 'In Assembly', color: '#60A5FA', bg: 'rgba(96,165,250,0.1)',   border: 'rgba(96,165,250,0.25)' };
     case 'cut':         return { label: 'Cut',         color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)',   border: 'rgba(94,234,212,0.25)' };
     case 'cutting':     return { label: 'Cutting',     color: '#FBBF24', bg: 'rgba(251,191,36,0.1)',   border: 'rgba(251,191,36,0.3)'  };
@@ -168,12 +174,58 @@ function rowStyle(indent: number, flagged: boolean, divider: boolean): CSSProper
   };
 }
 
+// Colored label for a department badge on split child tickets.
+function deptMeta(dept: string | null): { label: string; color: string } {
+  switch ((dept ?? '').toLowerCase()) {
+    case 'craftsman':  return { label: 'Craftsman',  color: '#5EEAD4' };
+    case 'assembly':   return { label: 'Assembly',   color: '#60A5FA' };
+    case 'finishing':  return { label: 'Finishing',  color: '#FBBF24' };
+    case 'production': return { label: 'Production', color: '#8BA5A0' };
+    default:           return { label: dept || 'Unassigned', color: '#8BA5A0' };
+  }
+}
+
 // Thin full-width progress bar shown on Job / Room rows.
 function ProgressBar({ value, flagged }: { value: number; flagged: boolean }) {
   return (
     <div style={{ height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginTop: 6 }}>
       <div style={{ height: '100%', width: `${Math.round(value * 100)}%`, background: flagged ? '#F87171' : value >= 1 ? '#34D399' : '#5EEAD4', borderRadius: 2, transition: 'width 0.4s ease' }} />
     </div>
+  );
+}
+
+// LEVEL 4 — the parts list for one cabinet/ticket. Shared by normal cabinets and
+// split child tickets.
+function PartsList({ parts }: { parts: AssemblyPart[] }) {
+  if (parts.length === 0) {
+    return <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', padding: '8px 0' }}>No parts loaded for this unit.</div>;
+  }
+  return (
+    <>
+      {parts.map((part) => (
+        <div key={part.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+          <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>{partStatusIcon(part.status, part.flag_type)}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: part.flag_type ? '#F87171' : 'var(--ink)' }}>
+              {part.part_name}
+              {part.quantity > 1 && <span style={{ fontWeight: 400, color: 'var(--ink-mute)', marginLeft: 6 }}>×{part.quantity}</span>}
+            </div>
+            {(dimLabel(part) || part.material) && (
+              <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>
+                {dimLabel(part)}{part.material ? (dimLabel(part) ? ` · ${part.material}` : part.material) : ''}
+              </div>
+            )}
+            {part.flag_type && (
+              <div style={{ fontSize: 11, color: '#F87171', marginTop: 2 }}>
+                {part.flag_type.replace('_', ' ')}{part.flag_notes ? ` — ${part.flag_notes}` : ''}
+              </div>
+            )}
+            {part.checked_by && <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>by {part.checked_by}</div>}
+          </div>
+          {part.flag_type && <span style={{ color: '#F87171', flexShrink: 0, display: 'flex' }}><IcoFlag /></span>}
+        </div>
+      ))}
+    </>
   );
 }
 
@@ -196,6 +248,7 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
   const [expandedJob,  setExpandedJob]  = useState<string | null>(null);
   const [expandedRoom, setExpandedRoom] = useState<string | null>(null);  // key: `${jobKey}::${roomKey}`
   const [expandedCab,  setExpandedCab]  = useState<string | null>(null);  // cabinet unit id
+  const [expandedChild, setExpandedChild] = useState<string | null>(null); // split child ticket id
 
   // Message team state
   const [msgUnitId,  setMsgUnitId]  = useState<string | null>(null);
@@ -279,6 +332,14 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
     setMsgDept('Assembly');
   }
 
+  // Message both depts that share a split cabinet.
+  function openSplitMsgModal(parent: CabinetUnit, depts: string[]) {
+    const baseLabel = parent.unit_label.replace(/ \((Craftsman|Box)\)$/i, '');
+    setMsgUnitId(parent.id);
+    setMsgBody(`${baseLabel} is split across ${depts.join(' and ')}. Please coordinate so all pieces finish together.`);
+    setMsgDept('');
+  }
+
   async function handleSendMsg() {
     if (!msgBody.trim() || msgSending || !msgUnitId) return;
     setMsgSending(true);
@@ -321,9 +382,20 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
       return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
     });
 
-  // LEVEL 1 — group all units by job_number (null → "No Job").
+  // Split-ticket children (split_from_id set) are nested under their parent, not
+  // shown as standalone cabinets. Map parentId → child tickets.
+  const childrenByParent: Record<string, CabinetUnit[]> = {};
+  units.forEach((u) => {
+    if (u.split_from_id) {
+      if (!childrenByParent[u.split_from_id]) childrenByParent[u.split_from_id] = [];
+      childrenByParent[u.split_from_id].push(u);
+    }
+  });
+
+  // LEVEL 1 — group top-level units by job_number (null → "No Job"); children excluded.
   const byJob: Record<string, CabinetUnit[]> = {};
   units.forEach((u) => {
+    if (u.split_from_id) return; // nested under its parent
     const k = u.job_number || 'No Job';
     if (!byJob[k]) byJob[k] = [];
     byJob[k].push(u);
@@ -452,12 +524,69 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
 
                       {/* LEVEL 3 — Cabinets */}
                       {roomOpen && roomUnits.map((unit) => {
-                        const sm           = statusMeta(unit.status);
                         const parts        = unitParts(unit.id);
                         const total        = parts.length;
                         const cabOpen      = expandedCab === unit.id;
                         const isFlagged    = unit.status === 'flagged';
                         const flaggedParts = parts.filter((p) => p.flag_type);
+                        const children     = childrenByParent[unit.id] ?? [];
+                        const isSplit      = children.length > 0;
+
+                        // ── Split parent: original (Craftsman) + child box ticket(s) ──
+                        if (isSplit) {
+                          const members      = [unit, ...children];
+                          const allComplete  = members.every((m) => m.status === 'complete');
+                          const memberDepts  = Array.from(new Set(members.map((m) => deptMeta(m.assigned_dept).label)));
+                          const baseLabel    = unit.unit_label.replace(/ \((Craftsman|Box)\)$/i, '');
+                          return (
+                            <div key={unit.id} style={{ borderLeft: '3px solid #A78BFA' }}>
+                              <button onClick={() => { setExpandedCab(cabOpen ? null : unit.id); setExpandedChild(null); }} style={rowStyle(32, false, true)}>
+                                <IcoChevron open={cabOpen} />
+                                <span style={{ color: '#A78BFA', display: 'flex', flexShrink: 0 }}>
+                                  <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/></svg>
+                                </span>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>{unit.cabinet_number ? `${unit.cabinet_number} — ${baseLabel}` : baseLabel}</span>
+                                  <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 10 }}>{members.length} tickets</span>
+                                </div>
+                                <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', padding: '2px 7px', borderRadius: 20, color: '#A78BFA', background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.3)', flexShrink: 0 }}>SPLIT</span>
+                                <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, flexShrink: 0, color: allComplete ? '#34D399' : '#FBBF24', background: allComplete ? 'rgba(52,211,153,0.1)' : 'rgba(251,191,36,0.1)', border: `1px solid ${allComplete ? 'rgba(52,211,153,0.25)' : 'rgba(251,191,36,0.3)'}` }}>
+                                  {allComplete ? 'Complete' : 'Partial'}
+                                </span>
+                              </button>
+
+                              {cabOpen && (
+                                <div style={{ padding: '4px 20px 14px 51px', background: 'rgba(255,255,255,0.015)' }}>
+                                  {members.map((m) => {
+                                    const mParts    = unitParts(m.id);
+                                    const dm        = deptMeta(m.assigned_dept);
+                                    const msm       = statusMeta(m.status);
+                                    const childOpen = expandedChild === m.id;
+                                    return (
+                                      <div key={m.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                                        <button onClick={() => setExpandedChild(childOpen ? null : m.id)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', color: 'var(--ink)' }}>
+                                          <IcoChevron open={childOpen} size={13} />
+                                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: dm.color, background: `${dm.color}22`, flexShrink: 0 }}>{dm.label}</span>
+                                          <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mParts.length} part{mParts.length !== 1 ? 's' : ''}</span>
+                                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: msm.color, background: msm.bg, border: `1px solid ${msm.border}`, flexShrink: 0 }}>{msm.label}</span>
+                                        </button>
+                                        {childOpen && <div style={{ paddingLeft: 22, paddingBottom: 8 }}><PartsList parts={mParts} /></div>}
+                                      </div>
+                                    );
+                                  })}
+                                  <button onClick={() => openSplitMsgModal(unit, memberDepts)}
+                                    style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px', borderRadius: 8, background: 'rgba(94,234,212,0.08)', border: '1px solid rgba(94,234,212,0.25)', color: 'var(--teal)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
+                                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                                    Message Team
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }
+
+                        // ── Normal cabinet ──
+                        const sm = statusMeta(unit.status);
                         return (
                           <div key={unit.id} style={{ borderLeft: isFlagged ? '3px solid #F87171' : '3px solid transparent' }}>
                             <button onClick={() => setExpandedCab(cabOpen ? null : unit.id)} style={rowStyle(32, isFlagged, true)}>
@@ -477,38 +606,7 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                             {/* LEVEL 4 — Parts */}
                             {cabOpen && (
                               <div style={{ padding: '4px 20px 14px 51px', background: 'rgba(255,255,255,0.015)' }}>
-                                {parts.length === 0 ? (
-                                  <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', padding: '8px 0' }}>No parts loaded for this unit.</div>
-                                ) : (
-                                  parts.map((part) => (
-                                    <div key={part.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                                      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
-                                        {partStatusIcon(part.status, part.flag_type)}
-                                      </div>
-                                      <div style={{ flex: 1, minWidth: 0 }}>
-                                        <div style={{ fontSize: 13, fontWeight: 600, color: part.flag_type ? '#F87171' : 'var(--ink)' }}>
-                                          {part.part_name}
-                                          {part.quantity > 1 && <span style={{ fontWeight: 400, color: 'var(--ink-mute)', marginLeft: 6 }}>×{part.quantity}</span>}
-                                        </div>
-                                        {(dimLabel(part) || part.material) && (
-                                          <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>
-                                            {dimLabel(part)}{part.material ? (dimLabel(part) ? ` · ${part.material}` : part.material) : ''}
-                                          </div>
-                                        )}
-                                        {part.flag_type && (
-                                          <div style={{ fontSize: 11, color: '#F87171', marginTop: 2 }}>
-                                            {part.flag_type.replace('_', ' ')}
-                                            {part.flag_notes ? ` — ${part.flag_notes}` : ''}
-                                          </div>
-                                        )}
-                                        {part.checked_by && (
-                                          <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>by {part.checked_by}</div>
-                                        )}
-                                      </div>
-                                      {part.flag_type && <span style={{ color: '#F87171', flexShrink: 0, display: 'flex' }}><IcoFlag /></span>}
-                                    </div>
-                                  ))
-                                )}
+                                <PartsList parts={parts} />
 
                                 {/* Message Team for flagged cabinet */}
                                 {isFlagged && (
