@@ -1142,7 +1142,9 @@ export default function SupervisorPage() {
   // ── Trial-expiring push (day 25 → 5 left, day 28 → 2 left) ──────────────────
   // Fires at most once per day per threshold (localStorage last_trial_notification).
   useEffect(() => {
-    if (!tenant || tenant.subscription_status !== 'trial') return;
+    // Only nag *free* trials to upgrade — a paid subscriber inside their trial
+    // window has already converted and must not get "upgrade now" pushes.
+    if (!tenant || tenant.subscription_status !== 'trial' || isPaidPlan(tenant.plan ?? null)) return;
     const d = trialDaysLeft(tenant.trial_ends_at ?? null);
     let note: { title: string; body: string } | null = null;
     if (d === 5) note = { title: 'Trial ends in 5 days', body: 'Upgrade to keep your shop running on InlineIQ' };
@@ -2359,7 +2361,11 @@ export default function SupervisorPage() {
 
   if (sessionLoading) return <Spinner />;
 
-  const isTrial = tenant?.subscription_status === 'trial';
+  // A *free* trial = trialing status with no paid plan yet. A paid subscription
+  // inside its 30-day trial window reports Stripe status 'trialing' (→ 'trial')
+  // too, but the tenant already has a paid plan + card on file, so the upgrade
+  // banner/countdown must not show for them.
+  const isTrial = tenant?.subscription_status === 'trial' && !isPaidPlan(tenant?.plan ?? null);
   const isPastDue = tenant?.subscription_status === 'past_due';
   const days = trialDaysLeft(tenant?.trial_ends_at ?? null);
 
@@ -4517,8 +4523,10 @@ export default function SupervisorPage() {
                       </div>
                     )}
 
-                    {/* Actions while on trial — start a subscription early */}
-                    {onTrial && (
+                    {/* Actions while on a free trial — start a subscription early.
+                        A paid subscriber inside their trial window is excluded
+                        (they already have a plan; the `paid` block above applies). */}
+                    {onTrial && !paid && (
                       <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
                         <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginBottom: 12 }}>Start your subscription early to lock in your plan — you keep all {days} trial day{days !== 1 ? 's' : ''}.</div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
