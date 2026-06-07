@@ -44,11 +44,13 @@ export const PLAN_META: Record<PlanName, PlanMeta> = {
 
 // Map a Stripe price id → internal plan name. Used by the webhook to keep
 // tenants.plan in sync when a subscription is created or changed.
+// Env values are trimmed because pasting price ids into Vercel can introduce
+// trailing whitespace or newlines, which would break the id → plan lookup.
 export const PRICE_TO_PLAN: Record<string, PlanName> = {
-  [process.env.STRIPE_SHOP_MONTHLY_PRICE_ID ?? '']:       'shop_monthly',
-  [process.env.STRIPE_SHOP_ANNUAL_PRICE_ID ?? '']:        'shop_annual',
-  [process.env.STRIPE_OPERATIONS_MONTHLY_PRICE_ID ?? '']: 'operations_monthly',
-  [process.env.STRIPE_OPERATIONS_ANNUAL_PRICE_ID ?? '']:  'operations_annual',
+  [(process.env.STRIPE_SHOP_MONTHLY_PRICE_ID ?? '').trim()]:       'shop_monthly',
+  [(process.env.STRIPE_SHOP_ANNUAL_PRICE_ID ?? '').trim()]:        'shop_annual',
+  [(process.env.STRIPE_OPERATIONS_MONTHLY_PRICE_ID ?? '').trim()]: 'operations_monthly',
+  [(process.env.STRIPE_OPERATIONS_ANNUAL_PRICE_ID ?? '').trim()]:  'operations_annual',
 };
 
 // Resolve a {tier, billing} selection → the configured Stripe price id.
@@ -58,7 +60,7 @@ export function priceIdFor(tier: Tier, billing: Billing): string | null {
     tier === 'shop'
       ? billing === 'annual' ? 'STRIPE_SHOP_ANNUAL_PRICE_ID' : 'STRIPE_SHOP_MONTHLY_PRICE_ID'
       : billing === 'annual' ? 'STRIPE_OPERATIONS_ANNUAL_PRICE_ID' : 'STRIPE_OPERATIONS_MONTHLY_PRICE_ID';
-  return process.env[key] ?? null;
+  return (process.env[key] ?? '').trim() || null;
 }
 
 // Map a Stripe subscription status → our internal subscription_status enum.
