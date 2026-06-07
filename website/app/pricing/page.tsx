@@ -130,20 +130,24 @@ export default function PricingPage() {
     setBusy(tier);
     try {
       const { data: { session } } = await supabase.auth.getSession();
+
+      // Not logged in → carry the selection into signup. (Only an absent session
+      // sends the user to /signup — a logged-in user is never redirected there,
+      // which previously read as being "logged out".)
       if (!session) {
         router.push(`/signup?plan=${tier}&billing=${billing}`);
         return;
       }
 
-      // Find the tenant for this user, then open Checkout.
-      const { data: tenant } = await supabase
+      // Logged in → find their tenant and open Checkout directly.
+      const { data: tenantRow } = await supabase
         .from('tenants')
         .select('id')
         .eq('owner_user_id', session.user.id)
-        .single();
+        .maybeSingle();
+      const tenant = tenantRow as { id: string } | null;
       if (!tenant) {
-        router.push(`/signup?plan=${tier}&billing=${billing}`);
-        return;
+        throw new Error('No shop found for your account. Please refresh and try again.');
       }
 
       const res = await fetch('/app/api/stripe/checkout', {

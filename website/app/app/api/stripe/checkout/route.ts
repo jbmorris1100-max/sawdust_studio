@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { stripe, PRICE_TO_PLAN } from '@/lib/stripe';
+import { stripe, PRICE_TO_PLAN, priceIdFor } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
 
@@ -43,18 +43,31 @@ export async function POST(req: Request) {
     const userId = userData.user.id;
 
     // ── Input ─────────────────────────────────────────────────────────────────
-    let payload: { price_id?: string; tenant_id?: string; billing?: string };
+    // Callers may pass either an explicit `price_id`, or a `tier` + `billing`
+    // pair that we resolve to the configured price id server-side. tenant_id is
+    // always required.
+    let payload: { price_id?: string; tier?: string; tenant_id?: string; billing?: string };
     try {
       payload = await req.json();
     } catch {
       return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
     }
-    const { price_id, tenant_id, billing } = payload;
-    if (!price_id || !tenant_id) {
-      return NextResponse.json({ error: 'price_id and tenant_id required' }, { status: 400 });
+    const { tenant_id } = payload;
+    if (!tenant_id) {
+      return NextResponse.json({ error: 'tenant_id required' }, { status: 400 });
+    }
+    const billing = payload.billing === 'annual' ? 'annual' : 'monthly';
+
+    let price_id = payload.price_id;
+    if (!price_id && payload.tier) {
+      const tier = payload.tier === 'operations' ? 'operations' : payload.tier === 'shop' ? 'shop' : null;
+      if (tier) price_id = priceIdFor(tier, billing) ?? undefined;
+    }
+    if (!price_id) {
+      return NextResponse.json({ error: 'price_id or tier required' }, { status: 400 });
     }
     if (!PRICE_TO_PLAN[price_id]) {
-      return NextResponse.json({ error: 'Unknown price_id' }, { status: 400 });
+      return NextResponse.json({ error: 'Unknown plan price' }, { status: 400 });
     }
     const plan = PRICE_TO_PLAN[price_id];
 
@@ -98,7 +111,7 @@ export async function POST(req: Request) {
       allow_promotion_codes: true,
       success_url: SUCCESS_URL,
       cancel_url: CANCEL_URL,
-      metadata: { tenant_id, plan, billing: billing ?? '' },
+      metadata: { tenant_id, plan, billing },
     });
 
     return NextResponse.json({ url: session.url });
