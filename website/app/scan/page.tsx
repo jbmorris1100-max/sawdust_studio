@@ -252,8 +252,22 @@ function ScanContent() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: '#050608', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 28, fontFamily: 'inherit' }}>
-      <div style={{ background: '#0a0d10', border: '1px solid rgba(94,234,212,0.2)', borderRadius: 20, padding: '40px 30px', maxWidth: 420, width: '100%', textAlign: 'center', display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div style={{ minHeight: '100vh', background: '#050608', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 28, fontFamily: 'inherit', position: 'relative' }}>
+      {/* Brand background graphic — fixed, centered, 30% behind all content.
+          Opacity lives on this element (not the page root) so content stays
+          fully opaque; pointerEvents:none so it never blocks taps. */}
+      <div style={{
+        position: 'fixed',
+        inset: 0,
+        backgroundImage: "url('/bg-graphic.png')",
+        backgroundRepeat: 'no-repeat',
+        backgroundPosition: 'center center',
+        backgroundSize: 'cover',
+        opacity: 0.30,
+        zIndex: 0,
+        pointerEvents: 'none',
+      }} />
+      <div style={{ position: 'relative', zIndex: 1, background: '#0a0d10', border: '1px solid rgba(94,234,212,0.2)', borderRadius: 20, padding: '40px 30px', maxWidth: 420, width: '100%', textAlign: 'center', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', color: TEAL }}>
           inlineIQ
         </div>

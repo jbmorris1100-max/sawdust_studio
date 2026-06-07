@@ -2641,6 +2641,20 @@ export default function CrewPage() {
 
   return (
     <>
+      {/* Brand background graphic — fixed, centered, 30% behind all content.
+          Opacity lives on this element (not the page root) so content stays
+          fully opaque; pointerEvents:none so it never blocks clicks. */}
+      <div style={{
+        position: 'fixed',
+        inset: 0,
+        backgroundImage: "url('/bg-graphic.png')",
+        backgroundRepeat: 'no-repeat',
+        backgroundPosition: 'center center',
+        backgroundSize: 'cover',
+        opacity: 0.30,
+        zIndex: 0,
+        pointerEvents: 'none',
+      }} />
       <BgLayers />
       <div style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
