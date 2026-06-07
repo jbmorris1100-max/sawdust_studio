@@ -466,11 +466,9 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
                                   Deactivate
                                 </button>
                               )}
-                              {clockedIn ? (
-                                <span style={{ fontSize: 11, color: 'var(--ink-mute)', alignSelf: 'center' }} title="Has clock-in history — deactivate to preserve records">
-                                  Has shift history
-                                </span>
-                              ) : (
+              {/* Crew with clock-in history can be deactivated (preserves records)
+                  but not hard-removed; the rest show a Remove button. */}
+                              {!clockedIn && (
                                 <button className="btn btn-ghost" style={{ fontSize: 12, padding: '7px 14px', color: '#F87171', borderColor: 'rgba(248,113,113,0.3)' }} onClick={() => setConfirmRemoveId(m.id)}>
                                   Remove
                                 </button>

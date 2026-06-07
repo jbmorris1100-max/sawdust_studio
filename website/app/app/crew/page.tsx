@@ -563,7 +563,6 @@ export default function CrewPage() {
   const deptOptions = getDepartments(tenant);
 
   // Page data
-  const [clockEntries, setClockEntries] = useState<TimeEntry[]>([]);
   const [messages,     setMessages]     = useState<Message[]>([]);
   const [dataLoading,  setDataLoading]  = useState(true);
 
@@ -689,6 +688,15 @@ export default function CrewPage() {
 
   // Active time clock tracking
   const [activeTimeClockId, setActiveTimeClockId] = useState<string | null>(null);
+
+  // ── Clock-in gate ───────────────────────────────────────────────────────────
+  // The crew cannot start any work action without an open shift. We resolve the
+  // crew member's open shift once on mount (and after each clock in/out) so the
+  // per-action check is instant — no DB round-trip per tap. gateOpen drives the
+  // "you need to clock in" modal.
+  const [clockShift, setClockShift] = useState<TimeEntry | null>(null);
+  const [gateOpen,   setGateOpen]   = useState(false);
+  const isClockedIn = !!clockShift;
 
   // Break tracking
   const [onBreak,        setOnBreak]        = useState(false);
@@ -864,22 +872,13 @@ export default function CrewPage() {
     if (!tenant) return;
     async function load() {
       try {
-        const [clockRes, msgRes] = await Promise.all([
-          supabase
-            .from('time_clock')
-            .select('id, worker_name, dept, clock_in, clock_out, status')
-            .eq('tenant_id', tenant!.id)
-            .order('clock_in', { ascending: false })
-            .limit(8),
-          supabase
-            .from('messages')
-            .select('id, sender_name, dept, body, created_at, read_at, topic, payload')
-            .eq('tenant_id', tenant!.id)
-            .order('created_at', { ascending: false })
-            .limit(200),
-        ]);
-        if (clockRes.data) setClockEntries(clockRes.data as TimeEntry[]);
-        if (msgRes.data)   setMessages(msgRes.data as Message[]);
+        const { data: msgData } = await supabase
+          .from('messages')
+          .select('id, sender_name, dept, body, created_at, read_at, topic, payload')
+          .eq('tenant_id', tenant!.id)
+          .order('created_at', { ascending: false })
+          .limit(200);
+        if (msgData) setMessages(msgData as Message[]);
       } catch (_) {}
       setDataLoading(false);
     }
@@ -956,18 +955,30 @@ export default function CrewPage() {
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }, []);
 
+  // Resolve the current crew member's open shift (clock_out IS NULL) into
+  // clockShift. Drives both the header clock indicator and the clock-in gate;
+  // cached in state so per-action gate checks never hit the network. Called on
+  // mount and after any event that changes clocked-in status.
   const reloadClock = useCallback(async () => {
     if (!tenant) return;
+    const name = crewName.trim();
+    if (!name) { setClockShift(null); return; }
     try {
       const { data } = await supabase
         .from('time_clock')
         .select('id, worker_name, dept, clock_in, clock_out, status')
         .eq('tenant_id', tenant.id)
+        .eq('worker_name', name)
+        .is('clock_out', null)
         .order('clock_in', { ascending: false })
-        .limit(8);
-      if (data) setClockEntries(data as TimeEntry[]);
-    } catch (_) {}
-  }, [tenant]);
+        .limit(1)
+        .maybeSingle();
+      setClockShift((data as TimeEntry | null) ?? null);
+    } catch (_) { /* gate falls open on error so work is never hard-blocked by a network hiccup */ }
+  }, [tenant, crewName]);
+
+  // Load the gate / indicator state on mount and whenever identity/tenant changes.
+  useEffect(() => { void reloadClock(); }, [reloadClock]);
 
   const reloadMessages = useCallback(async () => {
     if (!tenant) return;
@@ -1192,6 +1203,15 @@ export default function CrewPage() {
     setOpenEntry(null);
     setClockStep('lookup');
     setModal('clock');
+  }
+
+  // Gate any work action behind an open shift. Returns true if the crew member
+  // is clocked in; otherwise shows the clock-in gate modal and returns false.
+  // Uses the cached clockShift so the check is instant (no per-action DB call).
+  function requireClockIn(): boolean {
+    if (isClockedIn) return true;
+    setGateOpen(true);
+    return false;
   }
 
   // ── Open modal helpers ──────────────────────────────────────────────────────
@@ -1446,6 +1466,7 @@ export default function CrewPage() {
 
   // Launch the scan flow pre-loaded with a specific cabinet (from the parts list).
   async function openScanForUnit(unitId: string) {
+    if (!requireClockIn()) return;
     setAssemblyScanInput('');
     setAssemblyScanFlags({});
     setAssemblyScanFlagging(null);
@@ -1528,6 +1549,7 @@ export default function CrewPage() {
   // flow (camera + ZXing + auto-detect). Any other dept falls back to the
   // generic part log / QC modal.
   function openScan() {
+    if (!requireClockIn()) return;
     if (crewDept === 'Assembly' || crewDept === 'Production') {
       openAssemblyScan();
     } else {
@@ -1736,6 +1758,7 @@ export default function CrewPage() {
   }
 
   async function handleAssemblyScanConfirm() {
+    if (!requireClockIn()) return;
     if (!assemblyScanUnit || assemblyScanConfirming || !tenant) return;
 
     const flaggedEntries = Object.entries(assemblyScanFlags);
@@ -1871,6 +1894,7 @@ export default function CrewPage() {
   function closeCutView() { setCutUnit(null); setCutParts([]); setCutPartExpanded({}); }
 
   async function markPartStatus(partId: string, status: 'cutting' | 'cut') {
+    if (!requireClockIn()) return;
     if (cutActioning[partId]) return;
     setCutActioning((a) => ({ ...a, [partId]: true }));
     const now = new Date().toISOString();
@@ -1890,6 +1914,7 @@ export default function CrewPage() {
   }
 
   async function markAllStatus(status: 'cutting' | 'cut') {
+    if (!requireClockIn()) return;
     if (!cutUnit || cutBulkBusy || !tenant) return;
     setCutBulkBusy(true);
     const now = new Date().toISOString();
@@ -1905,24 +1930,28 @@ export default function CrewPage() {
       await supabase.from('cabinet_units').update({ production_status: status }).eq('id', cutUnit.id);
 
       if (status === 'cut') {
-        // Notify Assembly crew in real time
-        try {
-          await supabase.from('messages').insert({
-            sender_name: 'Production',
-            body: `${cutUnit.unit_label} — ${cutUnit.jobPath} is ready for assembly`,
-            dept: 'Assembly',
-            tenant_id: tenant.id,
-          });
-        } catch (_) {}
-        // Push notify only the Assembly crew.
+        const readyBody = `${cutUnit.unit_label} — ${cutUnit.jobPath} is ready for assembly`;
+        // System events never go in the messages table (that's human chat only).
+        // Push the Assembly crew (they're the handoff recipients) — sendNotify
+        // also logs this to the notifications table for their bell.
         sendNotify({
           tenant_id: tenant.id,
           target: 'crew',
           dept_target: 'Assembly',
           title: 'Ready for Assembly',
-          body: `${cutUnit.unit_label} — ${cutUnit.jobPath} is ready for assembly`,
+          body: readyBody,
           url: '/app/crew',
         });
+        // Also surface it in the supervisor notification bell (no push needed).
+        try {
+          await supabase.from('notifications').insert({
+            tenant_id: tenant.id,
+            target_type: 'supervisor',
+            title: 'Ready for Assembly',
+            body: readyBody,
+            url: '/app/supervisor',
+          });
+        } catch (_) { /* bell log is best-effort */ }
         setProdFlash('Cabinet ready for assembly');
         setTimeout(() => { setProdFlash(null); closeCutView(); void loadProduction(); }, 2000);
       } else {
@@ -1979,6 +2008,7 @@ export default function CrewPage() {
   }
 
   async function handleStartTimer() {
+    if (!requireClockIn()) return;
     const mat = bmMaterial.trim();
     console.log('[BuildTimer] handleStartTimer called', { mat, saving, crewName, tenantId: tenant?.id });
     if (!mat || saving) return;
@@ -2141,6 +2171,7 @@ export default function CrewPage() {
       const pendingId = `pending-${Date.now()}`;
       try { localStorage.setItem('active_time_clock_id', pendingId); } catch (_) {}
       setActiveTimeClockId(pendingId);
+      setClockShift({ id: pendingId, worker_name: name, dept, clock_in: now, clock_out: null, status: 'active', on_break: false, total_break_minutes: 0, current_dept: dept });
       saveIdentity(name, dept);
       closeModal();
       showPending(`${name} clocked in (pending sync)`);
@@ -2167,6 +2198,8 @@ export default function CrewPage() {
       const clockId = (insertedRow as { id: string }).id;
       localStorage.setItem('active_time_clock_id', clockId);
       setActiveTimeClockId(clockId);
+      // Open the gate immediately so work actions are unblocked without a refetch.
+      setClockShift({ id: clockId, worker_name: name, dept, clock_in: now, clock_out: null, status: 'active', on_break: false, total_break_minutes: 0, current_dept: dept });
       void logShiftEvent({
         tenantId: tenant!.id, timeClockId: clockId,
         workerName: name, eventType: 'clock_in', dept,
@@ -2250,6 +2283,7 @@ export default function CrewPage() {
       enqueue('clock_out', { worker_name: openEntry.worker_name, clock_out: now });
       try { localStorage.removeItem('active_time_clock_id'); } catch (_) {}
       setActiveTimeClockId(null);
+      setClockShift(null); // close the gate — work actions now require a fresh clock-in
       setOnBreak(false);
       setBreakStartTime(null);
       try { localStorage.removeItem('on_break'); localStorage.removeItem('break_start_time'); } catch (_) {}
@@ -2310,6 +2344,7 @@ export default function CrewPage() {
 
       localStorage.removeItem('active_time_clock_id');
       setActiveTimeClockId(null);
+      setClockShift(null); // close the gate — work actions now require a fresh clock-in
       await reloadClock();
       closeModal();
       showToast(`${openEntry.worker_name} clocked out`);
@@ -2689,6 +2724,7 @@ export default function CrewPage() {
   }
 
   async function handleQcAction(id: string, newStatus: 'Passed QC' | 'Failed QC / Rework') {
+    if (!requireClockIn()) return;
     setQcActioning((prev) => ({ ...prev, [id]: true }));
     setPartsQcList((prev) => prev.filter((p) => p.id !== id));
     try {
@@ -2717,9 +2753,10 @@ export default function CrewPage() {
 
   const isTrial = tenant?.subscription_status === 'trial';
   const days = trialDaysLeft(tenant?.trial_ends_at ?? null);
-  // This crew member's own open shift (drives the header clock indicator).
-  const myShift = clockEntries.find((e) => e.worker_name === crewName && !e.clock_out) ?? null;
-  const isClockedIn = !!myShift;
+  // This crew member's own open shift drives both the header clock indicator and
+  // the clock-in gate. clockShift is resolved by worker_name on mount and kept in
+  // sync on clock in/out (see reloadClock / handleClockIn / handleClockOut).
+  const myShift = clockShift;
 
   // Strict dept isolation: only crew's own dept + broadcasts (dept = null)
   // NEVER include messages from other departments. Messages older than the
@@ -2837,7 +2874,7 @@ export default function CrewPage() {
       <div style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
         {/* Nav */}
-        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', minHeight: 64, display: 'flex', alignItems: 'center', padding: '0 32px', paddingTop: 'env(safe-area-inset-top, 5px)', justifyContent: 'space-between' }}>
+        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', minHeight: 64, display: 'flex', alignItems: 'center', padding: '0 32px', paddingTop: 'max(env(safe-area-inset-top), 8px)', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <Link href="/app" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--ink-mute)', fontSize: 13 }}>
               <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
@@ -2933,7 +2970,7 @@ export default function CrewPage() {
           {/* ── Current job (prominent) ─────────────────────────────────────── */}
           {/* Craftsman dept gets a build-centric view instead of the generic job card. */}
           {crewDept === 'Craftsman' && tenant ? (
-            <CraftsmanBuilds tenantId={tenant.id} crewName={crewName} timeClockId={activeTimeClockId} showToast={showToast} />
+            <CraftsmanBuilds tenantId={tenant.id} crewName={crewName} timeClockId={activeTimeClockId} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} />
           ) : crewDept === 'Finishing' && tenant ? (
             <FinishingView tenantId={tenant.id} showToast={showToast} />
           ) : !activeJobLoading && (
@@ -4459,6 +4496,38 @@ export default function CrewPage() {
       <canvas ref={canvasRef} style={{ display: 'none' }} />
 
       {toast && <Toast msg={toast.msg} error={toast.error} pending={toast.pending} />}
+
+      {/* ── Clock-in gate ──────────────────────────────────────────────────────
+          Shown when a work action is attempted with no open shift. */}
+      {gateOpen && (
+        <div
+          style={{ position: 'fixed', inset: 0, zIndex: 260, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
+          onClick={(e) => { if (e.target === e.currentTarget) setGateOpen(false); }}
+        >
+          <div style={{ width: '100%', maxWidth: 360, background: '#0a0d10', border: '1px solid rgba(94,234,212,0.18)', borderRadius: 18, padding: '28px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, textAlign: 'center' }}>
+            <div style={{ width: 52, height: 52, borderRadius: '50%', background: 'rgba(251,191,36,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FBBF24' }}>
+              <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--ink)' }}>You need to clock in before starting work</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', marginTop: 4 }}>
+              <button
+                className="btn btn-primary"
+                style={{ width: '100%', justifyContent: 'center' }}
+                onClick={() => { setGateOpen(false); openClock(); }}
+              >
+                Clock In Now
+              </button>
+              <button
+                className="btn btn-ghost"
+                style={{ width: '100%', justifyContent: 'center' }}
+                onClick={() => setGateOpen(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Success flash overlays ── */}
       {(dmgFlash || partFlash) && (

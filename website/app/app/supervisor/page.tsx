@@ -9,6 +9,7 @@ import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
 import ReportsTab from './ReportsTab';
 import SetupWizard from './SetupWizard';
 import AssemblyTab from './AssemblyTab';
+import CraftsmanTab from './CraftsmanTab';
 import CrewTab from './CrewTab';
 import FinishSpecsModal from './FinishSpecsModal';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
@@ -67,6 +68,16 @@ type Message = {
 
 const CLOCK_TOPICS = ['clock_in_request', 'clock_out_request'];
 const isClockRequest = (m: Message): boolean => !!m.topic && CLOCK_TOPICS.includes(m.topic);
+
+// A message counts toward the unread badge only if it's genuine crew→supervisor
+// chat that the supervisor hasn't opened. Excludes anything the supervisor sent,
+// already-read messages, and topic-tagged action items (clock-in/out requests).
+// Mirrors the canonical SQL: sender_name != 'Supervisor' AND read_at IS NULL
+// AND (topic IS NULL OR topic NOT LIKE '%request%').
+const isUnreadChat = (m: Message): boolean =>
+  m.sender_name !== 'Supervisor' &&
+  !m.read_at &&
+  (m.topic === null || !m.topic.toLowerCase().includes('request'));
 
 type InventoryNeed = {
   id: string;
@@ -292,7 +303,7 @@ type NotificationRow = {
   created_at: string;
 };
 
-type Tab = 'overview' | 'crew' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'assembly' | 'settings';
+type Tab = 'overview' | 'crew' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'assembly' | 'craftsman' | 'settings';
 
 type AiMode = 'learn' | 'assist' | 'autonomous';
 
@@ -636,6 +647,11 @@ export default function SupervisorPage() {
 
   // Production pipeline (Overview)
   const [pipeline, setPipeline] = useState<PipelineRow[]>([]);
+
+  // Active craftsman unit count — drives the Craftsman tab badge. Kept at page
+  // level (not inside the tab) so the badge shows even when the tab is inactive,
+  // and refreshed in realtime as units are assigned / completed.
+  const [craftsmanCount, setCraftsmanCount] = useState(0);
 
   // Notification center (header bell)
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
@@ -1038,6 +1054,30 @@ export default function SupervisorPage() {
   }, [tenant]);
 
   useEffect(() => { void loadPipeline(); }, [loadPipeline]);
+
+  // ── Craftsman tab badge count (active units, realtime) ─────────────────────
+  const loadCraftsmanCount = useCallback(async () => {
+    if (!tenant) return;
+    try {
+      const { count } = await supabase
+        .from('cabinet_units')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenant.id)
+        .eq('assigned_dept', 'craftsman')
+        .neq('status', 'complete');
+      setCraftsmanCount(count ?? 0);
+    } catch (_) { /* table/column may not exist until migrations run */ }
+  }, [tenant]);
+
+  useEffect(() => {
+    if (!tenant) return;
+    void loadCraftsmanCount();
+    const ch = supabase
+      .channel('rt-sup-craftsman-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenant.id}` }, () => { void loadCraftsmanCount(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [tenant, loadCraftsmanCount]);
 
   // ── Notification center ─────────────────────────────────────────────────────
   const loadNotifications = useCallback(async () => {
@@ -2466,14 +2506,13 @@ export default function SupervisorPage() {
   // (read_at IS NULL). Persisted in Supabase, so it survives across devices/sessions.
   // Unread = crew chat messages the supervisor hasn't opened yet. Clock-in/out
   // requests are action items, not chat, so they're excluded from the badge.
-  const unreadMessages = messages.filter(
-    (m) => m.sender_name !== 'Supervisor' && !m.read_at && !isClockRequest(m)
-  ).length;
+  const unreadMessages = messages.filter(isUnreadChat).length;
 
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: 'overview',      label: 'Overview' },
     { key: 'crew',          label: 'Crew' },
     { key: 'assembly',      label: 'Assembly' },
+    { key: 'craftsman',     label: 'Craftsman',   count: craftsmanCount > 0 ? craftsmanCount : undefined },
     { key: 'messages',      label: 'Messages',    count: unreadMessages > 0 ? unreadMessages : undefined },
     { key: 'needs',         label: 'Inventory',   count: activeNeeds.length },
     { key: 'damage',        label: 'Damage',      count: openDamage.length },
@@ -2535,7 +2574,7 @@ export default function SupervisorPage() {
       <div className="app-shell" style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
         {/* Nav */}
-        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', minHeight: 64, display: 'flex', alignItems: 'center', padding: '0 32px', paddingTop: 'env(safe-area-inset-top, 5px)', justifyContent: 'space-between' }}>
+        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', minHeight: 64, display: 'flex', alignItems: 'center', padding: '0 32px', paddingTop: 'max(env(safe-area-inset-top), 8px)', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <Link href="/app" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--ink-mute)', fontSize: 13 }}>
               <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
@@ -3237,7 +3276,7 @@ export default function SupervisorPage() {
               ) : (
                 <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
                   {msgThreads.map(({ deptKey, label, lastMsg }, i) => {
-                    const unread = threadMap[deptKey].filter((m) => m.sender_name !== 'Supervisor' && !m.read_at && !isClockRequest(m)).length;
+                    const unread = threadMap[deptKey].filter(isUnreadChat).length;
                     const pendingReqs = threadMap[deptKey].filter((m) => isClockRequest(m) && (m.payload?.status ?? 'pending') === 'pending').length;
                     const initial = (label.trim()[0] ?? '?').toUpperCase();
                     return (
@@ -4610,6 +4649,15 @@ export default function SupervisorPage() {
             />
           )}
 
+          {/* ── Craftsman tab ────────────────────────────────────────────── */}
+          {tab === 'craftsman' && tenant && (
+            <CraftsmanTab
+              tenantId={tenant.id}
+              showToast={showToast}
+              jobs={jobs}
+            />
+          )}
+
           {/* ── Integrations tab ─────────────────────────────────────────── */}
           {tab === 'integrations' && tenant && (
             <IntegrationsTab
@@ -4908,6 +4956,11 @@ export default function SupervisorPage() {
                       <rect x="2" y="3" width="20" height="14" rx="2"/>
                       <line x1="8" y1="21" x2="16" y2="21"/>
                       <line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                  )},
+                  { key: 'craftsman' as Tab, label: 'Craftsman', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
                     </svg>
                   )},
                   { key: 'plans' as Tab, label: 'Plans', icon: (

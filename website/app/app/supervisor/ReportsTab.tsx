@@ -239,6 +239,69 @@ function MetricTile({ label, value, color }: { label: string; value: string; col
   );
 }
 
+// ── Department time breakdown ───────────────────────────────────────────────
+// Per-dept hours rendered as a single horizontal stacked bar. Colours match the
+// brand dept palette. Depts with zero hours are dropped so the bar only shows
+// what actually ran.
+const DEPT_TIME_COLORS: Record<string, string> = {
+  production: '#2DE1C9',
+  assembly:   '#3B82F6',
+  craftsman:  '#FBBF24',
+  finishing:  '#F97316',
+};
+const DEPT_TIME_FALLBACK = '#8BA5A0';
+
+function deptTimeColor(dept: string): string {
+  return DEPT_TIME_COLORS[dept.trim().toLowerCase()] ?? DEPT_TIME_FALLBACK;
+}
+
+// Roll a list of clock entries into ordered { dept, hours } segments (non-zero).
+function deptHourSegments(entries: ClockEntry[]): { dept: string; hours: number }[] {
+  const byDept: Record<string, number> = {};
+  entries.forEach((e) => {
+    const dept = (e.dept ?? '').trim() || 'Unassigned';
+    byDept[dept] = (byDept[dept] ?? 0) + (e.total_hours ?? calcHours(e.clock_in, e.clock_out));
+  });
+  return Object.entries(byDept)
+    .map(([dept, hours]) => ({ dept, hours }))
+    .filter((s) => s.hours > 0.0001)
+    .sort((a, b) => b.hours - a.hours);
+}
+
+function DeptTimeBar({ entries }: { entries: ClockEntry[] }) {
+  const segments = deptHourSegments(entries);
+  const total = segments.reduce((s, seg) => s + seg.hours, 0);
+  if (total <= 0) return null;
+  return (
+    <div className="portal-card" style={{ padding: '16px 20px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Department Time</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: '#2DE1C9' }}>{total.toFixed(1)}h total</span>
+      </div>
+      {/* Stacked proportional bar */}
+      <div style={{ display: 'flex', width: '100%', height: 14, borderRadius: 7, overflow: 'hidden', background: 'rgba(255,255,255,0.06)' }}>
+        {segments.map((seg) => (
+          <div
+            key={seg.dept}
+            title={`${seg.dept} ${seg.hours.toFixed(1)}h`}
+            style={{ width: `${(seg.hours / total) * 100}%`, background: deptTimeColor(seg.dept), transition: 'width 0.3s' }}
+          />
+        ))}
+      </div>
+      {/* Per-segment labels */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', marginTop: 12 }}>
+        {segments.map((seg) => (
+          <div key={seg.dept} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: deptTimeColor(seg.dept), flexShrink: 0 }} />
+            <span style={{ fontSize: 12.5, color: 'var(--ink-dim)', fontWeight: 600, textTransform: 'capitalize' }}>{seg.dept}</span>
+            <span style={{ fontSize: 12.5, color: 'var(--ink-mute)' }}>{seg.hours.toFixed(1)}h</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Timeline helpers ──────────────────────────────────────────────────────────
 
 const DAY_START = 6;   // 6 AM
@@ -750,6 +813,9 @@ function JobCostReport({ tenantId, showToast, onGoToCrew }: Props) {
             </div>
           </div>
 
+          {/* Department time breakdown — proportional stacked bar by dept */}
+          {!loading && clock.length > 0 && <DeptTimeBar entries={clock} />}
+
           {/* Labor Costs — hours × hourly rate per worker */}
           {!loading && workerTotals.length > 0 && (
             <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -956,6 +1022,23 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
             </div>
           ))}
       </div>
+
+      {/* Department time per job — stacked dept-hours bar for each active job */}
+      {topJobs.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Department Time by Job</div>
+          {topJobs.map(([job]) => {
+            const jobEntries = clock.filter((e) => e.job_number === job);
+            if (jobEntries.length === 0) return null;
+            return (
+              <div key={job}>
+                <div style={{ fontSize: 13, color: 'var(--ink-dim)', fontWeight: 700, marginBottom: 6 }}>Job {job}</div>
+                <DeptTimeBar entries={jobEntries} />
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Open issues */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>

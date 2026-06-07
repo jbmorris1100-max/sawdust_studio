@@ -43,6 +43,9 @@ interface Props {
   crewName: string;
   timeClockId: string | null;
   showToast: (msg: string, error?: boolean) => void;
+  // Clock-in gate: crew can't start a build without an open shift.
+  isClockedIn?: boolean;
+  onRequireClock?: () => void;
 }
 
 const PUSH_DEPTS = ['Production', 'Assembly', 'Finishing'] as const;
@@ -118,7 +121,7 @@ const IcoPush = () => (
   </svg>
 );
 
-export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showToast }: Props) {
+export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showToast, isClockedIn = true, onRequireClock }: Props) {
   const [units,   setUnits]   = useState<CUnit[]>([]);
   const [parts,   setParts]   = useState<CPart[]>([]);
   const [jobPaths, setJobPaths] = useState<Record<string, string>>({});
@@ -221,6 +224,7 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
 
   // ── Build flow ──────────────────────────────────────────────────────────────
   async function startBuild(unit: CUnit) {
+    if (!isClockedIn) { onRequireClock?.(); return; }
     if (busyUnit) return;
     setBusyUnit(unit.id);
     try {
