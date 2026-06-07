@@ -76,13 +76,31 @@ type TimeEntry = {
   current_dept: string | null;
 };
 
+// Clock-in/out adjustment requests piggy-back on messages via topic + payload.
+// topic-tagged messages are action items, never chat — excluded from unread.
+type ClockRequestPayload = {
+  requested_time: string;
+  reason: string;
+  worker_name: string;
+  dept: string | null;
+  status: 'pending' | 'approved' | 'denied';
+  shift_id?: string | null;
+  clock_in?: string | null;
+};
+
 type Message = {
   id: string;
   sender_name: string;
   dept: string | null;
   body: string;
   created_at: string;
+  read_at: string | null;
+  topic: string | null;
+  payload: ClockRequestPayload | null;
 };
+
+const CLOCK_TOPICS = ['clock_in_request', 'clock_out_request'];
+const isClockRequestMsg = (m: Message): boolean => !!m.topic && CLOCK_TOPICS.includes(m.topic);
 
 type Drawing = {
   id: string;
@@ -293,6 +311,39 @@ async function registerCrewMember(tenantId: string, name: string, dept: string |
 
 function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+// Adjustable clock time picker: [ − ] 7:45 AM [ + ]. Each tap = 1 minute; press
+// and hold to scroll faster. Turns amber once the time differs from "now",
+// signalling the action will become a supervisor approval request.
+function ClockTimePicker({ value, base, onHold, onRelease }: {
+  value: number; base: number; onHold: (deltaMin: number) => void; onRelease: () => void;
+}) {
+  const adjusted = Math.round(value / 60000) !== Math.round(base / 60000);
+  const btn: React.CSSProperties = {
+    width: 52, height: 52, borderRadius: 14, border: '1px solid var(--line-strong)',
+    background: 'var(--bg-1)', color: 'var(--ink)', fontSize: 26, fontWeight: 700,
+    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    userSelect: 'none', touchAction: 'manipulation', fontFamily: 'inherit',
+  };
+  return (
+    <div style={{ margin: '6px 0 14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 16 }}>
+        <button type="button" aria-label="Earlier" style={btn}
+          onPointerDown={(e) => { e.preventDefault(); onHold(-1); }}
+          onPointerUp={onRelease} onPointerLeave={onRelease} onPointerCancel={onRelease}>−</button>
+        <div style={{ minWidth: 130, textAlign: 'center', fontSize: 34, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: adjusted ? '#FBBF24' : 'var(--ink)' }}>
+          {formatTime(new Date(value).toISOString())}
+        </div>
+        <button type="button" aria-label="Later" style={btn}
+          onPointerDown={(e) => { e.preventDefault(); onHold(1); }}
+          onPointerUp={onRelease} onPointerLeave={onRelease} onPointerCancel={onRelease}>+</button>
+      </div>
+      <div style={{ textAlign: 'center', fontSize: 12, color: adjusted ? '#FBBF24' : 'var(--ink-mute)', marginTop: 8 }}>
+        {adjusted ? 'Adjusted — needs supervisor approval' : 'Tap +/- to adjust'}
+      </div>
+    </div>
+  );
 }
 
 // "Updated 2 days ago" style label for plan version timestamps.
@@ -705,11 +756,40 @@ export default function CrewPage() {
   const openThreadRef = useRef<string | null>(null);
   useEffect(() => { openThreadRef.current = openThread; }, [openThread]);
   const [replyBody,   setReplyBody]   = useState('');
-  // Last time the crew opened the Supervisor thread → drives the unread dot.
-  const [supRead,     setSupRead]     = useState('');
-  useEffect(() => { try { setSupRead(localStorage.getItem('crew_msg_read_sup') || ''); } catch { /* ignore */ } }, []);
-  function markSupRead() { const now = new Date().toISOString(); try { localStorage.setItem('crew_msg_read_sup', now); } catch { /* ignore */ } setSupRead(now); }
+  // Mark every supervisor message visible to this crew member as read in
+  // Supabase (read_at). Stored in the DB — not localStorage — so the unread
+  // badge stays at zero across reloads/devices. Clock-in/out request messages
+  // are action items, not chat, so they're never touched here.
+  function markSupRead() {
+    const now = new Date().toISOString();
+    const dept = crewDeptRef.current;
+    setMessages((prev) => prev.map((m) =>
+      (m.sender_name === 'Supervisor' && !m.read_at && !isClockRequestMsg(m) && (m.dept === null || m.dept === dept))
+        ? { ...m, read_at: now } : m));
+    const t = tenant;
+    if (!t) return;
+    void (async () => {
+      try {
+        let q = supabase.from('messages').update({ read_at: now })
+          .eq('tenant_id', t.id).eq('sender_name', 'Supervisor').is('read_at', null);
+        q = dept ? q.or(`dept.is.null,dept.eq.${dept}`) : q.is('dept', null);
+        await q;
+      } catch { /* optimistic update already applied; realtime will reconcile */ }
+    })();
+  }
   const [replySaving, setReplySaving] = useState(false);
+
+  // Header clock-in indicator tooltip (tap to reveal clocked-in time).
+  const [clockTipOpen, setClockTipOpen] = useState(false);
+
+  // Adjustable clock in/out time. clockAdjustMs = the time the crew wants
+  // recorded; clockBaseMs = the "now" captured when the step opened. When they
+  // differ (at minute resolution) the action becomes an approval request.
+  const [clockAdjustMs, setClockAdjustMs] = useState(0);
+  const [clockBaseMs,   setClockBaseMs]   = useState(0);
+  const [adjustReason,  setAdjustReason]  = useState('');
+  const [requestSending, setRequestSending] = useState(false);
+  const holdTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Messages screen — full-screen overlay that slides up from the bottom.
   const [messagesOpen, setMessagesOpen] = useState(false);
@@ -793,7 +873,7 @@ export default function CrewPage() {
             .limit(8),
           supabase
             .from('messages')
-            .select('id, sender_name, dept, body, created_at')
+            .select('id, sender_name, dept, body, created_at, read_at, topic, payload')
             .eq('tenant_id', tenant!.id)
             .order('created_at', { ascending: false })
             .limit(200),
@@ -832,6 +912,8 @@ export default function CrewPage() {
                 notifTimer.current = setTimeout(() => setMsgNotification(null), 7000);
               }
             }
+          } else if (payload.eventType === 'UPDATE') {
+            setMessages((prev) => prev.map((m) => m.id === payload.new.id ? (payload.new as Message) : m));
           } else if (payload.eventType === 'DELETE') {
             setMessages((prev) => prev.filter((m) => m.id !== payload.old.id));
           }
@@ -892,7 +974,7 @@ export default function CrewPage() {
     try {
       const { data } = await supabase
         .from('messages')
-        .select('id, sender_name, dept, body, created_at')
+        .select('id, sender_name, dept, body, created_at, read_at, topic, payload')
         .eq('tenant_id', tenant.id)
         .order('created_at', { ascending: false })
         .limit(200);
@@ -917,6 +999,7 @@ export default function CrewPage() {
 
     function refresh() {
       void reloadMessages();
+      void reloadClock();   // keep the header clock indicator fresh (e.g. after a supervisor approval)
       void clearSwMessageFlag();
     }
 
@@ -932,7 +1015,7 @@ export default function CrewPage() {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', refresh);
     };
-  }, [tenant, reloadMessages]);
+  }, [tenant, reloadMessages, reloadClock]);
 
   // If the crew tapped a message push (or any ?open=messages link), jump
   // straight to the Messages screen instead of the home screen.
@@ -1118,7 +1201,31 @@ export default function CrewPage() {
     setClockName(crewName);
     setClockDept(crewDept);
     setOpenEntry(null);
+    setAdjustReason('');
     setModal('clock');
+    // Known crew member → skip the name prompt and go straight to the adjustable
+    // clock in/out screen by resolving their open-shift status immediately.
+    if (crewName.trim()) void handleClockLookup(crewName);
+  }
+
+  // ── Adjustable-time helpers ─────────────────────────────────────────────────
+  // Seed the time picker with "now" (to the minute) when entering an in/out step.
+  function seedClockTime() {
+    const nowMs = Math.floor(Date.now() / 60000) * 60000;
+    setClockBaseMs(nowMs);
+    setClockAdjustMs(nowMs);
+    setAdjustReason('');
+  }
+  function adjustClock(deltaMin: number) {
+    setClockAdjustMs((ms) => ms + deltaMin * 60000);
+  }
+  function stopHold() {
+    if (holdTimer.current) { clearInterval(holdTimer.current); holdTimer.current = null; }
+  }
+  function startHold(deltaMin: number) {
+    adjustClock(deltaMin);          // immediate tap
+    stopHold();
+    holdTimer.current = setInterval(() => adjustClock(deltaMin), 110); // hold = faster
   }
 
   function openInventory() {
@@ -1975,13 +2082,14 @@ export default function CrewPage() {
     setModal(null);
     setSaving(false);
     setAssemblyNotReady(null);
+    stopHold();
     stopCamera();
   }
 
   // ── Clock handlers ──────────────────────────────────────────────────────────
 
-  async function handleClockLookup() {
-    const name = clockName.trim();
+  async function handleClockLookup(nameOverride?: string) {
+    const name = (nameOverride ?? clockName).trim();
     if (!name) return;
     setChecking(true);
     try {
@@ -1996,6 +2104,7 @@ export default function CrewPage() {
         .maybeSingle();
       if (data) {
         setOpenEntry(data as TimeEntry);
+        seedClockTime();
         setClockStep('clockout');
       } else {
         // Known crew member? Pre-fill their department from the roster.
@@ -2010,6 +2119,7 @@ export default function CrewPage() {
           const dept = (member as { department: string | null } | null)?.department;
           if (dept) setClockDept(dept);
         } catch (_) { /* roster lookup is best-effort */ }
+        seedClockTime();
         setClockStep('clockin');
       }
     } catch (_) {
@@ -2208,6 +2318,67 @@ export default function CrewPage() {
       showToast(msg, true);
     } finally {
       setSaving(false);
+    }
+  }
+
+  // ── Clock adjustment request ────────────────────────────────────────────────
+  // When the crew adjusts the time, we DON'T touch time_clock — we file a request
+  // on the messages table (topic + payload) for the supervisor to approve/deny,
+  // and fire a push so they can review it immediately. Nothing is registered yet.
+  async function handleClockRequest(kind: 'clock_in_request' | 'clock_out_request') {
+    if (requestSending) return;
+    const reason = adjustReason.trim();
+    if (!reason) { showToast('Add a reason for the adjustment', true); return; }
+    const name = (clockName.trim() || crewName.trim());
+    const dept = clockDept || crewDept || null;
+    if (!name || !tenant) return;
+    const requestedISO = new Date(clockAdjustMs).toISOString();
+    const reqTimeLabel = formatTime(requestedISO);
+
+    const isIn = kind === 'clock_in_request';
+    const minutesAgo = Math.round((clockBaseMs - clockAdjustMs) / 60000);
+    const agoLabel = minutesAgo === 0 ? 'now'
+      : minutesAgo > 0 ? `${minutesAgo} min ago` : `in ${-minutesAgo} min`;
+
+    const body = isIn
+      ? `Clock-In Request — ${name}\nRequested time: ${reqTimeLabel} (${agoLabel})\nDept: ${dept ?? '—'}\nReason: ${reason}`
+      : `Clock-Out Request — ${name}\nRequested time: ${reqTimeLabel}\nCurrently: ${formatTime(new Date(clockBaseMs).toISOString())}\nDept: ${dept ?? '—'}\nReason: ${reason}`;
+
+    const payload: ClockRequestPayload = {
+      requested_time: requestedISO,
+      reason,
+      worker_name: name,
+      dept,
+      status: 'pending',
+      shift_id: !isIn && openEntry ? openEntry.id : null,
+      clock_in: !isIn && openEntry ? openEntry.clock_in : null,
+    };
+
+    setRequestSending(true);
+    try {
+      const { error } = await supabase.from('messages').insert({
+        sender_name: name,
+        dept,
+        body,
+        tenant_id: tenant.id,
+        topic: kind,
+        payload,
+      });
+      if (error) throw error;
+      // Push the supervisor so they can review immediately.
+      sendNotify({
+        tenant_id: tenant.id,
+        target: 'supervisor',
+        title: 'Clock-in request',
+        body: `${isIn ? 'Clock-in' : 'Clock-out'} request from ${name} — ${reqTimeLabel} — tap to review`,
+        url: '/app/supervisor',
+      });
+      closeModal();
+      showToast('Request sent to supervisor');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Could not send request', true);
+    } finally {
+      setRequestSending(false);
     }
   }
 
@@ -2443,6 +2614,9 @@ export default function CrewPage() {
       dept,
       body,
       created_at: new Date().toISOString(),
+      read_at: null,
+      topic: null,
+      payload: null,
     };
     setMessages((prev) => [optimistic, ...prev]);
     setReplyBody('');
@@ -2450,7 +2624,7 @@ export default function CrewPage() {
       const { data, error } = await supabase
         .from('messages')
         .insert({ sender_name: crewName || 'Crew', dept, body, tenant_id: tenant!.id })
-        .select('id, sender_name, dept, body, created_at')
+        .select('id, sender_name, dept, body, created_at, read_at, topic, payload')
         .single();
       if (error) throw error;
       setMessages((prev) => prev.map((m) => m.id === optimisticId ? (data as Message) : m));
@@ -2543,7 +2717,9 @@ export default function CrewPage() {
 
   const isTrial = tenant?.subscription_status === 'trial';
   const days = trialDaysLeft(tenant?.trial_ends_at ?? null);
-  const activeCrew = clockEntries.filter((e) => !e.clock_out || e.status === 'active');
+  // This crew member's own open shift (drives the header clock indicator).
+  const myShift = clockEntries.find((e) => e.worker_name === crewName && !e.clock_out) ?? null;
+  const isClockedIn = !!myShift;
 
   // Strict dept isolation: only crew's own dept + broadcasts (dept = null)
   // NEVER include messages from other departments. Messages older than the
@@ -2554,11 +2730,13 @@ export default function CrewPage() {
       (!msgClearedAt || m.created_at > msgClearedAt)
   );
 
-  // Supervisor thread: all messages where dept = crewDept OR dept IS NULL
-  const supervisorMsgs = [...relevantMsgs]
+  // Supervisor thread: all messages where dept = crewDept OR dept IS NULL.
+  // Clock-in/out requests are action items, not chat, so they're hidden here.
+  const supervisorMsgs = relevantMsgs
+    .filter((m) => !isClockRequestMsg(m))
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const supervisorLastMsg = supervisorMsgs[0] ?? null;
-  const supUnread = relevantMsgs.filter((m) => m.sender_name === 'Supervisor' && m.created_at > supRead).length;
+  const supUnread = relevantMsgs.filter((m) => m.sender_name === 'Supervisor' && !m.read_at && !isClockRequestMsg(m)).length;
 
   // Conversation messages sorted oldest-first for display
   const openThreadMsgs = openThread === 'supervisor' ? [...supervisorMsgs].reverse() : [];
@@ -2659,7 +2837,7 @@ export default function CrewPage() {
       <div style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
         {/* Nav */}
-        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', height: 64, display: 'flex', alignItems: 'center', padding: '0 32px', justifyContent: 'space-between' }}>
+        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', minHeight: 64, display: 'flex', alignItems: 'center', padding: '0 32px', paddingTop: 'env(safe-area-inset-top, 5px)', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <Link href="/app" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--ink-mute)', fontSize: 13 }}>
               <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
@@ -2688,40 +2866,54 @@ export default function CrewPage() {
 
           {/* Header */}
           <div style={{ marginBottom: 32 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div className="eyebrow">Crew View</div>
-              <Link
-                href="/app"
-                style={{ fontSize: 12, color: 'var(--ink-mute)', display: 'flex', alignItems: 'center', gap: 5, textDecoration: 'none' }}
-              >
-                <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
-                Switch Role
-              </Link>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8, gap: 12 }}>
+              {/* Crew View label + relocated, subtle name + edit pencil */}
+              <div>
+                <div className="eyebrow">Crew View</div>
+                {crewName && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 4 }}>
+                    <span style={{ fontSize: 13, color: 'var(--ink-mute)' }}>{crewName}</span>
+                    <button
+                      onClick={openEditName}
+                      title="Edit name"
+                      aria-label="Edit your name"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 2, display: 'flex', lineHeight: 1 }}
+                    >
+                      <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </button>
+                  </div>
+                )}
+              </div>
+              {/* Clock-in indicator + Switch Role */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
+                <div style={{ position: 'relative' }}>
+                  <button
+                    onClick={() => setClockTipOpen((o) => !o)}
+                    onBlur={() => { setTimeout(() => setClockTipOpen(false), 150); }}
+                    title={isClockedIn ? `Clocked in since ${formatTime(myShift!.clock_in)}` : 'Not clocked in'}
+                    aria-label={isClockedIn ? `Clocked in since ${formatTime(myShift!.clock_in)}` : 'Not clocked in'}
+                    style={{ position: 'relative', background: 'none', border: 'none', cursor: 'pointer', color: isClockedIn ? '#22c55e' : 'var(--ink-mute)', padding: 2, display: 'flex', lineHeight: 1 }}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    <span style={{ position: 'absolute', top: -1, right: -1, width: 8, height: 8, borderRadius: '50%', background: isClockedIn ? '#22c55e' : '#6b7280', boxShadow: isClockedIn ? '0 0 6px #22c55e' : 'none' }} />
+                  </button>
+                  {clockTipOpen && (
+                    <div style={{ position: 'absolute', top: 28, right: 0, zIndex: 30, whiteSpace: 'nowrap', fontSize: 12, fontWeight: 600, color: 'var(--ink)', background: '#11151a', border: '1px solid var(--line-strong)', borderRadius: 8, padding: '7px 11px', boxShadow: '0 8px 30px rgba(0,0,0,0.5)' }}>
+                      {isClockedIn ? `Clocked in since ${formatTime(myShift!.clock_in)}` : 'Not clocked in'}
+                    </div>
+                  )}
+                </div>
+                <Link
+                  href="/app"
+                  style={{ fontSize: 12, color: 'var(--ink-mute)', display: 'flex', alignItems: 'center', gap: 5, textDecoration: 'none' }}
+                >
+                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+                  Switch Role
+                </Link>
+              </div>
             </div>
             <h2 style={{ fontSize: 28 }}>{tenant?.shop_name ?? 'My Shop'}</h2>
             <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 14, color: 'var(--ink-dim)' }}>
-                {activeCrew.length} crew member{activeCrew.length !== 1 ? 's' : ''} clocked in
-              </span>
-              {crewName && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: 13, color: 'var(--ink-mute)' }}>As</span>
-                  <b style={{ fontSize: 13, color: 'var(--teal)' }}>{crewName}</b>
-                  <button
-                    onClick={openEditName}
-                    title="Edit name"
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 2, display: 'flex', lineHeight: 1 }}
-                  >
-                    <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                  </button>
-                  <button
-                    onClick={switchUser}
-                    style={{ fontSize: 12, color: 'var(--ink-mute)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0', fontFamily: 'inherit', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
-                  >
-                    Not {crewName}?
-                  </button>
-                </div>
-              )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 {crewDept && (
                   <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: 'rgba(167,139,250,0.12)', color: '#A78BFA' }}>
@@ -3089,7 +3281,7 @@ export default function CrewPage() {
 
       {/* ── Clock Modal ─────────────────────────────────────────────────────── */}
       {modal === 'clock' && (
-        <ModalOverlay onClose={closeModal} title="Clock In / Out">
+        <ModalOverlay onClose={closeModal} title={clockStep === 'clockout' ? 'Clock Out' : clockStep === 'clockin' ? 'Clock In' : 'Clock In / Out'}>
           {clockStep === 'lookup' && (
             <>
               <Field label="Your Name">
@@ -3098,7 +3290,7 @@ export default function CrewPage() {
               <button
                 className="btn btn-primary"
                 style={{ width: '100%', justifyContent: 'center', opacity: (!clockName.trim() || checking) ? 0.5 : 1 }}
-                onClick={handleClockLookup}
+                onClick={() => void handleClockLookup()}
                 disabled={!clockName.trim() || checking}
               >
                 {checking ? 'Checking…' : 'Look Up Status'}
@@ -3106,32 +3298,58 @@ export default function CrewPage() {
             </>
           )}
 
-          {clockStep === 'clockin' && (
+          {clockStep === 'clockin' && (() => {
+            const adjusted = Math.round(clockAdjustMs / 60000) !== Math.round(clockBaseMs / 60000);
+            return (
             <>
-              <p style={{ fontSize: 13, color: 'var(--ink-dim)', marginBottom: 20 }}>
-                No open shift found for <b style={{ color: 'var(--ink)' }}>{clockName}</b>. Fill in the details to clock in.
-              </p>
-              <Field label="Department">
-                <select className="form-input" value={clockDept} onChange={(e) => setClockDept(e.target.value)} autoFocus style={{ cursor: 'pointer' }}>
-                  <option value="">Select department…</option>
-                  {deptOptions.map((d) => (
-                    <option key={d} value={d}>{d}</option>
-                  ))}
-                </select>
-              </Field>
+              {!clockDept && (
+                <Field label="Department">
+                  <select className="form-input" value={clockDept} onChange={(e) => setClockDept(e.target.value)} autoFocus style={{ cursor: 'pointer' }}>
+                    <option value="">Select department…</option>
+                    {deptOptions.map((d) => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+
+              <ClockTimePicker value={clockAdjustMs} base={clockBaseMs} onHold={startHold} onRelease={stopHold} />
+
+              {adjusted && (
+                <Field label="Reason for adjustment">
+                  <input
+                    className="form-input"
+                    placeholder="e.g. Forgot to clock in at arrival"
+                    value={adjustReason}
+                    onChange={(e) => setAdjustReason(e.target.value)}
+                  />
+                </Field>
+              )}
+
               <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
                 <button className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setClockStep('lookup')}>Back</button>
-                <button
-                  className="btn btn-primary"
-                  style={{ flex: 2, justifyContent: 'center', opacity: (!clockDept || saving) ? 0.5 : 1 }}
-                  onClick={handleClockIn}
-                  disabled={!clockDept || saving}
-                >
-                  {saving ? 'Clocking In…' : 'Clock In'}
-                </button>
+                {adjusted ? (
+                  <button
+                    style={{ flex: 2, justifyContent: 'center', display: 'flex', alignItems: 'center', padding: '0 18px', borderRadius: 10, height: 44, background: '#FBBF24', color: '#1a1400', border: 'none', fontWeight: 700, fontSize: 14, fontFamily: 'inherit', cursor: (!clockDept || !adjustReason.trim() || requestSending) ? 'default' : 'pointer', opacity: (!clockDept || !adjustReason.trim() || requestSending) ? 0.5 : 1 }}
+                    onClick={() => void handleClockRequest('clock_in_request')}
+                    disabled={!clockDept || !adjustReason.trim() || requestSending}
+                  >
+                    {requestSending ? 'Sending…' : 'Submit Clock-In Request'}
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-primary"
+                    style={{ flex: 2, justifyContent: 'center', opacity: (!clockDept || saving) ? 0.5 : 1 }}
+                    onClick={handleClockIn}
+                    disabled={!clockDept || saving}
+                  >
+                    {saving ? 'Clocking In…' : 'Clock In'}
+                  </button>
+                )}
               </div>
             </>
-          )}
+            );
+          })()}
 
           {clockStep === 'clockout' && openEntry && (
             <>
@@ -3179,39 +3397,68 @@ export default function CrewPage() {
                     </button>
                   </div>
                 </div>
-              ) : (
+              ) : (() => {
+                const adjusted = Math.round(clockAdjustMs / 60000) !== Math.round(clockBaseMs / 60000);
+                return (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <ClockTimePicker value={clockAdjustMs} base={clockBaseMs} onHold={startHold} onRelease={stopHold} />
+
+                  {adjusted && (
+                    <Field label="Reason for adjustment">
+                      <input
+                        className="form-input"
+                        placeholder="e.g. Forgot to clock out when I left"
+                        value={adjustReason}
+                        onChange={(e) => setAdjustReason(e.target.value)}
+                      />
+                    </Field>
+                  )}
+
                   <div style={{ display: 'flex', gap: 10 }}>
                     <button className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setClockStep('lookup')}>Back</button>
-                    <button
-                      className="btn btn-primary"
-                      style={{ flex: 2, justifyContent: 'center', opacity: saving ? 0.5 : 1 }}
-                      onClick={() => void handleClockOut()}
-                      disabled={saving}
-                    >
-                      {saving ? 'Clocking Out…' : 'Clock Out'}
-                    </button>
+                    {adjusted ? (
+                      <button
+                        style={{ flex: 2, justifyContent: 'center', display: 'flex', alignItems: 'center', padding: '0 18px', borderRadius: 10, height: 44, background: '#FBBF24', color: '#1a1400', border: 'none', fontWeight: 700, fontSize: 14, fontFamily: 'inherit', cursor: (!adjustReason.trim() || requestSending) ? 'default' : 'pointer', opacity: (!adjustReason.trim() || requestSending) ? 0.5 : 1 }}
+                        onClick={() => void handleClockRequest('clock_out_request')}
+                        disabled={!adjustReason.trim() || requestSending}
+                      >
+                        {requestSending ? 'Sending…' : 'Submit Clock-Out Request'}
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn-primary"
+                        style={{ flex: 2, justifyContent: 'center', opacity: saving ? 0.5 : 1 }}
+                        onClick={() => void handleClockOut()}
+                        disabled={saving}
+                      >
+                        {saving ? 'Clocking Out…' : 'Clock Out'}
+                      </button>
+                    )}
                   </div>
-                  <button
-                    style={{
-                      width: '100%', padding: '10px 0', borderRadius: 10,
-                      background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)',
-                      color: '#FBBF24', fontSize: 13, fontWeight: 700, cursor: breakSaving ? 'not-allowed' : 'pointer',
-                      fontFamily: 'inherit', opacity: breakSaving ? 0.5 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                    }}
-                    onClick={() => void handleBreakStart()}
-                    disabled={breakSaving}
-                  >
-                    <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="2" y="7" width="20" height="14" rx="2"/>
-                      <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
-                      <line x1="12" y1="12" x2="12" y2="16"/>
-                      <line x1="10" y1="14" x2="14" y2="14"/>
-                    </svg>
-                    {breakSaving ? 'Starting…' : 'Start Break'}
-                  </button>
+
+                  {!adjusted && (
+                    <button
+                      style={{
+                        width: '100%', padding: '10px 0', borderRadius: 10,
+                        background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)',
+                        color: '#FBBF24', fontSize: 13, fontWeight: 700, cursor: breakSaving ? 'not-allowed' : 'pointer',
+                        fontFamily: 'inherit', opacity: breakSaving ? 0.5 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                      }}
+                      onClick={() => void handleBreakStart()}
+                      disabled={breakSaving}
+                    >
+                      <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="2" y="7" width="20" height="14" rx="2"/>
+                        <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
+                        <line x1="12" y1="12" x2="12" y2="16"/>
+                        <line x1="10" y1="14" x2="14" y2="14"/>
+                      </svg>
+                      {breakSaving ? 'Starting…' : 'Start Break'}
+                    </button>
+                  )}
                 </div>
-              )}
+                );
+              })()}
             </>
           )}
         </ModalOverlay>
@@ -3579,6 +3826,13 @@ export default function CrewPage() {
               {nameSaving ? 'Saving…' : 'Save'}
             </button>
           </div>
+          {/* Different person on this shared device — clear identity and start fresh. */}
+          <button
+            onClick={switchUser}
+            style={{ marginTop: 16, width: '100%', textAlign: 'center', fontSize: 12.5, color: 'var(--ink-mute)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0', fontFamily: 'inherit', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
+          >
+            Not you? Switch to a different crew member
+          </button>
         </ModalOverlay>
       )}
 

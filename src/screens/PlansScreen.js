@@ -10,17 +10,8 @@ import * as DocumentPicker from 'expo-document-picker';
 import { supabase } from '../lib/supabase';
 import { getTenantId } from '../lib/tenant';
 
-const C = {
-  bg:      '#07090F',
-  surface: '#0D1117',
-  input:   '#111620',
-  border:  '#1A2535',
-  text:    '#FFFFFF',
-  muted:   '#2D8A94',
-  accent:  '#00C5CC',
-  blue:    '#3b82f6',
-  blueBg:  '#0d1f3c',
-};
+import { T } from '../lib/theme';
+const C = { ...T, blue: T.violet, blueBg: T.violetBg };
 
 const fmtDate = (iso) =>
   new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });

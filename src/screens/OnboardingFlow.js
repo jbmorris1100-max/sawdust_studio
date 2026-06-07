@@ -1,27 +1,18 @@
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  SafeAreaView, StatusBar, KeyboardAvoidingView, Platform,
+  StatusBar, KeyboardAvoidingView, Platform,
   ScrollView, ActivityIndicator,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 import { storeTenant } from '../lib/tenant';
 import { testConnection } from '../lib/innergy';
 import InlineIQLogo from '../components/InlineIQLogo';
 
-const C = {
-  bg:      '#07090F',
-  surface: '#0D1117',
-  input:   '#111620',
-  border:  '#1A2535',
-  text:    '#FFFFFF',
-  muted:   '#2D8A94',
-  accent:  '#00C5CC',
-  success: '#22c55e',
-  danger:  '#FF4444',
-  blue:    '#3b82f6',
-};
+import { T } from '../lib/theme';
+const C = { ...T, blue: T.violet };
 
 const ROLE_OPTIONS = ['Owner', 'Shop Supervisor', 'Crew Lead'];
 const ERP_OPTIONS  = ['Innergy', 'Cabinet Vision', 'Microvellum', 'Other', 'No ERP — Skip'];
@@ -43,7 +34,7 @@ function ProgressDots({ total, current }) {
 function WelcomeScreen({ onSetup, onJoinCode }) {
   return (
     <View style={styles.screen}>
-      <View style={styles.welcomeCenter}>
+      <View style={styles.welcomeCenter} pointerEvents="box-none">
         <InlineIQLogo size="large" />
       </View>
       <View style={styles.welcomeActions}>
@@ -346,6 +337,7 @@ export default function OnboardingFlow({ onComplete }) {
   };
 
   const handleFinish = async () => {
+    console.log('[OnboardingFlow] handleFinish called, shopName:', shopName.trim());
     if (saving) return;
     setSaving(true);
     try {
@@ -407,8 +399,8 @@ export default function OnboardingFlow({ onComplete }) {
 
       {step === 0 && (
         <WelcomeScreen
-          onSetup={() => setStep(1)}
-          onJoinCode={() => setStep(1)}
+          onSetup={() => { console.log('[OnboardingFlow] onSetup fired → step 1'); setStep(1); }}
+          onJoinCode={() => { console.log('[OnboardingFlow] onJoinCode fired → step 1'); setStep(1); }}
         />
       )}
       {step === 1 && (
@@ -416,7 +408,7 @@ export default function OnboardingFlow({ onComplete }) {
           shopName={shopName}   setShopName={setShopName}
           yourName={yourName}   setYourName={setYourName}
           role={role}           setRole={setRole}
-          onNext={() => setStep(2)}
+          onNext={() => { console.log('[OnboardingFlow] ShopDetails onNext → step 2'); setStep(2); }}
         />
       )}
       {step === 2 && (
@@ -462,11 +454,14 @@ const styles = StyleSheet.create({
   dot:  { width: 6, height: 6, borderRadius: 3, backgroundColor: C.border },
   dotActive: { backgroundColor: C.accent, width: 18 },
 
-  // Welcome
-  welcomeCenter: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
+  // Welcome — center fills screen, actions pinned to bottom absolutely
+  welcomeCenter: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   wordmark: { fontSize: 48, fontWeight: '800', color: C.text, letterSpacing: -2 },
   tagline:  { fontSize: 16, color: C.muted, letterSpacing: 0.3 },
-  welcomeActions: { paddingBottom: 48, gap: 12 },
+  welcomeActions: {
+    position: 'absolute', bottom: 0, left: 24, right: 24,
+    paddingBottom: 48, gap: 12,
+  },
 
   // Steps
   stepTitle: { fontSize: 28, fontWeight: '800', color: C.text, letterSpacing: -0.5, marginBottom: 6, marginTop: 8 },

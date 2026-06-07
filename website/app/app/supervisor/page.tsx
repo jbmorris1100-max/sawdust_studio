@@ -41,6 +41,19 @@ type ShiftEvent = {
   created_at: string;
 };
 
+// Clock-in/out adjustment requests piggy-back on the messages table via the
+// topic + payload columns. topic-tagged messages are action items (rendered as
+// approve/deny cards), never chat — they don't count toward the unread badge.
+type ClockRequestPayload = {
+  requested_time: string;
+  reason: string;
+  worker_name: string;
+  dept: string | null;
+  status: 'pending' | 'approved' | 'denied';
+  shift_id?: string | null;
+  clock_in?: string | null;
+};
+
 type Message = {
   id: string;
   sender_name: string;
@@ -48,7 +61,12 @@ type Message = {
   body: string;
   created_at: string;
   read_at: string | null;
+  topic: string | null;
+  payload: ClockRequestPayload | null;
 };
+
+const CLOCK_TOPICS = ['clock_in_request', 'clock_out_request'];
+const isClockRequest = (m: Message): boolean => !!m.topic && CLOCK_TOPICS.includes(m.topic);
 
 type InventoryNeed = {
   id: string;
@@ -700,6 +718,79 @@ export default function SupervisorPage() {
     } catch { /* optimistic update already applied; realtime will reconcile */ }
   }
 
+  // ── Clock-in/out request resolution ─────────────────────────────────────────
+  // Approve/deny a crew clock adjustment request (topic = clock_*_request).
+  // Approve → record at the requested time; Deny → record at the current time.
+  // Either way we reply to the crew member, mark the request read, and stamp the
+  // payload status so the action card flips to a resolved state.
+  const [resolvingReq, setResolvingReq] = useState<string | null>(null);
+
+  async function replyToCrew(dept: string | null, body: string) {
+    if (!tenant) return;
+    try {
+      const { data } = await supabase.from('messages').insert({
+        sender_name: 'Supervisor', dept, body, tenant_id: tenant.id,
+      }).select('id, sender_name, dept, body, created_at, read_at, topic, payload').single();
+      if (data) setMessages((prev) => prev.some((m) => m.id === (data as Message).id) ? prev : [data as Message, ...prev]);
+      sendNotify({
+        tenant_id: tenant.id, target: 'crew',
+        ...(dept ? { dept_target: dept } : {}),
+        title: 'Clock update', body, url: '/app/crew',
+      });
+    } catch { /* best-effort reply */ }
+  }
+
+  async function resolveClockRequest(m: Message, approve: boolean) {
+    if (!tenant || !m.payload || resolvingReq) return;
+    const p = m.payload;
+    const isClockIn = m.topic === 'clock_in_request';
+    const nowISO = new Date().toISOString();
+    setResolvingReq(m.id);
+    try {
+      if (isClockIn) {
+        const clockInTime = approve ? p.requested_time : nowISO;
+        const { error } = await supabase.from('time_clock').insert({
+          worker_name: p.worker_name,
+          dept: p.dept,
+          clock_in: clockInTime,
+          clock_out: null,
+          date: clockInTime.split('T')[0],
+          status: 'active',
+          tenant_id: tenant.id,
+        });
+        if (error) throw error;
+        await replyToCrew(p.dept, approve
+          ? `Clock-in approved for ${formatTime(clockInTime)}`
+          : `Clock-in request denied — clocked in at current time ${formatTime(nowISO)}`);
+      } else {
+        const clockOutTime = approve ? p.requested_time : nowISO;
+        const clockInRef = p.clock_in ?? null;
+        const totalHours = clockInRef
+          ? (new Date(clockOutTime).getTime() - new Date(clockInRef).getTime()) / 3_600_000
+          : null;
+        if (p.shift_id) {
+          const { error } = await supabase.from('time_clock').update({
+            clock_out: clockOutTime,
+            on_break: false,
+            ...(totalHours != null ? { total_hours: Math.round(totalHours * 10000) / 10000 } : {}),
+          }).eq('id', p.shift_id);
+          if (error) throw error;
+        }
+        await replyToCrew(p.dept, approve
+          ? `Clock-out approved for ${formatTime(clockOutTime)}`
+          : `Clock-out request denied — clocked out at current time ${formatTime(nowISO)}`);
+      }
+      const newPayload: ClockRequestPayload = { ...p, status: approve ? 'approved' : 'denied' };
+      await supabase.from('messages').update({ read_at: nowISO, payload: newPayload }).eq('id', m.id);
+      setMessages((prev) => prev.map((x) => x.id === m.id ? { ...x, read_at: nowISO, payload: newPayload } : x));
+      showToast(approve ? 'Approved' : 'Denied');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Could not resolve request', true);
+    } finally {
+      setResolvingReq(null);
+    }
+  }
+
   // Message thread view — null = inbox, string = dept key ('__broadcast__' for null-dept)
   const [openThread, setOpenThread] = useState<string | null>(null);
 
@@ -836,7 +927,7 @@ export default function SupervisorPage() {
     try {
       const [crewRes, msgRes, needsRes, damageRes] = await Promise.all([
         supabase.from('time_clock').select('id, worker_name, dept, clock_in, status').eq('tenant_id', tenant.id).is('clock_out', null).order('clock_in', { ascending: true }),
-        supabase.from('messages').select('id, sender_name, dept, body, created_at, read_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
+        supabase.from('messages').select('id, sender_name, dept, body, created_at, read_at, topic, payload').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
         supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
         supabase.from('damage_reports').select('id, part_name, job_id, dept, notes, photo_url, status, created_at, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
       ]);
@@ -1443,6 +1534,8 @@ export default function SupervisorPage() {
       body,
       created_at:  new Date().toISOString(),
       read_at:     null,
+      topic:       null,
+      payload:     null,
     };
     setMessages((prev) => [optimistic, ...prev]);
     setMsgBody('');
@@ -1453,7 +1546,7 @@ export default function SupervisorPage() {
         dept,
         body,
         tenant_id: tenant!.id,
-      }).select('id, sender_name, dept, body, created_at, read_at').single();
+      }).select('id, sender_name, dept, body, created_at, read_at, topic, payload').single();
       if (error) throw error;
       setMessages((prev) => prev.map((m) => m.id === optimistic.id ? data as Message : m));
       // Notify crew of the new message (fire-and-forget).
@@ -2371,8 +2464,10 @@ export default function SupervisorPage() {
 
   // True unread = crew messages (sender ≠ Supervisor) the supervisor hasn't opened yet
   // (read_at IS NULL). Persisted in Supabase, so it survives across devices/sessions.
+  // Unread = crew chat messages the supervisor hasn't opened yet. Clock-in/out
+  // requests are action items, not chat, so they're excluded from the badge.
   const unreadMessages = messages.filter(
-    (m) => m.sender_name !== 'Supervisor' && !m.read_at
+    (m) => m.sender_name !== 'Supervisor' && !m.read_at && !isClockRequest(m)
   ).length;
 
   const tabs: { key: Tab; label: string; count?: number }[] = [
@@ -2440,7 +2535,7 @@ export default function SupervisorPage() {
       <div className="app-shell" style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
         {/* Nav */}
-        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', height: 64, display: 'flex', alignItems: 'center', padding: '0 32px', justifyContent: 'space-between' }}>
+        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', minHeight: 64, display: 'flex', alignItems: 'center', padding: '0 32px', paddingTop: 'env(safe-area-inset-top, 5px)', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <Link href="/app" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--ink-mute)', fontSize: 13 }}>
               <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
@@ -3142,7 +3237,8 @@ export default function SupervisorPage() {
               ) : (
                 <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
                   {msgThreads.map(({ deptKey, label, lastMsg }, i) => {
-                    const unread = threadMap[deptKey].filter((m) => m.sender_name !== 'Supervisor' && !m.read_at).length;
+                    const unread = threadMap[deptKey].filter((m) => m.sender_name !== 'Supervisor' && !m.read_at && !isClockRequest(m)).length;
+                    const pendingReqs = threadMap[deptKey].filter((m) => isClockRequest(m) && (m.payload?.status ?? 'pending') === 'pending').length;
                     const initial = (label.trim()[0] ?? '?').toUpperCase();
                     return (
                       <div
@@ -3172,6 +3268,12 @@ export default function SupervisorPage() {
                           <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{relativeTime(lastMsg.created_at)}</span>
                           {unread > 0 && (
                             <span style={{ minWidth: 20, textAlign: 'center', fontSize: 11, fontWeight: 700, padding: '1px 6px', borderRadius: 10, background: 'var(--teal)', color: '#04201c' }}>{unread}</span>
+                          )}
+                          {pendingReqs > 0 && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10.5, fontWeight: 700, padding: '1px 7px', borderRadius: 10, background: 'rgba(251,191,36,0.14)', color: '#FBBF24' }}>
+                              <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                              {pendingReqs}
+                            </span>
                           )}
                         </div>
                       </div>
@@ -3220,10 +3322,57 @@ export default function SupervisorPage() {
                 )}
               </div>
 
-              {/* iMessage-style conversation + pinned input */}
+              {/* Clock-in/out adjustment requests — action cards (not chat) */}
+              {openThreadMsgs.filter(isClockRequest).map((m) => {
+                const p = m.payload;
+                if (!p) return null;
+                const status = p.status ?? 'pending';
+                const isIn = m.topic === 'clock_in_request';
+                return (
+                  <div key={m.id} style={{ borderRadius: 14, background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.25)', borderLeft: '3px solid #FBBF24', padding: '14px 16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 10 }}>
+                      <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                      <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: '#FBBF24' }}>
+                        {isIn ? 'Clock-In Request' : 'Clock-Out Request'}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{p.worker_name}</div>
+                    <div style={{ fontSize: 13, color: 'var(--ink-dim)', marginTop: 4 }}>
+                      Requested time: <b style={{ color: 'var(--ink)' }}>{formatTime(p.requested_time)}</b>
+                      {!isIn && p.clock_in && <> · in since {formatTime(p.clock_in)}</>}
+                    </div>
+                    <div style={{ fontSize: 13, color: 'var(--ink-dim)', marginTop: 2 }}>Dept: {p.dept ?? '—'}</div>
+                    {p.reason && <div style={{ fontSize: 13, color: 'var(--ink-dim)', marginTop: 6 }}>Reason: {p.reason}</div>}
+                    {status === 'pending' ? (
+                      <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+                        <button
+                          onClick={() => void resolveClockRequest(m, true)}
+                          disabled={resolvingReq === m.id}
+                          style={{ flex: 1, padding: '9px 0', borderRadius: 9, background: '#2DE1C9', color: '#001a0d', border: 'none', fontWeight: 700, fontSize: 13, cursor: resolvingReq === m.id ? 'wait' : 'pointer', opacity: resolvingReq === m.id ? 0.6 : 1 }}
+                        >
+                          {resolvingReq === m.id ? '…' : 'Approve'}
+                        </button>
+                        <button
+                          onClick={() => void resolveClockRequest(m, false)}
+                          disabled={resolvingReq === m.id}
+                          style={{ flex: 1, padding: '9px 0', borderRadius: 9, background: 'transparent', color: '#F87171', border: '1px solid rgba(248,113,113,0.4)', fontWeight: 700, fontSize: 13, cursor: resolvingReq === m.id ? 'wait' : 'pointer', opacity: resolvingReq === m.id ? 0.6 : 1 }}
+                        >
+                          Deny
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: 12, fontSize: 12.5, fontWeight: 700, color: status === 'approved' ? '#2DE1C9' : '#F87171' }}>
+                        {status === 'approved' ? 'Approved' : 'Denied'}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* iMessage-style conversation + pinned input (chat only — requests above) */}
               <div className="portal-card" style={{ padding: '14px 16px', overflowX: 'hidden', maxWidth: '100%' }}>
                 <MessageThread
-                  messages={openThreadMsgs}
+                  messages={openThreadMsgs.filter((m) => !isClockRequest(m))}
                   selfKind="supervisor"
                   sending={sending}
                   placeholder={`Message ${openThreadLabel}…`}

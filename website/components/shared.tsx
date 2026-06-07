@@ -41,7 +41,7 @@ export function Nav() {
   const close = () => setMenuOpen(false);
 
   return (
-    <div className={`nav-wrap${scrolled ? ' scrolled' : ''}`}>
+    <div className={`nav-wrap${scrolled ? ' scrolled' : ''}`} style={{ paddingTop: 'env(safe-area-inset-top, 5px)' }}>
       <div className="container nav">
         <Link href="/" className="nav-logo" onClick={close}>
           <LogoMark size={22} />

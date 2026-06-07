@@ -16,6 +16,7 @@ import { clockOutEmployee } from '../lib/clockOut';
 import { getSyncStatus } from '../lib/syncQueue';
 import { getTenant } from '../lib/tenant';
 import InlineIQLogo from '../components/InlineIQLogo';
+import { T as C, DEPT_COLORS, DEPARTMENTS } from '../lib/theme';
 
 const STORAGE_KEY_NAME = '@inline_user_name';
 const STORAGE_KEY_DEPT = '@inline_user_dept';
@@ -30,27 +31,6 @@ const GENERIC_ACTIVITIES = [
   'Material Handling', 'Shop Setup',
   'Receiving',         'Warranty / Repair',
 ];
-
-const DEPARTMENTS = ['Production', 'Assembly', 'Finishing', 'Craftsman'];
-
-const DEPT_COLORS = {
-  Production: { bg: '#172554', text: '#93c5fd' },
-  Assembly:   { bg: '#052e16', text: '#86efac' },
-  Finishing:  { bg: '#431407', text: '#fdba74' },
-  Craftsman:  { bg: '#500724', text: '#f9a8d4' },
-};
-
-const C = {
-  bg:       '#07090F',
-  surface:  '#0D1117',
-  input:    '#111620',
-  border:   '#1A2535',
-  text:     '#FFFFFF',
-  muted:    '#2D8A94',
-  accent:   '#00C5CC',
-  danger:   '#FF4444',
-  success:  '#22c55e',
-};
 
 const formatMsgTime = (iso) =>
   new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -128,13 +108,17 @@ export default function HomeScreen({ navigation, route }) {
       const { ok } = await getSyncStatus();
       setSyncOk(ok);
 
-      // Load tenant departments
+      // Load tenant departments — always keep the 4 standard depts
       const tenant = await getTenant();
       if (tenant?.departments) {
         try {
           const depts = typeof tenant.departments === 'string'
             ? JSON.parse(tenant.departments) : tenant.departments;
-          if (Array.isArray(depts) && depts.length > 0) setDepartments(depts);
+          if (Array.isArray(depts) && depts.length > 0) {
+            const merged = [...depts];
+            for (const d of DEPARTMENTS) { if (!merged.includes(d)) merged.push(d); }
+            setDepartments(merged);
+          }
         } catch (_) {}
       }
 
@@ -216,11 +200,13 @@ export default function HomeScreen({ navigation, route }) {
   };
 
   const fetchRecentMessages = useCallback(async (name, seenAt) => {
-    let q = supabase.from('messages').select('*').neq('sender_name', name)
-      .order('created_at', { ascending: false }).limit(3);
-    if (seenAt) q = q.gt('created_at', seenAt);
-    const { data } = await q;
-    if (data) setRecentMessages(data);
+    try {
+      let q = supabase.from('messages').select('*').neq('sender_name', name)
+        .order('created_at', { ascending: false }).limit(3);
+      if (seenAt) q = q.gt('created_at', seenAt);
+      const { data } = await q;
+      if (data) setRecentMessages(data);
+    } catch (_) {}
   }, []);
 
   // ── Quick Switch ──────────────────────────────────────────────
@@ -268,11 +254,14 @@ export default function HomeScreen({ navigation, route }) {
   // ── Setup modal ───────────────────────────────────────────────
   const handleSaveSetup = async () => {
     if (deptOnlyMode) {
+      console.log('[switch dept] handleSaveSetup called, draftDept:', draftDept);
       if (!draftDept) return;
       await AsyncStorage.setItem(STORAGE_KEY_DEPT, draftDept);
       const deviceId = (await AsyncStorage.getItem(DEVICE_ID_KEY)) || 'unknown';
-      await supabase.from('device_tokens').update({ dept: draftDept }).eq('id', deviceId).catch(() => {});
-      await supabase.from('login_log').insert({ worker_name: userName, dept: draftDept, role: 'dept_change', device_id: deviceId, app_version: '2' }).catch(() => {});
+      try {
+        await supabase.from('device_tokens').update({ dept: draftDept }).eq('id', deviceId);
+        await supabase.from('login_log').insert({ worker_name: userName, dept: draftDept, role: 'dept_change', device_id: deviceId, app_version: '2' });
+      } catch (_) {}
       setUserDept(draftDept); setSetupVisible(false); setDeptOnlyMode(false);
       fetchAlerts(draftDept);
       AsyncStorage.getItem(LAST_READ_KEY).then(seen => fetchRecentMessages(userName, seen ?? ''));
@@ -374,7 +363,7 @@ export default function HomeScreen({ navigation, route }) {
         <View style={styles.headerIcons}>
           <View style={[styles.syncDot, syncOk ? styles.syncGreen : styles.syncRed]} />
           <TouchableOpacity
-            onPress={() => switchDept?.()}
+            onPress={() => { console.log('[switch dept] button pressed'); setDeptOnlyMode(true); setDraftDept(userDept); setSetupVisible(true); }}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             style={styles.switchDeptBtn}
           >
@@ -466,15 +455,15 @@ export default function HomeScreen({ navigation, route }) {
         {/* Quick actions */}
         <View style={styles.quickGrid}>
           <TouchableOpacity style={styles.quickCard} onPress={() => navigation.navigate('Needs', { userName, userDept })} activeOpacity={0.7}>
-            <Ionicons name="cube-outline" size={22} color="#00C5CC" />
+            <Ionicons name="cube-outline" size={22} color={C.accent} />
             <Text style={styles.quickLabel}>Log Need</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.quickCard} onPress={() => navigation.navigate('Damage', { userName, userDept })} activeOpacity={0.7}>
-            <Ionicons name="warning-outline" size={22} color="#ef4444" />
+            <Ionicons name="warning-outline" size={22} color={C.danger} />
             <Text style={styles.quickLabel}>Report Damage</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.quickCard} onPress={handleNotifPress} activeOpacity={0.7}>
-            <Ionicons name="chatbubble-outline" size={22} color="#8b5cf6" />
+            <Ionicons name="chatbubble-outline" size={22} color="#A78BFA" />
             <Text style={styles.quickLabel}>Messages</Text>
           </TouchableOpacity>
         </View>
@@ -649,8 +638,8 @@ const styles = StyleSheet.create({
   // Switch banner
   switchBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#062022', paddingVertical: 8, paddingHorizontal: 16,
-    borderBottomWidth: 1, borderBottomColor: '#0E4F52',
+    backgroundColor: 'rgba(45,225,201,0.08)', paddingVertical: 8, paddingHorizontal: 16,
+    borderBottomWidth: 1, borderBottomColor: 'rgba(45,225,201,0.2)',
   },
   switchBannerText: { color: C.success, fontSize: 12, fontWeight: '600', flex: 1 },
 
@@ -667,26 +656,26 @@ const styles = StyleSheet.create({
   headerIcons: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   switchDeptBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
-    backgroundColor: '#00C5CC18', borderRadius: 8,
+    backgroundColor: 'rgba(45,225,201,0.08)', borderRadius: 8,
     paddingHorizontal: 8, paddingVertical: 5,
-    borderWidth: 1, borderColor: '#00C5CC40',
+    borderWidth: 1, borderColor: 'rgba(45,225,201,0.25)',
   },
-  switchDeptText: { fontSize: 11, fontWeight: '700', color: '#00C5CC' },
+  switchDeptText: { fontSize: 11, fontWeight: '700', color: C.accent },
   syncDot:   { width: 8, height: 8, borderRadius: 4 },
   syncGreen: { backgroundColor: C.success },
   syncRed:   { backgroundColor: C.danger },
 
   offlineBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 7,
-    backgroundColor: '#1f0a0a', paddingVertical: 8, paddingHorizontal: 16,
-    borderBottomWidth: 1, borderBottomColor: '#450a0a',
+    backgroundColor: 'rgba(248,113,113,0.08)', paddingVertical: 8, paddingHorizontal: 16,
+    borderBottomWidth: 1, borderBottomColor: 'rgba(248,113,113,0.2)',
   },
-  offlineBannerText: { color: '#fca5a5', fontSize: 12, fontWeight: '500' },
+  offlineBannerText: { color: C.danger, fontSize: 12, fontWeight: '500' },
 
   taskCard: {
     marginHorizontal: 16, marginTop: 16,
     backgroundColor: C.surface, borderRadius: 16,
-    borderWidth: 1.5, borderColor: '#222',
+    borderWidth: 1.5, borderColor: C.border,
     paddingVertical: 16, paddingHorizontal: 16,
   },
   taskLabel:   { fontSize: 10, fontWeight: '700', color: C.muted, letterSpacing: 0.9, textTransform: 'uppercase', marginBottom: 8 },
@@ -701,9 +690,9 @@ const styles = StyleSheet.create({
   alertBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginHorizontal: 16, marginTop: 12,
-    backgroundColor: '#062022', borderRadius: 10,
+    backgroundColor: 'rgba(45,225,201,0.08)', borderRadius: 10,
     paddingVertical: 10, paddingHorizontal: 14,
-    borderWidth: 1, borderColor: '#0E4F52',
+    borderWidth: 1, borderColor: 'rgba(45,225,201,0.2)',
   },
   alertDot:  { width: 7, height: 7, borderRadius: 4, backgroundColor: C.accent },
   alertText: { color: C.accent, fontSize: 13, fontWeight: '600' },
@@ -712,7 +701,7 @@ const styles = StyleSheet.create({
   notifLabel: { fontSize: 10, fontWeight: '700', color: C.muted, letterSpacing: 0.9, textTransform: 'uppercase', marginBottom: 8 },
   notifCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    backgroundColor: C.surface, borderRadius: 12, borderWidth: 1, borderColor: '#222',
+    backgroundColor: C.surface, borderRadius: 12, borderWidth: 1, borderColor: C.border,
     borderLeftWidth: 3, borderLeftColor: C.border,
     paddingHorizontal: 12, paddingVertical: 10, marginBottom: 8,
   },
@@ -728,7 +717,7 @@ const styles = StyleSheet.create({
   quickGrid: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 12, gap: 10 },
   quickCard: {
     flex: 1, backgroundColor: C.surface, borderRadius: 14,
-    borderWidth: 1, borderColor: '#222',
+    borderWidth: 1, borderColor: C.border,
     paddingVertical: 16, alignItems: 'center', gap: 8,
   },
   quickLabel: { fontSize: 11, fontWeight: '700', color: C.muted, textAlign: 'center' },
@@ -737,7 +726,7 @@ const styles = StyleSheet.create({
   scanBtn: {
     flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
     backgroundColor: C.accent, borderRadius: 16, paddingVertical: 18,
-    shadowColor: '#00C5CC', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    shadowColor: C.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   scanBtnText: { color: '#000', fontSize: 18, fontWeight: '800' },
   switchBtn: {
@@ -749,7 +738,7 @@ const styles = StyleSheet.create({
   endDayBtn: {
     alignItems: 'center', paddingVertical: 12,
     borderRadius: 14, backgroundColor: C.surface,
-    borderWidth: 1, borderColor: '#333',
+    borderWidth: 1, borderColor: C.border,
   },
   endDayText: { color: C.muted, fontSize: 14, fontWeight: '600' },
 

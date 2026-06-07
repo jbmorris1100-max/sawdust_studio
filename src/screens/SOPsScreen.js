@@ -8,24 +8,15 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 
+import { T, DEPT_COLORS as BASE_DEPT_COLORS } from '../lib/theme';
+
 const CACHE_KEY = '@inline_sops_v1';
 
-const C = {
-  bg:      '#07090F',
-  surface: '#0D1117',
-  input:   '#111620',
-  border:  '#1A2535',
-  text:    '#FFFFFF',
-  muted:   '#2D8A94',
-  active:  '#00C5CC',
-};
+const C = { ...T, active: T.accent };
 
 const DEPT_COLORS = {
-  Production:  { bg: '#172554', text: '#93c5fd' },
-  Assembly:    { bg: '#052e16', text: '#86efac' },
-  Finishing:   { bg: '#431407', text: '#fdba74' },
-  Craftsman:   { bg: '#500724', text: '#f9a8d4' },
-  All:         { bg: '#1c1c1c', text: '#9ca3af' },
+  ...BASE_DEPT_COLORS,
+  All: { bg: 'rgba(94,234,212,0.06)', text: '#9AAAA7' },
 };
 
 const DEPARTMENTS = ['All', 'Production', 'Assembly', 'Finishing', 'Craftsman'];
@@ -207,14 +198,14 @@ export default function SOPsScreen({ route }) {
               <Ionicons
                 name={item.file_type === 'drive' ? 'logo-google' : 'document-text-outline'}
                 size={11}
-                color="#60a5fa"
+                color="#A78BFA"
               />
               <Text style={s.pdfChipText}>{item.file_type === 'drive' ? 'Drive' : 'PDF'}</Text>
             </View>
           ) : (
             <Text style={s.cardSteps}>{stepCount} step{stepCount !== 1 ? 's' : ''}</Text>
           )}
-          <Ionicons name="chevron-forward" size={14} color="#333" style={{ marginLeft: 'auto' }} />
+          <Ionicons name="chevron-forward" size={14} color={C.muted} style={{ marginLeft: 'auto' }} />
         </View>
       </TouchableOpacity>
     );
@@ -285,7 +276,7 @@ export default function SOPsScreen({ route }) {
         </View>
       ) : filtered.length === 0 ? (
         <View style={s.centerState}>
-          <Ionicons name="document-text-outline" size={44} color="#2a2a2a" />
+          <Ionicons name="document-text-outline" size={44} color={C.border} />
           <Text style={s.emptyText}>
             {sops.length === 0
               ? 'No SOPs yet — your supervisor will add them here'
@@ -319,9 +310,9 @@ const s = StyleSheet.create({
 
   offlineBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: '#1c1400', borderRadius: 99,
+    backgroundColor: 'rgba(45,225,201,0.08)', borderRadius: 99,
     paddingHorizontal: 8, paddingVertical: 3,
-    borderWidth: 1, borderColor: '#78350f',
+    borderWidth: 1, borderColor: 'rgba(45,225,201,0.2)',
   },
   offlineText: { fontSize: 10, color: C.active, fontWeight: '600' },
 
@@ -346,17 +337,17 @@ const s = StyleSheet.create({
   filterPill:   {
     paddingHorizontal: 14, paddingVertical: 5,
     borderRadius: 99, borderWidth: 1,
-    borderColor: '#1A2535', backgroundColor: 'transparent',
+    borderColor: C.border, backgroundColor: 'transparent',
   },
   filterPillActive: {
-    backgroundColor: '#1c0e00', borderColor: C.active,
+    backgroundColor: 'rgba(45,225,201,0.08)', borderColor: C.active,
   },
   filterPillText:       { fontSize: 12, color: C.muted, fontWeight: '600' },
   filterPillTextActive: { color: C.active },
 
   // States
   centerState: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 14, paddingHorizontal: 40 },
-  emptyText:   { fontSize: 14, color: '#444', textAlign: 'center', lineHeight: 21 },
+  emptyText:   { fontSize: 14, color: C.muted, textAlign: 'center', lineHeight: 21 },
 
   // List
   list: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 24 },
@@ -382,18 +373,18 @@ const s = StyleSheet.create({
   deptBadgeText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.4 },
   cardDate:  { fontSize: 11, color: C.muted },
   cardTitle: { fontSize: 16, fontWeight: '700', color: C.text, marginBottom: 5 },
-  cardDesc:  { fontSize: 13, color: '#666', lineHeight: 18, marginBottom: 8 },
+  cardDesc:  { fontSize: 13, color: C.muted, lineHeight: 18, marginBottom: 8 },
   cardFooter: {
     flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4,
   },
   cardSteps: { fontSize: 12, color: C.muted },
   pdfChip: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: '#1e2a3a', borderRadius: 6,
+    backgroundColor: 'rgba(167,139,250,0.08)', borderRadius: 6,
     paddingHorizontal: 7, paddingVertical: 2,
-    borderWidth: 1, borderColor: '#1e3a5f',
+    borderWidth: 1, borderColor: 'rgba(167,139,250,0.2)',
   },
-  pdfChipText: { fontSize: 10, color: '#60a5fa', fontWeight: '600' },
+  pdfChipText: { fontSize: 10, color: '#A78BFA', fontWeight: '600' },
 
   // Detail
   backRow: {
@@ -435,8 +426,8 @@ const s = StyleSheet.create({
   },
   stepNumCol: {
     width: 28, height: 28, borderRadius: 14,
-    backgroundColor: '#1c0e00',
-    borderWidth: 1, borderColor: '#78350f',
+    backgroundColor: 'rgba(45,225,201,0.08)',
+    borderWidth: 1, borderColor: 'rgba(45,225,201,0.2)',
     justifyContent: 'center', alignItems: 'center',
     flexShrink: 0, marginTop: 1,
   },
@@ -446,16 +437,16 @@ const s = StyleSheet.create({
 
   warningBox: {
     flexDirection: 'row', alignItems: 'flex-start',
-    backgroundColor: '#1c1400',
-    borderRadius: 8, borderWidth: 1, borderColor: '#78350f',
+    backgroundColor: 'rgba(251,191,36,0.08)',
+    borderRadius: 8, borderWidth: 1, borderColor: 'rgba(251,191,36,0.2)',
     padding: 10, marginTop: 10,
   },
-  warningText: { fontSize: 12, color: '#fbbf24', lineHeight: 18, flex: 1 },
+  warningText: { fontSize: 12, color: '#FBBF24', lineHeight: 18, flex: 1 },
 
   pdfBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: '#1c0e00',
-    borderRadius: 12, borderWidth: 1, borderColor: '#78350f',
+    backgroundColor: 'rgba(45,225,201,0.08)',
+    borderRadius: 12, borderWidth: 1, borderColor: 'rgba(45,225,201,0.2)',
     padding: 14, marginTop: 20,
   },
   pdfBtnText: { fontSize: 14, color: C.active, fontWeight: '600', flex: 1 },

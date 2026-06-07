@@ -12,29 +12,15 @@ import { supabase } from '../lib/supabase';
 import { createImpediment, applyWorkOrderTag } from '../lib/innergy';
 import { getSyncStatus, setSyncStatus } from '../lib/syncQueue';
 import { getTenantId } from '../lib/tenant';
+import { T, STATUS_COLORS } from '../lib/theme';
 
-const C = {
-  bg:      '#07090F',
-  surface: '#0D1117',
-  input:   '#111620',
-  border:  '#1A2535',
-  text:    '#FFFFFF',
-  muted:   '#2D8A94',
-  accent:  '#00C5CC',
-  danger:  '#FF4444',
-  success: '#22c55e',
-  status: {
-    open:     { bg: '#1f0a0a', text: '#ef4444', border: '#450a0a' },
-    reviewed: { bg: '#0d1f3c', text: '#3b82f6', border: '#1e3a5f' },
-    resolved: { bg: '#0a1f10', text: '#22c55e', border: '#14532d' },
-  },
-};
+const C = { ...T, status: STATUS_COLORS };
 
 const STATUSES = ['open', 'reviewed', 'resolved'];
 const formatDate = (iso) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
 
 const StatusPill = ({ status }) => {
-  const st = C.status[status] ?? { bg: '#111620', text: '#555', border: '#1A2535' };
+  const st = C.status[status] ?? { bg: 'rgba(94,234,212,0.06)', text: '#9AAAA7', border: 'rgba(94,234,212,0.12)' };
   return (
     <View style={[styles.pill, { backgroundColor: st.bg, borderColor: st.border }]}>
       <Text style={[styles.pillText, { color: st.text }]}>{status.toUpperCase()}</Text>
@@ -112,12 +98,16 @@ export default function DamageScreen({ route }) {
 
   const updateStatus = async (id, status) => {
     setDamage(prev => prev.map(d => d.id === id ? { ...d, status } : d));
-    await supabase.from('damage_reports').update({ status }).eq('id', id);
+    try {
+      await supabase.from('damage_reports').update({ status }).eq('id', id);
+    } catch (_) {}
   };
 
   const archiveDamage = async (id) => {
     setDamage(prev => prev.filter(d => d.id !== id));
-    await supabase.from('damage_reports').update({ archived: true }).eq('id', id);
+    try {
+      await supabase.from('damage_reports').update({ archived: true }).eq('id', id);
+    } catch (_) {}
   };
 
   const handlePickPhoto = async () => {
@@ -319,7 +309,7 @@ const styles = StyleSheet.create({
   emptyWrap:   { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 60, gap: 12 },
   emptyText:   { color: C.muted, fontSize: 15 },
 
-  card: { backgroundColor: C.surface, borderRadius: 16, borderWidth: 1, borderColor: '#222', padding: 16, marginBottom: 10 },
+  card: { backgroundColor: C.surface, borderRadius: 16, borderWidth: 1, borderColor: C.border, padding: 16, marginBottom: 10 },
   cardTop:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   cardMain: { flex: 1, marginRight: 12 },
   cardTitle:{ fontSize: 16, fontWeight: '700', color: C.text, marginBottom: 4 },
@@ -333,7 +323,7 @@ const styles = StyleSheet.create({
   actionBtn:     { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, backgroundColor: C.input, borderWidth: 1, borderColor: C.border },
   actionBtnText: { fontSize: 12, color: C.muted, fontWeight: '600' },
 
-  photoThumb: { width: '100%', height: 160, borderRadius: 10, marginTop: 10, backgroundColor: '#111620' },
+  photoThumb: { width: '100%', height: 160, borderRadius: 10, marginTop: 10, backgroundColor: C.input },
 
   fab: {
     position: 'absolute', bottom: 28, right: 20,
@@ -344,7 +334,7 @@ const styles = StyleSheet.create({
 
   toast:          { position: 'absolute', bottom: 100, left: 20, right: 20, backgroundColor: C.success, borderRadius: 10, paddingVertical: 12, paddingHorizontal: 18, alignItems: 'center' },
   toastError:     { backgroundColor: C.danger },
-  toastText:      { color: '#0a1f10', fontWeight: '700', fontSize: 14 },
+  toastText:      { color: '#001a0d', fontWeight: '700', fontSize: 14 },
   toastTextError: { color: '#fff' },
 
   modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.75)' },

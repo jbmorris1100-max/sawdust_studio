@@ -4,16 +4,7 @@ import {
   SafeAreaView, StatusBar, Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-
-const C = {
-  bg:      '#07090F',
-  surface: '#0D1117',
-  border:  '#1A2535',
-  text:    '#FFFFFF',
-  muted:   '#2D8A94',
-  accent:  '#00C5CC',
-  danger:  '#FF4444',
-};
+import { T as C } from '../lib/theme';
 
 export default function TrialExpiredScreen({ shopName }) {
   return (
@@ -34,14 +25,14 @@ export default function TrialExpiredScreen({ shopName }) {
         </Text>
 
         <View style={styles.priceCard}>
-          <Text style={styles.price}>$299</Text>
+          <Text style={styles.price}>$399</Text>
           <Text style={styles.period}>/month</Text>
           <Text style={styles.priceNote}>Unlimited crew · All features · Cancel anytime</Text>
         </View>
 
         <TouchableOpacity
           style={styles.subscribeBtn}
-          onPress={() => Linking.openURL('https://inline.io/subscribe')}
+          onPress={() => Linking.openURL('https://inlineiq.app/subscribe')}
           activeOpacity={0.85}
         >
           <Text style={styles.subscribeBtnText}>Subscribe Now</Text>
@@ -50,7 +41,7 @@ export default function TrialExpiredScreen({ shopName }) {
 
         <TouchableOpacity
           style={styles.contactBtn}
-          onPress={() => Linking.openURL('mailto:hello@inline.io')}
+          onPress={() => Linking.openURL('mailto:hello@inlineiq.app')}
           activeOpacity={0.8}
         >
           <Text style={styles.contactBtnText}>Contact Us</Text>
@@ -103,8 +94,8 @@ const styles = StyleSheet.create({
 
   banner: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#1f0a0a', paddingVertical: 10, paddingHorizontal: 16,
-    borderBottomWidth: 1, borderBottomColor: '#450a0a',
+    backgroundColor: 'rgba(248,113,113,0.08)', paddingVertical: 10, paddingHorizontal: 16,
+    borderBottomWidth: 1, borderBottomColor: 'rgba(248,113,113,0.2)',
   },
   bannerText: { color: C.danger, fontSize: 12, fontWeight: '600', flex: 1 },
 });

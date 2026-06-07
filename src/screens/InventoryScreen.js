@@ -11,23 +11,9 @@ import { supabase } from '../lib/supabase';
 import { createImpediment, applyWorkOrderTag } from '../lib/innergy';
 import { getSyncStatus, setSyncStatus } from '../lib/syncQueue';
 import { getTenantId } from '../lib/tenant';
+import { T, STATUS_COLORS } from '../lib/theme';
 
-const C = {
-  bg:      '#07090F',
-  surface: '#0D1117',
-  input:   '#111620',
-  border:  '#1A2535',
-  text:    '#FFFFFF',
-  muted:   '#2D8A94',
-  accent:  '#00C5CC',
-  success: '#22c55e',
-  status: {
-    pending:   { bg: '#062022', text: '#00C5CC', border: '#0E4F52' },
-    ordered:   { bg: '#0d1f3c', text: '#3b82f6', border: '#1e3a5f' },
-    received:  { bg: '#0a1f10', text: '#22c55e', border: '#14532d' },
-    cancelled: { bg: '#1a1a1a', text: '#555555', border: '#2a2a2a' },
-  },
-};
+const C = { ...T, status: STATUS_COLORS };
 
 const STATUSES = ['pending', 'ordered', 'received', 'cancelled'];
 const formatDate = (iso) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
@@ -96,7 +82,9 @@ export default function InventoryScreen({ route }) {
 
   const updateStatus = async (id, status) => {
     setNeeds(prev => prev.map(n => n.id === id ? { ...n, status } : n));
-    await supabase.from('inventory_needs').update({ status }).eq('id', id);
+    try {
+      await supabase.from('inventory_needs').update({ status }).eq('id', id);
+    } catch (_) {}
   };
 
   const showToast = (msg, error = false) => {
@@ -253,17 +241,17 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 20, fontWeight: '800', color: C.text, letterSpacing: -0.3 },
   headerSub:   { fontSize: 13, color: C.muted },
   headerRight: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerBadge: { backgroundColor: '#062022', borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: '#0E4F52' },
+  headerBadge: { backgroundColor: 'rgba(45,225,201,0.08)', borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: 'rgba(45,225,201,0.2)' },
   headerBadgeText: { fontSize: 11, fontWeight: '700', color: C.accent },
   syncDot:   { width: 8, height: 8, borderRadius: 4 },
   syncGreen: { backgroundColor: C.success },
-  syncRed:   { backgroundColor: '#ef4444' },
+  syncRed:   { backgroundColor: '#F87171' },
 
   listContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 100, flexGrow: 1 },
   emptyWrap:   { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 60, gap: 12 },
   emptyText:   { color: C.muted, fontSize: 15 },
 
-  card: { backgroundColor: C.surface, borderRadius: 16, borderWidth: 1, borderColor: '#222', padding: 16, marginBottom: 10 },
+  card: { backgroundColor: C.surface, borderRadius: 16, borderWidth: 1, borderColor: C.border, padding: 16, marginBottom: 10 },
   cardTop:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   cardMain: { flex: 1, marginRight: 12 },
   cardTitle:{ fontSize: 16, fontWeight: '700', color: C.text, marginBottom: 4 },
@@ -284,7 +272,7 @@ const styles = StyleSheet.create({
   },
 
   toast: { position: 'absolute', bottom: 100, left: 20, right: 20, backgroundColor: C.success, borderRadius: 10, paddingVertical: 12, paddingHorizontal: 18, alignItems: 'center' },
-  toastError: { backgroundColor: '#ef4444' },
+  toastError: { backgroundColor: '#F87171' },
   toastText:      { color: '#0a1f10', fontWeight: '700', fontSize: 14 },
   toastTextError: { color: '#fff' },
 

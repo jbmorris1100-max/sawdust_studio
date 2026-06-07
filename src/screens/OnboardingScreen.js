@@ -13,18 +13,9 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import InlineIQLogo from '../components/InlineIQLogo';
+import { T as C } from '../lib/theme';
 
 const STORAGE_KEY_NAME = '@inline_user_name';
-
-const C = {
-  bg:      '#07090F',
-  surface: '#0D1117',
-  input:   '#111620',
-  border:  '#1A2535',
-  text:    '#FFFFFF',
-  muted:   '#2D8A94',
-  accent:  '#00C5CC',
-};
 
 const BULLETS = [
   { icon: 'time-outline',        text: 'Clock in when your shift starts' },
@@ -127,7 +118,7 @@ const styles = StyleSheet.create({
     backgroundColor: C.surface,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#1e1e1e',
+    borderColor: C.border,
     padding: 16,
     marginBottom: 32,
     gap: 14,

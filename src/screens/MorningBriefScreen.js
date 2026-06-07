@@ -12,18 +12,8 @@ import {
 } from '../lib/innergy';
 import { getTenant } from '../lib/tenant';
 
-const C = {
-  bg:      '#07090F',
-  surface: '#0D1117',
-  border:  '#1A2535',
-  text:    '#FFFFFF',
-  muted:   '#2D8A94',
-  accent:  '#00C5CC',
-  success: '#22c55e',
-  danger:  '#ef4444',
-  blue:    '#3b82f6',
-  orange:  '#f97316',
-};
+import { T } from '../lib/theme';
+const C = { ...T, blue: T.violet, orange: T.amber };
 
 function SectionHeader({ icon, label, count, color }) {
   return (
@@ -298,7 +288,7 @@ const styles = StyleSheet.create({
 
   connectBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: '#0d1f3c', borderRadius: 99, borderWidth: 1, borderColor: '#1e3a5f',
+    backgroundColor: 'rgba(167,139,250,0.08)', borderRadius: 99, borderWidth: 1, borderColor: 'rgba(167,139,250,0.2)',
     paddingHorizontal: 10, paddingVertical: 5,
   },
   connectBadgeText: { fontSize: 10, color: C.blue, fontWeight: '700' },
@@ -315,7 +305,7 @@ const styles = StyleSheet.create({
   countBadgeText: { fontSize: 10, fontWeight: '800' },
 
   briefCard: {
-    backgroundColor: C.surface, borderRadius: 12, borderWidth: 1, borderColor: '#222',
+    backgroundColor: C.surface, borderRadius: 12, borderWidth: 1, borderColor: C.border,
     borderLeftWidth: 3, borderLeftColor: C.border,
     paddingHorizontal: 14, paddingVertical: 10, marginBottom: 6,
   },

@@ -16,6 +16,7 @@ import {
 import { setSyncStatus, getSyncStatus } from '../lib/syncQueue';
 import { clockOutEmployee } from '../lib/clockOut';
 import { getTenantId } from '../lib/tenant';
+import { T } from '../lib/theme';
 
 const CURRENT_TASK_KEY = '@inline_current_task';
 const RECENT_JOBS_KEY  = '@inline_recent_jobs';
@@ -27,19 +28,7 @@ const GENERIC_ACTIVITIES = [
   'Receiving',         'Warranty / Repair',
 ];
 
-const C = {
-  bg:      '#07090F',
-  surface: '#0D1117',
-  input:   '#111620',
-  border:  '#1A2535',
-  text:    '#FFFFFF',
-  muted:   '#2D8A94',
-  accent:  '#00C5CC',
-  success: '#22c55e',
-  danger:  '#FF4444',
-  pink:    '#f9a8d4',
-  pinkBg:  '#500724',
-};
+const C = { ...T, pink: T.violet, pinkBg: T.violetBg };
 
 function padTime(n) { return String(n).padStart(2, '0'); }
 
@@ -171,7 +160,7 @@ export default function CraftsmanHomeScreen({ route }) {
         endTime,
       });
       if (!result) innergyOk = false;
-      await applyWorkOrderTag(woId, 'App: In Production').catch(() => {});
+      try { await applyWorkOrderTag(woId, 'App: In Production'); } catch (_) {}
     } else {
       innergyOk = false;
     }
@@ -190,8 +179,7 @@ export default function CraftsmanHomeScreen({ route }) {
       dept:           'Craftsman',
       sync_status:    innergyOk ? 'synced' : 'pending',
       ...(tenantId && { tenant_id: tenantId }),
-    }).catch(() => {});
-
+    });
     await setSyncStatus(innergyOk);
     setSyncOk(innergyOk);
     return { jobName, ms, innergyOk };
@@ -436,11 +424,11 @@ const styles = StyleSheet.create({
   syncRed:   { backgroundColor: C.danger },
   switchDeptBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
-    backgroundColor: '#00C5CC18', borderRadius: 8,
+    backgroundColor: 'rgba(45,225,201,0.08)', borderRadius: 8,
     paddingHorizontal: 8, paddingVertical: 5,
-    borderWidth: 1, borderColor: '#00C5CC40',
+    borderWidth: 1, borderColor: 'rgba(45,225,201,0.25)',
   },
-  switchDeptText: { fontSize: 11, fontWeight: '700', color: '#00C5CC' },
+  switchDeptText: { fontSize: 11, fontWeight: '700', color: C.accent },
 
   body:   { flex: 1, paddingHorizontal: 20, justifyContent: 'center', gap: 24 },
   footer: { paddingHorizontal: 20, paddingBottom: 20, paddingTop: 8 },
@@ -456,7 +444,7 @@ const styles = StyleSheet.create({
 
   // Confirm
   confirmBanner: {
-    backgroundColor: '#0a1f10', borderRadius: 12, borderWidth: 1, borderColor: '#14532d',
+    backgroundColor: 'rgba(52,211,153,0.08)', borderRadius: 12, borderWidth: 1, borderColor: 'rgba(52,211,153,0.3)',
     paddingVertical: 12, paddingHorizontal: 16, alignItems: 'center',
   },
   confirmBannerText: { color: C.success, fontSize: 15, fontWeight: '700', textAlign: 'center' },
@@ -472,8 +460,8 @@ const styles = StyleSheet.create({
   // Switch banner
   switchBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#062022', paddingVertical: 8, paddingHorizontal: 16,
-    borderBottomWidth: 1, borderBottomColor: '#0E4F52',
+    backgroundColor: 'rgba(45,225,201,0.08)', paddingVertical: 8, paddingHorizontal: 16,
+    borderBottomWidth: 1, borderBottomColor: 'rgba(45,225,201,0.2)',
   },
   switchBannerText: { color: C.success, fontSize: 12, fontWeight: '600', flex: 1 },
 
@@ -499,7 +487,7 @@ const styles = StyleSheet.create({
   // End Day
   endDayBtn: {
     alignItems: 'center', paddingVertical: 14, borderRadius: 14,
-    backgroundColor: C.surface, borderWidth: 1, borderColor: '#333',
+    backgroundColor: C.surface, borderWidth: 1, borderColor: C.border,
   },
   endDayText: { color: C.muted, fontSize: 14, fontWeight: '600' },
 

@@ -18,18 +18,7 @@ import { getTenantId } from '../lib/tenant';
 const CURRENT_TASK_KEY = '@inline_current_task';
 const JOB_NUM_RE       = /^P-\d{2}-\d{4}$/i;
 
-const C = {
-  bg:            '#07090F',
-  surface:       '#0D1117',
-  input:         '#111620',
-  border:        '#1A2535',
-  text:          '#FFFFFF',
-  muted:         '#2D8A94',
-  accent:        '#00C5CC',
-  success:       '#22c55e',
-  successBg:     '#0a1f10',
-  successBorder: '#14532d',
-};
+import { T as C } from '../lib/theme';
 
 const VIEWFINDER = 240;
 const C_SIZE     = 24;
@@ -190,7 +179,7 @@ export default function PartsScreen({ route }) {
         status:     'In Production',
         notes:      ctx?.workOrderName || null,
         ...(tenantId && { tenant_id: tenantId }),
-      }).catch(() => {});
+      });
 
       await setSyncStatus(innergyOk);
       setSyncOk(innergyOk);
@@ -335,7 +324,7 @@ const s = StyleSheet.create({
   headerSub:   { fontSize: 13, color: C.muted },
   syncDot:     { width: 8, height: 8, borderRadius: 4 },
   syncGreen:   { backgroundColor: C.success },
-  syncRed:     { backgroundColor: '#ef4444' },
+  syncRed:     { backgroundColor: C.danger },
 
   cameraWrap: {
     flex: 1,
