@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
 import { useSession } from '@/lib/useSession';
-import { trialDaysLeft, getDepartments } from '@/lib/auth';
+import { trialDaysLeft, getDepartments, planLabel as planLabelFor, isPaidPlan, PLAN_DISPLAY } from '@/lib/auth';
 import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
 import ReportsTab from './ReportsTab';
 import SetupWizard from './SetupWizard';
@@ -389,11 +389,29 @@ function Spinner() {
 }
 
 function TrialBanner({ days }: { days: number }) {
+  // In the last stretch of the trial, switch to a stronger upgrade prompt.
+  const urgent = days <= 5;
   return (
-    <div style={{ position: 'sticky', top: 64, zIndex: 50, background: 'rgba(251,191,36,0.06)', borderBottom: '1px solid rgba(251,191,36,0.25)', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+    <div style={{ position: 'sticky', top: 64, zIndex: 50, background: 'rgba(251,191,36,0.06)', borderBottom: '1px solid rgba(251,191,36,0.25)', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
       <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinecap="round"><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-      <span style={{ fontSize: 13, color: '#FBBF24' }}><b>{days} day{days !== 1 ? 's' : ''}</b> left in trial —</span>
-      <Link href="/pricing" style={{ fontSize: 13, fontWeight: 700, color: '#FBBF24', textDecoration: 'underline' }}>Upgrade</Link>
+      <span style={{ fontSize: 13, color: '#FBBF24' }}>
+        <b>{days} day{days !== 1 ? 's' : ''}</b> left in trial{urgent ? ' — upgrade now to keep your shop running' : ' —'}
+      </span>
+      <Link href="/pricing" style={{ fontSize: 13, fontWeight: 700, color: '#FBBF24', textDecoration: 'underline' }}>
+        {urgent ? 'Choose a plan' : 'Upgrade'}
+      </Link>
+    </div>
+  );
+}
+
+function PastDueBanner({ onManage, busy }: { onManage: () => void; busy: boolean }) {
+  return (
+    <div style={{ position: 'sticky', top: 64, zIndex: 50, background: 'rgba(248,113,113,0.08)', borderBottom: '1px solid rgba(248,113,113,0.3)', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
+      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+      <span style={{ fontSize: 13, color: '#F87171' }}>Payment failed — update billing to continue using InlineIQ</span>
+      <button onClick={onManage} disabled={busy} style={{ fontSize: 13, fontWeight: 700, color: '#F87171', background: 'transparent', border: '1px solid rgba(248,113,113,0.4)', borderRadius: 6, padding: '4px 12px', cursor: busy ? 'wait' : 'pointer', fontFamily: 'inherit', opacity: busy ? 0.6 : 1 }}>
+        {busy ? 'Opening…' : 'Update billing'}
+      </button>
     </div>
   );
 }
@@ -757,6 +775,7 @@ export default function SupervisorPage() {
 
   // Toast
   const [toast,     setToast]     = useState<{ msg: string; error?: boolean } | null>(null);
+  const [billingBusy, setBillingBusy] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = useCallback((msg: string, error = false) => {
@@ -2242,6 +2261,51 @@ export default function SupervisorPage() {
     window.location.replace('/');
   };
 
+  // ── Billing actions ─────────────────────────────────────────────────────────
+  // Open the Stripe customer portal (manage card / invoices / cancel). Posts the
+  // current access token; opens the returned URL in a new tab.
+  const openBillingPortal = useCallback(async () => {
+    if (!tenant) return;
+    setBillingBusy(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { showToast('Please sign in again', true); return; }
+      const res = await fetch('/app/api/stripe/portal', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ tenant_id: tenant.id }),
+      });
+      const json = await res.json() as { url?: string; error?: string };
+      if (!res.ok || !json.url) throw new Error(json.error ?? 'Could not open billing');
+      window.open(json.url, '_blank', 'noopener');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not open billing', true);
+    } finally {
+      setBillingBusy(false);
+    }
+  }, [tenant, showToast]);
+
+  // Start (or change to) a paid plan via Stripe Checkout.
+  const startCheckout = useCallback(async (tier: 'shop' | 'operations', billing: 'monthly' | 'annual') => {
+    if (!tenant) return;
+    setBillingBusy(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { showToast('Please sign in again', true); return; }
+      const res = await fetch('/app/api/stripe/checkout', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ tier, billing, tenant_id: tenant.id }),
+      });
+      const json = await res.json() as { url?: string; error?: string };
+      if (!res.ok || !json.url) throw new Error(json.error ?? 'Could not start checkout');
+      window.location.assign(json.url);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not start checkout', true);
+      setBillingBusy(false);
+    }
+  }, [tenant, showToast]);
+
   // These must be above the early return so useMemo is never called conditionally
   const openNeeds  = needs.filter((n)  => !['resolved', 'closed', 'received', 'cancelled'].includes((n.status  ?? 'open').toLowerCase()));
   const openDamage = damage.filter((d) => !['resolved', 'closed'].includes((d.status ?? 'open').toLowerCase()));
@@ -2296,6 +2360,7 @@ export default function SupervisorPage() {
   if (sessionLoading) return <Spinner />;
 
   const isTrial = tenant?.subscription_status === 'trial';
+  const isPastDue = tenant?.subscription_status === 'past_due';
   const days = trialDaysLeft(tenant?.trial_ends_at ?? null);
 
   // True unread = crew messages (sender ≠ Supervisor) the supervisor hasn't opened yet
@@ -2374,6 +2439,7 @@ export default function SupervisorPage() {
         </div>
 
         {isTrial && <TrialBanner days={days} />}
+        {isPastDue && <PastDueBanner onManage={() => void openBillingPortal()} busy={billingBusy} />}
 
         <OfflineBanner tenantId={tenant?.id} onSynced={loadAll} />
 
@@ -4392,8 +4458,90 @@ export default function SupervisorPage() {
           )}
 
           {/* ── Settings tab ─────────────────────────────────────────────── */}
-          {tab === 'settings' && (
+          {tab === 'settings' && tenant && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 640 }}>
+              {/* ── Billing ───────────────────────────────────────────────── */}
+              {(() => {
+                const status = tenant.subscription_status;
+                const onTrial = status === 'trial';
+                const paid = isPaidPlan(tenant.plan ?? null);
+                const STATUS_BADGE: Record<string, { label: string; color: string; bg: string }> = {
+                  trial:     { label: 'Trial',     color: '#FBBF24', bg: 'rgba(251,191,36,0.12)' },
+                  active:    { label: 'Active',    color: '#5EEAD4', bg: 'rgba(94,234,212,0.12)' },
+                  past_due:  { label: 'Past Due',  color: '#F87171', bg: 'rgba(248,113,113,0.12)' },
+                  cancelled: { label: 'Cancelled', color: '#8BA5A0', bg: 'rgba(139,165,160,0.14)' },
+                  expired:   { label: 'Expired',   color: '#F87171', bg: 'rgba(248,113,113,0.12)' },
+                };
+                const badge = STATUS_BADGE[status] ?? STATUS_BADGE.trial;
+                const planName = planLabelFor(tenant.plan ?? null);
+                const priceStr = tenant.plan ? PLAN_DISPLAY[tenant.plan].price : 'Free trial';
+                const isOps = tenant.plan === 'operations_monthly' || tenant.plan === 'operations_annual';
+                const renewDate = tenant.current_period_end
+                  ? new Date(tenant.current_period_end).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                  : null;
+                const trialDate = tenant.trial_ends_at
+                  ? new Date(tenant.trial_ends_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                  : null;
+                return (
+                  <div className="portal-card">
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Billing</div>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: badge.color, background: badge.bg, padding: '3px 9px', borderRadius: 6 }}>{badge.label}</span>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 8 }}>
+                      <span style={{ fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>{planName}</span>
+                      <span style={{ fontSize: 13, color: 'var(--ink-mute)' }}>{priceStr}</span>
+                    </div>
+
+                    <div style={{ fontSize: 13, color: 'var(--ink-dim)', marginTop: 6 }}>
+                      {onTrial && trialDate && <>Trial ends {trialDate} · <b>{days} day{days !== 1 ? 's' : ''} remaining</b></>}
+                      {!onTrial && paid && renewDate && (
+                        tenant.cancel_at_period_end
+                          ? <>Cancels on {renewDate}</>
+                          : <>Next billing date {renewDate}</>
+                      )}
+                      {status === 'past_due' && <span style={{ color: '#F87171' }}>Payment failed — update your billing info to continue.</span>}
+                    </div>
+
+                    {/* Actions for an existing paid subscription */}
+                    {paid && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
+                        <button onClick={() => void openBillingPortal()} disabled={billingBusy} className="btn btn-primary" style={{ padding: '0 18px', opacity: billingBusy ? 0.6 : 1, cursor: billingBusy ? 'wait' : 'pointer' }}>
+                          {billingBusy ? 'Opening…' : 'Manage billing'}
+                        </button>
+                        <button onClick={() => void openBillingPortal()} disabled={billingBusy} className="btn btn-ghost" style={{ padding: '0 18px' }}>View invoices</button>
+                        {!isOps && (
+                          <button onClick={() => void startCheckout('operations', PLAN_DISPLAY[tenant.plan!].billing ?? 'monthly')} disabled={billingBusy} className="btn btn-ghost" style={{ padding: '0 18px' }}>Upgrade to Operations</button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Actions while on trial — start a subscription early */}
+                    {onTrial && (
+                      <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
+                        <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginBottom: 12 }}>Start your subscription early to lock in your plan — you keep all {days} trial day{days !== 1 ? 's' : ''}.</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                          <button onClick={() => void startCheckout('shop', 'monthly')} disabled={billingBusy} className="btn btn-primary" style={{ padding: '0 18px', opacity: billingBusy ? 0.6 : 1, cursor: billingBusy ? 'wait' : 'pointer' }}>
+                            Shop — $599/mo
+                          </button>
+                          <button onClick={() => void startCheckout('operations', 'monthly')} disabled={billingBusy} className="btn btn-ghost" style={{ padding: '0 18px' }}>
+                            Operations — $799/mo
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Cancelled / expired — point back to pricing */}
+                    {!paid && !onTrial && (
+                      <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
+                        <Link href="/pricing" className="btn btn-primary" style={{ padding: '0 18px' }}>Choose a plan</Link>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               <div className="portal-card">
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 6 }}>Departments</div>
                 <p style={{ fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6, marginBottom: 16 }}>

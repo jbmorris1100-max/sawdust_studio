@@ -10,11 +10,13 @@
     "seed": "node scripts/seed-test-user.js"
   },
   "dependencies": {
+    "@stripe/stripe-js": "^9.7.0",
     "@supabase/supabase-js": "^2.105.3",
     "@zxing/library": "^0.23.0",
     "next": "16.2.6",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "stripe": "^22.2.0",
     "web-push": "^3.6.7"
   },
   "devDependencies": {

@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabase';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-type SubStatus = 'trial' | 'active' | 'cancelled' | 'expired' | null;
+type SubStatus = 'trial' | 'active' | 'past_due' | 'cancelled' | 'expired' | null;
 
 type AdminTenant = {
   id: string;
@@ -15,6 +15,11 @@ type AdminTenant = {
   subscription_status: SubStatus;
   trial_ends_at: string | null;
   created_at: string;
+  plan: string | null;
+  planLabel: string;
+  billingPeriod: 'Monthly' | 'Annual' | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean | null;
   lastActive: string | null;
   crewCount: number;
   jobCount: number;
@@ -112,8 +117,18 @@ const IcoBucket = ico(<><path d="M5 8l1.5 12a2 2 0 0 0 2 1.8h7a2 2 0 0 0 2-1.8L1
 const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
   trial:     { label: 'Trial',     color: '#FBBF24', bg: 'rgba(251,191,36,0.1)' },
   active:    { label: 'Active',    color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)' },
+  past_due:  { label: 'Past Due',  color: '#F87171', bg: 'rgba(248,113,113,0.1)' },
   expired:   { label: 'Expired',   color: '#F87171', bg: 'rgba(248,113,113,0.1)' },
   cancelled: { label: 'Cancelled', color: '#8BA5A0', bg: 'rgba(139,165,160,0.12)' },
+};
+
+// Plan badge palette — Operations stands out from Shop/Trial.
+const PLAN_BADGE: Record<string, { color: string; bg: string }> = {
+  Operations: { color: '#C4B5FD', bg: 'rgba(167,139,250,0.14)' },
+  Shop:       { color: '#5EEAD4', bg: 'rgba(94,234,212,0.1)' },
+  Trial:      { color: '#FBBF24', bg: 'rgba(251,191,36,0.1)' },
+  Cancelled:  { color: '#8BA5A0', bg: 'rgba(139,165,160,0.12)' },
+  Expired:    { color: '#F87171', bg: 'rgba(248,113,113,0.1)' },
 };
 
 function StatusBadge({ tenant }: { tenant: AdminTenant }) {
@@ -332,8 +347,10 @@ export default function AdminPage() {
                       <thead>
                         <tr style={{ textAlign: 'left', color: 'var(--ink-mute)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                           <th style={{ padding: '0 10px 10px 0', fontWeight: 600 }}>Shop</th>
+                          <th style={{ padding: '0 10px 10px', fontWeight: 600 }}>Plan</th>
                           <th style={{ padding: '0 10px 10px', fontWeight: 600 }}>Status</th>
-                          <th style={{ padding: '0 10px 10px', fontWeight: 600 }}>Trial Ends</th>
+                          <th style={{ padding: '0 10px 10px', fontWeight: 600 }}>Billing</th>
+                          <th style={{ padding: '0 10px 10px', fontWeight: 600 }}>Trial / Next Bill</th>
                           <th style={{ padding: '0 10px 10px', fontWeight: 600 }}>Age</th>
                           <th style={{ padding: '0 10px 10px', fontWeight: 600 }}>Last Active</th>
                           <th style={{ padding: '0 10px 10px', fontWeight: 600, textAlign: 'right' }}>Crew</th>
@@ -344,14 +361,21 @@ export default function AdminPage() {
                       <tbody>
                         {data.tenants.map((t) => {
                           const isTrial = (t.subscription_status ?? 'trial') === 'trial';
+                          const planMeta = PLAN_BADGE[t.planLabel] ?? PLAN_BADGE.Trial;
+                          // Trial → trial end; paid → next billing (current_period_end).
+                          const dateCell = isTrial ? fmtDate(t.trial_ends_at) : fmtDate(t.current_period_end);
                           return (
                             <tr key={t.id} style={{ borderTop: '1px solid var(--line)' }}>
                               <td style={{ padding: '12px 10px 12px 0' }}>
                                 <div style={{ fontWeight: 700, color: 'var(--ink)' }}>{t.shop_name ?? 'Unknown shop'}</div>
                                 <div style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{t.owner_email ?? '—'}</div>
                               </td>
+                              <td style={{ padding: '12px 10px' }}>
+                                <span style={{ fontSize: 11, fontWeight: 700, color: planMeta.color, background: planMeta.bg, padding: '3px 9px', borderRadius: 6, whiteSpace: 'nowrap' }}>{t.planLabel}</span>
+                              </td>
                               <td style={{ padding: '12px 10px' }}><StatusBadge tenant={t} /></td>
-                              <td style={{ padding: '12px 10px', color: 'var(--ink-dim)', whiteSpace: 'nowrap' }}>{isTrial ? fmtDate(t.trial_ends_at) : '—'}</td>
+                              <td style={{ padding: '12px 10px', color: 'var(--ink-dim)', whiteSpace: 'nowrap' }}>{t.billingPeriod ?? '—'}</td>
+                              <td style={{ padding: '12px 10px', color: 'var(--ink-dim)', whiteSpace: 'nowrap' }}>{dateCell}</td>
                               <td style={{ padding: '12px 10px', color: 'var(--ink-dim)', whiteSpace: 'nowrap' }}>{t.daysSinceSignup}d</td>
                               <td style={{ padding: '12px 10px', color: 'var(--ink-dim)', whiteSpace: 'nowrap' }}>{relative(t.lastActive)}</td>
                               <td style={{ padding: '12px 10px', textAlign: 'right', color: 'var(--ink-dim)' }}>{t.crewCount}</td>
@@ -378,7 +402,7 @@ export default function AdminPage() {
                           );
                         })}
                         {data.tenants.length === 0 && (
-                          <tr><td colSpan={8} style={{ padding: '24px 0', textAlign: 'center', color: 'var(--ink-mute)' }}>No tenants yet.</td></tr>
+                          <tr><td colSpan={10} style={{ padding: '24px 0', textAlign: 'center', color: 'var(--ink-mute)' }}>No tenants yet.</td></tr>
                         )}
                       </tbody>
                     </table>

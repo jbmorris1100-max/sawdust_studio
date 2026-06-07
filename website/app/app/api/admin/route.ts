@@ -5,13 +5,42 @@ import { createClient } from '@supabase/supabase-js';
 // Reads ALL tenants + cross-tenant aggregates using the service role key.
 // Access is gated on the caller's email matching NEXT_PUBLIC_ADMIN_EMAIL.
 
+type PlanName =
+  | 'trial' | 'shop_monthly' | 'shop_annual'
+  | 'operations_monthly' | 'operations_annual'
+  | 'cancelled' | 'expired';
+
 type TenantRow = {
   id: string;
   shop_name: string | null;
   owner_email: string | null;
-  subscription_status: 'trial' | 'active' | 'cancelled' | 'expired' | null;
+  subscription_status: 'trial' | 'active' | 'past_due' | 'cancelled' | 'expired' | null;
   trial_ends_at: string | null;
   created_at: string;
+  plan: PlanName | null;
+  stripe_price_id: string | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean | null;
+};
+
+// Monthly recurring revenue contribution per plan (dollars). Annual plans use
+// their monthly-equivalent (annual total / 12).
+const PLAN_MRR: Record<string, number> = {
+  shop_monthly: 599,
+  shop_annual: 5990 / 12,
+  operations_monthly: 799,
+  operations_annual: 7990 / 12,
+};
+
+// Human label + billing period for the admin tenant table.
+const PLAN_INFO: Record<string, { label: string; billing: 'Monthly' | 'Annual' | null }> = {
+  trial:              { label: 'Trial',      billing: null },
+  shop_monthly:       { label: 'Shop',       billing: 'Monthly' },
+  shop_annual:        { label: 'Shop',       billing: 'Annual' },
+  operations_monthly: { label: 'Operations', billing: 'Monthly' },
+  operations_annual:  { label: 'Operations', billing: 'Annual' },
+  cancelled:          { label: 'Cancelled',  billing: null },
+  expired:            { label: 'Expired',    billing: null },
 };
 
 function adminDb() {
@@ -64,7 +93,7 @@ export async function GET(req: Request) {
     // ── Tenants ──────────────────────────────────────────────────────────────
     const { data: tenantsData, error: tErr } = await db
       .from('tenants')
-      .select('id, shop_name, owner_email, subscription_status, trial_ends_at, created_at')
+      .select('id, shop_name, owner_email, subscription_status, trial_ends_at, created_at, plan, stripe_price_id, current_period_end, cancel_at_period_end')
       .order('created_at', { ascending: false })
       .limit(1000);
     if (tErr) throw tErr;
@@ -114,26 +143,35 @@ export async function GET(req: Request) {
     } catch { /* jobs table optional */ }
 
     const now = Date.now();
-    const enriched = tenants.map((t) => ({
-      ...t,
-      lastActive: lastActive[t.id] ?? null,
-      crewCount: crewCount[t.id] ?? 0,
-      jobCount: jobCount[t.id] ?? 0,
-      clockCount: clockCount[t.id] ?? 0,
-      daysSinceSignup: Math.max(0, Math.floor((now - new Date(t.created_at).getTime()) / 86400000)),
-    }));
+    const enriched = tenants.map((t) => {
+      const info = PLAN_INFO[t.plan ?? 'trial'] ?? PLAN_INFO.trial;
+      return {
+        ...t,
+        planLabel: info.label,
+        billingPeriod: info.billing,
+        lastActive: lastActive[t.id] ?? null,
+        crewCount: crewCount[t.id] ?? 0,
+        jobCount: jobCount[t.id] ?? 0,
+        clockCount: clockCount[t.id] ?? 0,
+        daysSinceSignup: Math.max(0, Math.floor((now - new Date(t.created_at).getTime()) / 86400000)),
+      };
+    });
 
     // ── KPIs ──────────────────────────────────────────────────────────────────
     const isTrial = (t: TenantRow) => t.subscription_status === 'trial';
     const trialActive = (t: TenantRow) => isTrial(t) && !!t.trial_ends_at && new Date(t.trial_ends_at).getTime() > now;
     const trialExpired = (t: TenantRow) => isTrial(t) && (!t.trial_ends_at || new Date(t.trial_ends_at).getTime() < now);
+    // A paying tenant: active subscription on a non-trial plan.
+    const isActivePaid = (t: TenantRow) => t.subscription_status === 'active' && !!t.plan && t.plan !== 'trial';
+    // MRR sums the monthly-equivalent of every active paid plan.
+    const mrr = tenants.reduce((sum, t) => (isActivePaid(t) ? sum + (PLAN_MRR[t.plan as string] ?? 0) : sum), 0);
     const kpis = {
       totalShops: tenants.length,
       activeTrials: tenants.filter(trialActive).length,
       expiredTrials: tenants.filter(trialExpired).length,
-      activePaid: tenants.filter((t) => t.subscription_status === 'active').length,
+      activePaid: tenants.filter(isActivePaid).length,
       cancelled: tenants.filter((t) => t.subscription_status === 'cancelled').length,
-      mrr: 0, // placeholder until Stripe
+      mrr: Math.round(mrr),
     };
 
     // ── Activity feed (signups + upcoming trial expirations) ──────────────────

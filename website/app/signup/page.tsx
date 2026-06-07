@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useState } from 'react';
 import { Nav, Footer, BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
 
@@ -18,11 +18,23 @@ const PERKS = [
   'Full supervisor + crew apps',
   'QR scan + automatic time tracking',
   'AI Morning Brief from day one',
-  'No credit card required',
+  '30-day free trial',
 ];
 
-export default function SignupPage() {
+// Selected-plan copy keyed by ?plan & ?billing. Mirrors the pricing page tiers.
+const PLAN_COPY: Record<string, { monthly: string; annual: string; name: string }> = {
+  shop:       { name: 'InlineIQ Shop',       monthly: '$599/month',                  annual: '$499/month, billed annually' },
+  operations: { name: 'InlineIQ Operations', monthly: '$799/month',                  annual: '$665/month, billed annually' },
+};
+
+function SignupForm() {
   const router = useRouter();
+  const params = useSearchParams();
+  const plan = params.get('plan');               // 'shop' | 'operations' | null
+  const billing = params.get('billing') === 'annual' ? 'annual' : 'monthly';
+  const planCopy = plan ? PLAN_COPY[plan] : undefined;
+  const priceStr = planCopy ? (billing === 'annual' ? planCopy.annual : planCopy.monthly) : '';
+
   const [shop,     setShop]     = useState('');
   const [name,     setName]     = useState('');
   const [email,    setEmail]    = useState('');
@@ -51,29 +63,54 @@ export default function SignupPage() {
       }
 
       const userId = data.user?.id;
+      let tenantId: string | null = null;
 
       // 2. Create tenant row (use anon key — RLS allows insert when owner_user_id matches)
       //    Done before redirect so /app can always find the tenant
       if (userId) {
         const trialEndsAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
         const slug = shop.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-        await supabase.from('tenants').insert({
+        const { data: inserted } = await supabase.from('tenants').insert({
           shop_name:           shop,
           slug,
           erp_type:            'none',
           owner_email:         email,
           owner_user_id:       userId,
           subscription_status: 'trial',
+          plan:                'trial',
           trial_ends_at:       trialEndsAt,
-        });
+        }).select('id').single();
+        tenantId = inserted?.id ?? null;
       }
 
-      // 3. Redirect or show email-confirmation notice
+      // 3. If a plan was selected and we have a live session, go straight to
+      //    Stripe Checkout. Otherwise redirect or show the confirm-email notice.
+      if (data.session && plan && planCopy && tenantId) {
+        const res = await fetch('/app/api/stripe/checkout', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${data.session.access_token}` },
+          body: JSON.stringify({ tier: plan, billing, tenant_id: tenantId }),
+        });
+        const json = await res.json() as { url?: string; error?: string };
+        if (res.ok && json.url) {
+          window.location.assign(json.url);
+          return;
+        }
+        // Checkout setup failed — fall through into the app; they can start it
+        // from Settings → Billing.
+        router.replace('/app');
+        return;
+      }
+
       if (data.session) {
         // Email confirmation disabled → immediate session
         router.replace('/app');
       } else {
-        setNotice('Check your email to confirm your account, then sign in.');
+        setNotice(
+          plan
+            ? 'Check your email to confirm your account, then sign in to start your plan.'
+            : 'Check your email to confirm your account, then sign in.',
+        );
       }
     } catch {
       setError('Something went wrong. Please try again.');
@@ -83,131 +120,154 @@ export default function SignupPage() {
   };
 
   return (
+    <main style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '60px 20px' }}>
+      <div className="signup-grid">
+        {/* Left — value prop */}
+        <div style={{ paddingTop: 8 }}>
+          <LogoMark size={40} />
+          <h2 style={{ marginTop: 20, fontSize: 30, lineHeight: 1.15 }}>
+            Start your free<br /><span style={{ color: 'var(--teal)' }}>30-day trial.</span>
+          </h2>
+          <p style={{ marginTop: 16, fontSize: 16, lineHeight: 1.65 }}>
+            Get the full InlineIQ system in your shop today. Every scan, every minute, every dollar — tracked from the moment crew walks in.
+          </p>
+          <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 14, marginTop: 32 }}>
+            {PERKS.map((p) => (
+              <li key={p} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: 'var(--ink-dim)' }}>
+                <span style={{ color: 'var(--teal)', flexShrink: 0 }}><CheckIcon /></span>
+                {p}
+              </li>
+            ))}
+          </ul>
+          <div style={{ marginTop: 40, padding: '20px', background: 'rgba(94,234,212,0.04)', border: '1px solid var(--line)', borderRadius: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--teal-dim)', marginBottom: 8 }}>After your trial</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--ink)', letterSpacing: '-0.02em' }}>
+              $599 <span style={{ fontSize: 14, color: 'var(--ink-mute)', fontWeight: 400 }}>/ shop / month</span>
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 4 }}>Shop plan — up to 15 crew. Operations for unlimited.</div>
+          </div>
+        </div>
+
+        {/* Right — form */}
+        <div style={{
+          background: 'var(--bg-1)', border: '1px solid var(--line-strong)',
+          borderRadius: 16, padding: '32px 28px',
+          display: 'flex', flexDirection: 'column', gap: 20,
+        }}>
+          <div>
+            <h3 style={{ fontSize: 18 }}>Create your account</h3>
+            <p style={{ fontSize: 13, marginTop: 4 }}>30-day free trial. Cancel anytime.</p>
+          </div>
+
+          {/* Selected-plan banner */}
+          {planCopy && (
+            <div style={{
+              padding: '12px 14px', borderRadius: 8,
+              background: 'rgba(94,234,212,0.06)', border: '1px solid var(--line-strong)',
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--teal)' }}>
+                You selected: {planCopy.name} — {priceStr}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>
+                30-day free trial, then {priceStr}.
+              </div>
+            </div>
+          )}
+
+          {notice && (
+            <div style={{
+              padding: '12px 14px', borderRadius: 8,
+              background: 'rgba(94,234,212,0.06)', border: '1px solid var(--line-strong)',
+              fontSize: 13, color: 'var(--teal)',
+            }}>
+              {notice}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div className="form-field">
+              <label className="form-label" htmlFor="shop">Shop name</label>
+              <input
+                id="shop" className="form-input" type="text"
+                placeholder="e.g. Morris Custom Woodworks"
+                value={shop} onChange={(e) => setShop(e.target.value)} required
+              />
+            </div>
+
+            <div className="form-field">
+              <label className="form-label" htmlFor="name">Your name</label>
+              <input
+                id="name" className="form-input" type="text"
+                placeholder="Jake Morris"
+                value={name} onChange={(e) => setName(e.target.value)}
+                autoComplete="name" required
+              />
+            </div>
+
+            <div className="form-field">
+              <label className="form-label" htmlFor="email">Work email</label>
+              <input
+                id="email" className="form-input" type="email"
+                placeholder="jake@yourshop.com"
+                value={email} onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email" required
+              />
+            </div>
+
+            <div className="form-field">
+              <label className="form-label" htmlFor="password">Password</label>
+              <input
+                id="password" className="form-input" type="password"
+                placeholder="8+ characters"
+                value={password} onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password" minLength={8} required
+              />
+            </div>
+
+            {error && (
+              <div style={{
+                padding: '10px 14px', borderRadius: 8,
+                background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.2)',
+                fontSize: 13, color: 'var(--danger)',
+              }}>
+                {error}
+              </div>
+            )}
+
+            <button
+              type="submit" className="btn btn-primary"
+              style={{ width: '100%', justifyContent: 'center', marginTop: 8, opacity: loading ? 0.7 : 1 }}
+              disabled={loading}
+            >
+              {loading ? 'Creating account…' : 'Start free trial'}
+            </button>
+
+            <p style={{ fontSize: 12, color: 'var(--ink-mute)', textAlign: 'center', lineHeight: 1.55 }}>
+              By creating an account you agree to our{' '}
+              <Link href="/terms" style={{ color: 'var(--teal-dim)' }}>Terms of Service</Link>{' '}and{' '}
+              <Link href="/privacy" style={{ color: 'var(--teal-dim)' }}>Privacy Policy</Link>.
+            </p>
+          </form>
+
+          <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--ink-mute)', paddingTop: 4, borderTop: '1px solid var(--line)' }}>
+            Already have an account?{' '}
+            <Link href="/login" style={{ color: 'var(--teal)', fontWeight: 600 }}>Sign in</Link>
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+export default function SignupPage() {
+  return (
     <>
       <BgLayers />
       <div style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
         <Nav />
-        <main style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '60px 20px' }}>
-          <div className="signup-grid">
-            {/* Left — value prop */}
-            <div style={{ paddingTop: 8 }}>
-              <LogoMark size={40} />
-              <h2 style={{ marginTop: 20, fontSize: 30, lineHeight: 1.15 }}>
-                Start your free<br /><span style={{ color: 'var(--teal)' }}>30-day trial.</span>
-              </h2>
-              <p style={{ marginTop: 16, fontSize: 16, lineHeight: 1.65 }}>
-                Get the full InlineIQ system in your shop today. Every scan, every minute, every dollar — tracked from the moment crew walks in.
-              </p>
-              <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 14, marginTop: 32 }}>
-                {PERKS.map((p) => (
-                  <li key={p} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: 'var(--ink-dim)' }}>
-                    <span style={{ color: 'var(--teal)', flexShrink: 0 }}><CheckIcon /></span>
-                    {p}
-                  </li>
-                ))}
-              </ul>
-              <div style={{ marginTop: 40, padding: '20px', background: 'rgba(94,234,212,0.04)', border: '1px solid var(--line)', borderRadius: 12 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--teal-dim)', marginBottom: 8 }}>After your trial</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--ink)', letterSpacing: '-0.02em' }}>
-                  $599 <span style={{ fontSize: 14, color: 'var(--ink-mute)', fontWeight: 400 }}>/ shop / month</span>
-                </div>
-                <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 4 }}>Shop plan — up to 15 crew. Operations for unlimited.</div>
-              </div>
-            </div>
-
-            {/* Right — form */}
-            <div style={{
-              background: 'var(--bg-1)', border: '1px solid var(--line-strong)',
-              borderRadius: 16, padding: '32px 28px',
-              display: 'flex', flexDirection: 'column', gap: 20,
-            }}>
-              <div>
-                <h3 style={{ fontSize: 18 }}>Create your account</h3>
-                <p style={{ fontSize: 13, marginTop: 4 }}>No credit card. Cancel anytime.</p>
-              </div>
-
-              {notice && (
-                <div style={{
-                  padding: '12px 14px', borderRadius: 8,
-                  background: 'rgba(94,234,212,0.06)', border: '1px solid var(--line-strong)',
-                  fontSize: 13, color: 'var(--teal)',
-                }}>
-                  {notice}
-                </div>
-              )}
-
-              <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                <div className="form-field">
-                  <label className="form-label" htmlFor="shop">Shop name</label>
-                  <input
-                    id="shop" className="form-input" type="text"
-                    placeholder="e.g. Morris Custom Woodworks"
-                    value={shop} onChange={(e) => setShop(e.target.value)} required
-                  />
-                </div>
-
-                <div className="form-field">
-                  <label className="form-label" htmlFor="name">Your name</label>
-                  <input
-                    id="name" className="form-input" type="text"
-                    placeholder="Jake Morris"
-                    value={name} onChange={(e) => setName(e.target.value)}
-                    autoComplete="name" required
-                  />
-                </div>
-
-                <div className="form-field">
-                  <label className="form-label" htmlFor="email">Work email</label>
-                  <input
-                    id="email" className="form-input" type="email"
-                    placeholder="jake@yourshop.com"
-                    value={email} onChange={(e) => setEmail(e.target.value)}
-                    autoComplete="email" required
-                  />
-                </div>
-
-                <div className="form-field">
-                  <label className="form-label" htmlFor="password">Password</label>
-                  <input
-                    id="password" className="form-input" type="password"
-                    placeholder="8+ characters"
-                    value={password} onChange={(e) => setPassword(e.target.value)}
-                    autoComplete="new-password" minLength={8} required
-                  />
-                </div>
-
-                {error && (
-                  <div style={{
-                    padding: '10px 14px', borderRadius: 8,
-                    background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.2)',
-                    fontSize: 13, color: 'var(--danger)',
-                  }}>
-                    {error}
-                  </div>
-                )}
-
-                <button
-                  type="submit" className="btn btn-primary"
-                  style={{ width: '100%', justifyContent: 'center', marginTop: 8, opacity: loading ? 0.7 : 1 }}
-                  disabled={loading}
-                >
-                  {loading ? 'Creating account…' : 'Start free trial'}
-                </button>
-
-                <p style={{ fontSize: 12, color: 'var(--ink-mute)', textAlign: 'center', lineHeight: 1.55 }}>
-                  By creating an account you agree to our{' '}
-                  <Link href="/terms" style={{ color: 'var(--teal-dim)' }}>Terms of Service</Link>{' '}and{' '}
-                  <Link href="/privacy" style={{ color: 'var(--teal-dim)' }}>Privacy Policy</Link>.
-                </p>
-              </form>
-
-              <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--ink-mute)', paddingTop: 4, borderTop: '1px solid var(--line)' }}>
-                Already have an account?{' '}
-                <Link href="/login" style={{ color: 'var(--teal)', fontWeight: 600 }}>Sign in</Link>
-              </div>
-            </div>
-          </div>
-        </main>
+        <Suspense fallback={<div style={{ flex: 1 }} />}>
+          <SignupForm />
+        </Suspense>
         <Footer />
       </div>
     </>
