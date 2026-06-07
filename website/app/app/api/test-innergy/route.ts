@@ -22,7 +22,7 @@ export async function POST(req: Request) {
     });
 
     if (res.ok) {
-      return NextResponse.json({ success: true, message: 'Connected to Innergy — credentials valid ✓' });
+      return NextResponse.json({ success: true, message: 'Connected to Innergy — credentials valid' });
     }
     if (res.status === 401 || res.status === 403) {
       return NextResponse.json({ error: 'Authentication failed — check your API key' }, { status: 401 });

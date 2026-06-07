@@ -177,7 +177,14 @@ function SortTh({ label, col, sortCol, sortDir, onSort }: {
       ...thSt, cursor: 'pointer', userSelect: 'none',
       color: active ? 'var(--teal)' : 'var(--ink-mute)',
     }}>
-      {label}{active ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        {label}
+        {active && (
+          <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" style={{ transform: sortDir === 'asc' ? 'rotate(180deg)' : 'none' }}>
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        )}
+      </span>
     </th>
   );
 }
@@ -595,37 +602,48 @@ function JobCostReport({ tenantId, showToast, onGoToCrew }: Props) {
   }, [tenantId]);
 
   useEffect(() => {
-    supabase.from('jobs').select('id, job_number, job_name').eq('tenant_id', tenantId)
-      .order('created_at', { ascending: false }).limit(200)
-      .then(({ data }) => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase.from('jobs').select('id, job_number, job_name').eq('tenant_id', tenantId)
+          .order('created_at', { ascending: false }).limit(200);
+        if (cancelled) return;
         const rows = (data as JobRow[]) ?? [];
         setJobs(rows);
         if (rows[0]) setSelJob(rows[0].job_number);
-      });
+      } catch { /* jobs list load failed — leave empty */ }
+    })();
+    return () => { cancelled = true; };
   }, [tenantId]);
 
   useEffect(() => {
     if (!selJob) return;
     setLoading(true);
-    Promise.all([
-      supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
-        .eq('tenant_id', tenantId).eq('job_number', selJob).order('clock_in'),
-      supabase.from('parts_log').select('id, worker_name, job_number, part_name, dept, status, notes, created_at')
-        .eq('tenant_id', tenantId).eq('job_number', selJob).order('created_at'),
-      supabase.from('damage_reports').select('id, part_name, dept, notes, photo_url, status, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, created_at')
-        .eq('tenant_id', tenantId).eq('job_id', selJob).order('created_at'),
-      supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at')
-        .eq('tenant_id', tenantId).eq('job_number', selJob).order('created_at'),
-    ]).then(([c, p, d, n]) => {
-      setClock((c.data as ClockEntry[]) ?? []);
-      setParts((p.data as PartRow[]) ?? []);
-      setDamage((d.data as DamageRow[]) ?? []);
-      setNeeds((n.data as NeedRow[]) ?? []);
-      setLoading(false);
-    }).catch((err: unknown) => {
-      showToast(err instanceof Error ? err.message : 'Load failed', true);
-      setLoading(false);
-    });
+    let cancelled = false;
+    (async () => {
+      try {
+        const [c, p, d, n] = await Promise.all([
+          supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
+            .eq('tenant_id', tenantId).eq('job_number', selJob).order('clock_in'),
+          supabase.from('parts_log').select('id, worker_name, job_number, part_name, dept, status, notes, created_at')
+            .eq('tenant_id', tenantId).eq('job_number', selJob).order('created_at'),
+          supabase.from('damage_reports').select('id, part_name, dept, notes, photo_url, status, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, created_at')
+            .eq('tenant_id', tenantId).eq('job_id', selJob).order('created_at'),
+          supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at')
+            .eq('tenant_id', tenantId).eq('job_number', selJob).order('created_at'),
+        ]);
+        if (cancelled) return;
+        setClock((c.data as ClockEntry[]) ?? []);
+        setParts((p.data as PartRow[]) ?? []);
+        setDamage((d.data as DamageRow[]) ?? []);
+        setNeeds((n.data as NeedRow[]) ?? []);
+      } catch (err: unknown) {
+        if (!cancelled) showToast(err instanceof Error ? err.message : 'Load failed', true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [tenantId, selJob, showToast]);
 
   const workerTotals = useMemo(() => {
@@ -838,19 +856,28 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
 
   useEffect(() => {
     setLoading(true);
-    Promise.all([
-      supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
-        .eq('tenant_id', tenantId).gte('date', wkStart).lte('date', wkEnd).order('clock_in'),
-      supabase.from('damage_reports').select('id, part_name, dept, notes, photo_url, status, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, created_at')
-        .eq('tenant_id', tenantId),
-      supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at')
-        .eq('tenant_id', tenantId),
-    ]).then(([c, d, n]) => {
-      setClock((c.data as ClockEntry[]) ?? []);
-      setDamage(((d.data as DamageRow[]) ?? []).filter((r) => !['resolved', 'closed'].includes((r.status ?? '').toLowerCase())));
-      setNeeds(((n.data as NeedRow[]) ?? []).filter((r) => !['received', 'cancelled'].includes((r.status ?? '').toLowerCase())));
-      setLoading(false);
-    }).catch((err: unknown) => { showToast(err instanceof Error ? err.message : 'Load failed', true); setLoading(false); });
+    let cancelled = false;
+    (async () => {
+      try {
+        const [c, d, n] = await Promise.all([
+          supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
+            .eq('tenant_id', tenantId).gte('date', wkStart).lte('date', wkEnd).order('clock_in'),
+          supabase.from('damage_reports').select('id, part_name, dept, notes, photo_url, status, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, created_at')
+            .eq('tenant_id', tenantId),
+          supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at')
+            .eq('tenant_id', tenantId),
+        ]);
+        if (cancelled) return;
+        setClock((c.data as ClockEntry[]) ?? []);
+        setDamage(((d.data as DamageRow[]) ?? []).filter((r) => !['resolved', 'closed'].includes((r.status ?? '').toLowerCase())));
+        setNeeds(((n.data as NeedRow[]) ?? []).filter((r) => !['received', 'cancelled'].includes((r.status ?? '').toLowerCase())));
+      } catch (err: unknown) {
+        if (!cancelled) showToast(err instanceof Error ? err.message : 'Load failed', true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [tenantId, wkStart, wkEnd, showToast]);
 
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => {

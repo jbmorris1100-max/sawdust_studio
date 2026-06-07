@@ -208,7 +208,7 @@ function CsvImportCard({
       const { data, error } = await supabase.from('jobs').insert(toInsert).select();
       if (error) throw error;
       setJobs((prev) => [...(data as Job[]), ...prev]);
-      showToast(`Imported ${toInsert.length} job${toInsert.length !== 1 ? 's' : ''} ✓`);
+      showToast(`Imported ${toInsert.length} job${toInsert.length !== 1 ? 's' : ''}`);
       setRows([]);
       setHeaders([]);
       setFileName('');
@@ -400,7 +400,7 @@ export default function IntegrationsTab({ tenantId, shopName, showToast, jobs, s
       }).eq('id', tenantId);
       if (error) throw error;
       setDataSharingAt(new Date(now).toLocaleDateString());
-      showToast('Contributing to InlineIQ AI ✓');
+      showToast('Contributing to InlineIQ AI');
     } catch (err: unknown) {
       setDataSharing(false);
       showToast(err instanceof Error ? err.message : 'Save failed', true);
@@ -423,7 +423,7 @@ export default function IntegrationsTab({ tenantId, shopName, showToast, jobs, s
       });
       const data = await res.json() as { success?: boolean; message?: string; error?: string };
       if (res.ok && data.success) {
-        setInTestMsg({ text: data.message ?? 'Connected ✓', ok: true });
+        setInTestMsg({ text: data.message ?? 'Connected', ok: true });
       } else {
         setInTestMsg({ text: data.error ?? 'Test failed', ok: false });
       }
@@ -444,7 +444,7 @@ export default function IntegrationsTab({ tenantId, shopName, showToast, jobs, s
         .eq('id', tenantId);
       if (error) throw error;
       setInConnected(true);
-      showToast('Innergy settings saved ✓');
+      showToast('Innergy settings saved');
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Save failed', true);
     } finally {
@@ -469,7 +469,7 @@ export default function IntegrationsTab({ tenantId, shopName, showToast, jobs, s
       setWlEmail('');
       setWlNotes('');
       setWlErpName('');
-      showToast('Request submitted — we\'ll be in touch ✓');
+      showToast('Request submitted — we\'ll be in touch');
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Submit failed', true);
     } finally {
@@ -715,7 +715,7 @@ export default function IntegrationsTab({ tenantId, shopName, showToast, jobs, s
           </p>
           {wlDone['Microvellum'] ? (
             <div style={{ fontSize: 13, color: '#34D399', padding: '9px 14px', borderRadius: 8, background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.25)' }}>
-              Request submitted ✓ — we&apos;ll reach out within 2 business days.
+              Request submitted — we&apos;ll reach out within 2 business days.
             </div>
           ) : (
             <>
@@ -758,7 +758,7 @@ export default function IntegrationsTab({ tenantId, shopName, showToast, jobs, s
           </p>
           {wlDone['other'] ? (
             <div style={{ fontSize: 13, color: '#34D399', padding: '9px 14px', borderRadius: 8, background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.25)' }}>
-              Request submitted ✓ — thanks for the feedback!
+              Request submitted — thanks for the feedback!
             </div>
           ) : (
             <>
