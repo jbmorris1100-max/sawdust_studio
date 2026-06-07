@@ -3,6 +3,9 @@ import { useState, useEffect, useCallback } from 'react';
 import type { CSSProperties } from 'react';
 import { supabase } from '@/lib/supabase';
 import { DEFAULT_DEPARTMENTS } from '@/lib/auth';
+import PartPushButton from '@/components/PartPushButton';
+import ViewDrawingsButton from '@/components/ViewDrawingsButton';
+import { deptDisplay } from '@/lib/partActions';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -41,6 +44,7 @@ type AssemblyPart = {
   flag_notes: string | null;
   scan_value: string | null;
   created_at: string;
+  assigned_dept: string | null;
 };
 
 type Job = {
@@ -195,8 +199,16 @@ function ProgressBar({ value, flagged }: { value: number; flagged: boolean }) {
 }
 
 // LEVEL 4 — the parts list for one cabinet/ticket. Shared by normal cabinets and
-// split child tickets.
-function PartsList({ parts }: { parts: AssemblyPart[] }) {
+// split child tickets. `pushCtx`, when set, adds a Push button to each part row.
+type PushCtx = {
+  tenantId: string;
+  jobNumber: string | null;
+  unitLabel: string;
+  jobPath: string | null;
+  onToast: (msg: string, error?: boolean) => void;
+  onPushed: (partId: string) => void;
+};
+function PartsList({ parts, pushCtx }: { parts: AssemblyPart[]; pushCtx?: PushCtx }) {
   if (parts.length === 0) {
     return <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', padding: '8px 0' }}>No parts loaded for this unit.</div>;
   }
@@ -215,6 +227,7 @@ function PartsList({ parts }: { parts: AssemblyPart[] }) {
                 {dimLabel(part)}{part.material ? (dimLabel(part) ? ` · ${part.material}` : part.material) : ''}
               </div>
             )}
+            {part.assigned_dept && <div style={{ fontSize: 10.5, color: 'var(--ink-mute)', marginTop: 1 }}>{deptDisplay(part.assigned_dept)}</div>}
             {part.flag_type && (
               <div style={{ fontSize: 11, color: '#F87171', marginTop: 2 }}>
                 {part.flag_type.replace('_', ' ')}{part.flag_notes ? ` — ${part.flag_notes}` : ''}
@@ -223,6 +236,18 @@ function PartsList({ parts }: { parts: AssemblyPart[] }) {
             {part.checked_by && <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 1 }}>by {part.checked_by}</div>}
           </div>
           {part.flag_type && <span style={{ color: '#F87171', flexShrink: 0, display: 'flex' }}><IcoFlag /></span>}
+          {pushCtx && (
+            <PartPushButton
+              tenantId={pushCtx.tenantId}
+              part={{ id: part.id, part_name: part.part_name, cabinet_unit_id: part.cabinet_unit_id, job_number: pushCtx.jobNumber }}
+              currentDept={deptDisplay(part.assigned_dept)}
+              unitLabel={pushCtx.unitLabel}
+              jobPath={pushCtx.jobPath}
+              onPushed={() => pushCtx.onPushed(part.id)}
+              onToast={pushCtx.onToast}
+              compact
+            />
+          )}
         </div>
       ))}
     </>
@@ -570,7 +595,14 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                                           <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mParts.length} part{mParts.length !== 1 ? 's' : ''}</span>
                                           <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: msm.color, background: msm.bg, border: `1px solid ${msm.border}`, flexShrink: 0 }}>{msm.label}</span>
                                         </button>
-                                        {childOpen && <div style={{ paddingLeft: 22, paddingBottom: 8 }}><PartsList parts={mParts} /></div>}
+                                        {childOpen && (
+                                          <div style={{ paddingLeft: 22, paddingBottom: 8 }}>
+                                            <div style={{ marginBottom: 6 }}>
+                                              <ViewDrawingsButton tenantId={tenantId} jobNumber={m.job_number} cabinetKey={m.cabinet_number || m.unit_label} compact={false} />
+                                            </div>
+                                            <PartsList parts={mParts} pushCtx={{ tenantId, jobNumber: m.job_number, unitLabel: m.unit_label, jobPath: jobLabelFor(jobKey), onToast: showToast, onPushed: () => {} }} />
+                                          </div>
+                                        )}
                                       </div>
                                     );
                                   })}
@@ -585,10 +617,21 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                           );
                         }
 
-                        // ── Normal cabinet ──
+                        // ── Normal cabinet (may be parts-level split across depts) ──
                         const sm = statusMeta(unit.status);
+                        const baseDept   = unit.assigned_dept && unit.assigned_dept !== 'split' ? deptDisplay(unit.assigned_dept) : 'Production';
+                        const effDept    = (p: AssemblyPart) => deptDisplay(p.assigned_dept) || baseDept;
+                        const partDepts  = Array.from(new Set(parts.map(effDept)));
+                        const isPartSplit = partDepts.length > 1;
+                        const allPartsComplete = parts.length > 0 && parts.every((p) => p.status === 'complete');
+                        const cabKey     = unit.cabinet_number || unit.unit_label;
+                        const pushCtx: PushCtx = {
+                          tenantId, jobNumber: unit.job_number, unitLabel: unit.unit_label, jobPath: jobLabelFor(jobKey),
+                          onToast: showToast,
+                          onPushed: (partId) => setAllParts((prev) => prev.map((p) => p.id === partId ? p : p)), // realtime reloads; keep state stable
+                        };
                         return (
-                          <div key={unit.id} style={{ borderLeft: isFlagged ? '3px solid #F87171' : '3px solid transparent' }}>
+                          <div key={unit.id} style={{ borderLeft: isFlagged ? '3px solid #F87171' : isPartSplit ? '3px solid #A78BFA' : '3px solid transparent' }}>
                             <button onClick={() => setExpandedCab(cabOpen ? null : unit.id)} style={rowStyle(32, isFlagged, true)}>
                               <IcoChevron open={cabOpen} />
                               {isFlagged && <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#F87171', flexShrink: 0, animation: 'flagPulse 1.5s ease-in-out infinite' }} />}
@@ -598,15 +641,39 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                                 </span>
                                 <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 10 }}>{total} part{total !== 1 ? 's' : ''}</span>
                               </div>
-                              <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: sm.color, background: sm.bg, border: `1px solid ${sm.border}`, flexShrink: 0 }}>
-                                {sm.label}
-                              </span>
+                              {isPartSplit && !allPartsComplete ? (
+                                <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', padding: '2px 7px', borderRadius: 20, color: '#A78BFA', background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.3)', flexShrink: 0 }}>PARTIAL</span>
+                              ) : (
+                                <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: sm.color, background: sm.bg, border: `1px solid ${sm.border}`, flexShrink: 0 }}>
+                                  {sm.label}
+                                </span>
+                              )}
                             </button>
 
                             {/* LEVEL 4 — Parts */}
                             {cabOpen && (
                               <div style={{ padding: '4px 20px 14px 51px', background: 'rgba(255,255,255,0.015)' }}>
-                                <PartsList parts={parts} />
+                                <div style={{ marginBottom: 8 }}>
+                                  <ViewDrawingsButton tenantId={tenantId} jobNumber={unit.job_number} cabinetKey={cabKey} compact={false} />
+                                </div>
+
+                                {isPartSplit ? (
+                                  partDepts.map((d) => {
+                                    const dParts = parts.filter((p) => effDept(p) === d);
+                                    const done = dParts.filter((p) => p.status === 'complete').length;
+                                    const inProg = dParts.some((p) => p.status !== 'complete');
+                                    return (
+                                      <div key={d} style={{ marginBottom: 10 }}>
+                                        <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-dim)', margin: '8px 0 2px' }}>
+                                          <span style={{ color: '#A78BFA' }}>{d}</span>: {done}/{dParts.length} part{dParts.length !== 1 ? 's' : ''} complete{inProg && done < dParts.length ? ' — In Progress' : ''}
+                                        </div>
+                                        <PartsList parts={dParts} pushCtx={pushCtx} />
+                                      </div>
+                                    );
+                                  })
+                                ) : (
+                                  <PartsList parts={parts} pushCtx={pushCtx} />
+                                )}
 
                                 {/* Message Team for flagged cabinet */}
                                 {isFlagged && (

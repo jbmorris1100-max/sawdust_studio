@@ -2,6 +2,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { sendNotify } from '@/lib/notify';
+import PartPushButton from '@/components/PartPushButton';
+import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 
 // ── Craftsman builds (crew view) ──────────────────────────────────────────────
 // Shows cabinet_units assigned to the Craftsman dept, grouped by job. A craftsman
@@ -487,7 +489,10 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
                         <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>{unit.unit_label}</span>
                         <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: sm.color, background: `${sm.color}22` }}>{sm.label}</span>
                       </div>
-                      <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginBottom: 10 }}>{jobLabel(unit.job_number)}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                        <span style={{ fontSize: 12.5, color: 'var(--ink-mute)' }}>{jobLabel(unit.job_number)}</span>
+                        <ViewDrawingsButton tenantId={tenantId} jobNumber={unit.job_number} cabinetKey={unit.unit_label} compact={false} />
+                      </div>
 
                       {/* Parts list with material notes */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
@@ -496,7 +501,19 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
                         ) : ps.map((p) => (
                           <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: p.flag_type ? '#F87171' : 'var(--ink-dim)' }}>
                             <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" style={{ flexShrink: 0, opacity: 0.6 }}><circle cx="12" cy="12" r="9"/></svg>
-                            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partLabel(p)}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</span>
+                            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partLabel(p)}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</span>
+                            <PartPushButton
+                              tenantId={tenantId}
+                              part={{ id: p.id, part_name: p.part_name, cabinet_unit_id: p.cabinet_unit_id, job_number: p.job_number }}
+                              currentDept="Craftsman"
+                              unitLabel={unit.unit_label}
+                              jobPath={jobLabel(unit.job_number)}
+                              timeClockId={timeClockId}
+                              workerName={crewName}
+                              onPushed={() => setParts((prev) => prev.filter((x) => x.id !== p.id))}
+                              onToast={showToast}
+                              compact
+                            />
                           </div>
                         ))}
                       </div>

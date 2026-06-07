@@ -10,6 +10,7 @@ import ReportsTab from './ReportsTab';
 import SetupWizard from './SetupWizard';
 import AssemblyTab from './AssemblyTab';
 import CrewTab from './CrewTab';
+import FinishSpecsModal from './FinishSpecsModal';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import JobSearch, { type SearchTarget } from '@/components/JobSearch';
 import PushPrompt from '@/components/PushPrompt';
@@ -595,6 +596,7 @@ export default function SupervisorPage() {
   const [completingJob,     setCompletingJob]     = useState(false);
   const [archiveOpen,       setArchiveOpen]       = useState(false);
   const [deleteArchiveTarget, setDeleteArchiveTarget] = useState<Job | null>(null);
+  const [finishSpecsJob, setFinishSpecsJob] = useState<Job | null>(null);
 
   // Production pipeline (Overview)
   const [pipeline, setPipeline] = useState<PipelineRow[]>([]);
@@ -2932,6 +2934,15 @@ export default function SupervisorPage() {
                         ) : null; })()}
                       </div>
                       <button
+                        onClick={() => setFinishSpecsJob(j)}
+                        className="btn btn-ghost"
+                        style={{ flexShrink: 0, padding: '6px 12px', fontSize: 12, fontWeight: 700, color: '#A78BFA', borderColor: 'rgba(167,139,250,0.3)', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        title="Finish specs"
+                      >
+                        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7Z"/><path d="M9 21h6"/></svg>
+                        Finish Specs
+                      </button>
+                      <button
                         onClick={() => setCompleteJobTarget(j)}
                         className="btn btn-ghost"
                         style={{ flexShrink: 0, padding: '6px 12px', fontSize: 12, fontWeight: 700, color: 'var(--teal)', borderColor: 'rgba(45,225,201,0.3)', display: 'inline-flex', alignItems: 'center', gap: 6 }}
@@ -4806,6 +4817,17 @@ export default function SupervisorPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── Finish specs editor ── */}
+      {finishSpecsJob && tenant && (
+        <FinishSpecsModal
+          tenantId={tenant.id}
+          jobNumber={finishSpecsJob.job_number}
+          jobPath={finishSpecsJob.job_path ?? null}
+          onClose={() => setFinishSpecsJob(null)}
+          showToast={showToast}
+        />
       )}
 
       {/* ── Complete-job confirmation ── */}

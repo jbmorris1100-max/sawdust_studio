@@ -10,6 +10,9 @@ import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import PushPrompt from '@/components/PushPrompt';
 import OfflineBanner from '@/components/OfflineBanner';
 import CraftsmanBuilds from './CraftsmanBuilds';
+import FinishingView from './FinishingView';
+import PartPushButton from '@/components/PartPushButton';
+import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 import MessageThread from '@/components/MessageThread';
 import { enqueue, pendingCount } from '@/lib/offlineQueue';
 import { sendNotify } from '@/lib/notify';
@@ -2725,6 +2728,8 @@ export default function CrewPage() {
           {/* Craftsman dept gets a build-centric view instead of the generic job card. */}
           {crewDept === 'Craftsman' && tenant ? (
             <CraftsmanBuilds tenantId={tenant.id} crewName={crewName} timeClockId={activeTimeClockId} showToast={showToast} />
+          ) : crewDept === 'Finishing' && tenant ? (
+            <FinishingView tenantId={tenant.id} showToast={showToast} />
           ) : !activeJobLoading && (
             activeJob ? (
               <div style={{ marginBottom: 32, padding: '18px 20px', borderRadius: 16, background: 'var(--bg-1)', border: '1px solid var(--line)', borderLeft: '3px solid var(--teal)' }}>
@@ -3998,10 +4003,13 @@ export default function CrewPage() {
             {/* ── STEP 2/3: Checklist + flag ── */}
             {assemblyScanStep === 'checklist' && assemblyScanUnit && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-                {/* Job sub-label */}
-                {assemblyScanUnit.job_number && (
-                  <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginBottom: 14 }}>Job: {assemblyScanUnit.job_number}</div>
-                )}
+                {/* Job sub-label + drawings */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+                  {assemblyScanUnit.job_number && (
+                    <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>Job: {assemblyScanUnit.job_number}</span>
+                  )}
+                  <ViewDrawingsButton tenantId={tenant!.id} jobNumber={assemblyScanUnit.job_number} cabinetKey={assemblyScanUnit.cabinet_number || assemblyScanUnit.unit_label} compact={false} />
+                </div>
 
                 {/* Parts count */}
                 <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--teal)', marginBottom: 14 }}>
@@ -4077,6 +4085,17 @@ export default function CrewPage() {
                               Unflag
                             </button>
                           )}
+                          <PartPushButton
+                            tenantId={tenant!.id}
+                            part={{ id: p.id, part_name: p.part_name, cabinet_unit_id: assemblyScanUnit.id, job_number: assemblyScanUnit.job_number }}
+                            currentDept="Assembly"
+                            unitLabel={assemblyScanUnit.unit_label}
+                            timeClockId={activeTimeClockId}
+                            workerName={crewName}
+                            onPushed={() => setAssemblyScanParts((prev) => prev.filter((x) => x.id !== p.id))}
+                            onToast={showToast}
+                            compact
+                          />
                         </div>
 
                         {/* Flag options inline */}
@@ -4199,6 +4218,7 @@ export default function CrewPage() {
               <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cutUnit.unit_label}</div>
               <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{cutUnit.jobPath.split('/').join(' / ')}</div>
             </div>
+            <ViewDrawingsButton tenantId={tenant!.id} jobNumber={cutUnit.job_number} cabinetKey={cutUnit.cabinet_number || cutUnit.unit_label} compact />
           </div>
 
           {/* parts list */}
@@ -4233,6 +4253,17 @@ export default function CrewPage() {
                             <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
                               onChange={(e) => { const f = e.target.files?.[0]; if (f) void handlePartPhoto(p.id, f); e.target.value = ''; }} />
                           </label>
+                          <PartPushButton
+                            tenantId={tenant!.id}
+                            part={{ id: p.id, part_name: p.part_name, cabinet_unit_id: cutUnit.id, job_number: cutUnit.job_number }}
+                            currentDept="Production"
+                            unitLabel={cutUnit.unit_label}
+                            jobPath={cutUnit.jobPath}
+                            timeClockId={activeTimeClockId}
+                            workerName={crewName}
+                            onPushed={() => setCutParts((ps) => ps.filter((x) => x.id !== p.id))}
+                            onToast={showToast}
+                          />
                         </div>
                       )}
                     </div>
