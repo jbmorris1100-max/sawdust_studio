@@ -66,6 +66,13 @@ export async function POST(req: Request) {
     if (!price_id) {
       return NextResponse.json({ error: 'price_id or tier required' }, { status: 400 });
     }
+
+    // Defensive trim of price_id before sending to Stripe
+    price_id = price_id.trim();
+    if (!price_id) {
+      return NextResponse.json({ error: 'Invalid price_id' }, { status: 400 });
+    }
+
     if (!PRICE_TO_PLAN[price_id]) {
       return NextResponse.json({ error: 'Unknown plan price' }, { status: 400 });
     }
@@ -99,6 +106,7 @@ export async function POST(req: Request) {
     }
 
     // ── Checkout session ──────────────────────────────────────────────────────
+    console.log('Sending price_id to Stripe:', JSON.stringify(price_id));
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       customer: customerId,
