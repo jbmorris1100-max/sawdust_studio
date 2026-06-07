@@ -1067,55 +1067,122 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
 
 // ── 4. Craftsman Build ────────────────────────────────────────────────────────
 
-function CraftsmanBuildReport({ tenantId, showToast }: Props) {
-  const [start,   setStart]   = useState(() => daysAgo(30));
-  const [end,     setEnd]     = useState(todayISO);
-  const [entries, setEntries] = useState<ClockEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [sortCol, setSortCol] = useState('clock_in');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
-  const onSort = useCallback((col: string) => { setSortDir((d) => sortCol === col ? (d === 'asc' ? 'desc' : 'asc') : 'asc'); setSortCol(col); }, [sortCol]);
+type CraftUnitRow = {
+  id: string;
+  unit_label: string;
+  job_number: string | null;
+  status: string;
+  assigned_dept: string | null;
+  completed_at: string | null;
+  created_at: string;
+};
 
+// Craftsman status → badge color (mirrors the crew/supervisor craftsman views).
+function craftStatusMeta(status: string): { label: string; color: string; bg: string } {
+  switch ((status || 'pending').toLowerCase()) {
+    case 'building':  return { label: 'Building',  color: '#60A5FA', bg: 'rgba(96,165,250,0.12)' };
+    case 'finishing': return { label: 'Finishing', color: '#FBBF24', bg: 'rgba(251,191,36,0.12)' };
+    case 'complete':  return { label: 'Complete',  color: '#34D399', bg: 'rgba(52,211,153,0.12)' };
+    default:          return { label: 'Pending',   color: '#8BA5A0', bg: 'rgba(139,165,160,0.12)' };
+  }
+}
+const STATUS_RANK: Record<string, number> = { building: 0, finishing: 1, pending: 2, complete: 3 };
+
+function CraftsmanBuildReport({ tenantId, showToast }: Props) {
+  const [start,     setStart]     = useState(() => daysAgo(30));
+  const [end,       setEnd]       = useState(todayISO);
+  const [rows,      setRows]      = useState<CraftUnitRow[]>([]);
+  const [timerHours, setTimerHours] = useState(0);
+  const [jobPaths,  setJobPaths]  = useState<Record<string, string>>({});
+  const [loading,   setLoading]   = useState(false);
+
+  // Pull craftsman cabinets directly (Option B) — this reflects what the
+  // Craftsman tab manages, including in-progress builds, not just timer sessions.
   useEffect(() => {
     setLoading(true);
-    supabase.from('time_clock')
-      .select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
-      .eq('tenant_id', tenantId).eq('status', 'craftsman_build')
-      .gte('date', start).lte('date', end).order('clock_in', { ascending: false })
-      .then(({ data, error }) => {
-        if (error) showToast(error.message, true);
-        else setEntries((data as ClockEntry[]) ?? []);
-        setLoading(false);
-      });
+    let cancelled = false;
+    (async () => {
+      try {
+        // Cabinets assigned to craftsman OR owning a craftsman part (splits).
+        let partCabIds: string[] = [];
+        try {
+          const { data: cp } = await supabase.from('parts').select('cabinet_unit_id').eq('tenant_id', tenantId).eq('assigned_dept', 'craftsman');
+          partCabIds = Array.from(new Set(((cp as { cabinet_unit_id: string | null }[] | null) ?? []).map((p) => p.cabinet_unit_id).filter(Boolean))) as string[];
+        } catch { /* best-effort */ }
+
+        const COLS = 'id, unit_label, job_number, status, assigned_dept, completed_at, created_at';
+        const base = supabase.from('cabinet_units').select(COLS).eq('tenant_id', tenantId);
+        const { data: cuData, error } = partCabIds.length > 0
+          ? await base.or(`assigned_dept.eq.craftsman,id.in.(${partCabIds.join(',')})`)
+          : await base.eq('assigned_dept', 'craftsman');
+        if (error) throw error;
+
+        const fromT = new Date(`${start}T00:00:00`).getTime();
+        const toT   = new Date(`${end}T23:59:59`).getTime();
+        const filtered = ((cuData as CraftUnitRow[]) ?? []).filter((u) => {
+          if (u.status === 'complete') {
+            if (!u.completed_at) return false;
+            const t = new Date(u.completed_at).getTime();
+            return t >= fromT && t <= toT;
+          }
+          // In-progress / queued builds always show so the report reflects live work.
+          return ['building', 'finishing', 'pending'].includes((u.status || '').toLowerCase());
+        }).sort((a, b) => {
+          const ra = STATUS_RANK[a.status?.toLowerCase()] ?? 9;
+          const rb = STATUS_RANK[b.status?.toLowerCase()] ?? 9;
+          if (ra !== rb) return ra - rb;
+          return new Date(b.completed_at || b.created_at).getTime() - new Date(a.completed_at || a.created_at).getTime();
+        });
+        if (!cancelled) setRows(filtered);
+
+        // Job paths for nicer labels.
+        const jobNums = Array.from(new Set(filtered.map((u) => u.job_number).filter(Boolean))) as string[];
+        if (jobNums.length > 0) {
+          try {
+            const { data: jrows } = await supabase.from('jobs').select('job_number, job_path').eq('tenant_id', tenantId).in('job_number', jobNums);
+            const map: Record<string, string> = {};
+            ((jrows as { job_number: string; job_path: string | null }[] | null) ?? []).forEach((j) => { if (j.job_path) map[j.job_number] = j.job_path; });
+            if (!cancelled) setJobPaths(map);
+          } catch { /* best-effort */ }
+        }
+
+        // Supplementary: build-timer hours logged in range (material build timer).
+        try {
+          const { data: tc } = await supabase.from('time_clock')
+            .select('total_hours, clock_in, clock_out').eq('tenant_id', tenantId).eq('status', 'craftsman_build')
+            .gte('date', start).lte('date', end);
+          const hrs = ((tc as { total_hours: number | null; clock_in: string; clock_out: string | null }[] | null) ?? [])
+            .reduce((s, e) => s + (e.total_hours ?? calcHours(e.clock_in, e.clock_out)), 0);
+          if (!cancelled) setTimerHours(hrs);
+        } catch { /* best-effort */ }
+      } catch (err: unknown) {
+        if (!cancelled) showToast(err instanceof Error ? err.message : 'Load failed', true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [tenantId, start, end, showToast]);
 
-  const totalHours = entries.reduce((s, e) => s + (e.total_hours ?? calcHours(e.clock_in, e.clock_out)), 0);
-
-  const sorted = useMemo(() => [...entries].sort((a, b) => {
-    const get = (e: ClockEntry): string | number => {
-      if (sortCol === 'worker') return e.worker_name ?? '';
-      if (sortCol === 'hours')  return e.total_hours ?? calcHours(e.clock_in, e.clock_out);
-      if (sortCol === 'job')    return e.job_number ?? '';
-      return e.clock_in;
-    };
-    const cmp = get(a) < get(b) ? -1 : get(a) > get(b) ? 1 : 0;
-    return sortDir === 'asc' ? cmp : -cmp;
-  }), [entries, sortCol, sortDir]);
+  const jobLabel = (jn: string | null) => jn ? (jobPaths[jn] ? jobPaths[jn].split('/').map((s) => s.trim()).join(' / ') : `Job ${jn}`) : '—';
+  const inProgress = rows.filter((u) => u.status !== 'complete').length;
+  const completed  = rows.filter((u) => u.status === 'complete').length;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <DateRange start={start} end={end} onStart={setStart} onEnd={setEnd} />
         <ExportBtn onClick={() => downloadCSV(`craftsman-build_${start}_${end}.csv`,
-          ['Date', 'Worker', 'Material Description', 'Job / Project', 'Hours'],
-          entries.map((e) => [e.date ?? fmtDate(e.clock_in), e.worker_name ?? '', e.notes ?? '', e.job_number ?? '', (e.total_hours ?? calcHours(e.clock_in, e.clock_out)).toFixed(2)]))} />
+          ['Unit', 'Job / Project', 'Status', 'Completed'],
+          rows.map((u) => [u.unit_label, jobLabel(u.job_number), craftStatusMeta(u.status).label, u.completed_at ? fmtDate(u.completed_at) : '—']))} />
       </div>
 
-      {!loading && entries.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
-          <MetricTile label="Total Hours"    value={toHHMM(totalHours)}                             color="#A78BFA" />
-          <MetricTile label="Build Sessions" value={String(entries.length)}                          color="#5EEAD4" />
-          <MetricTile label="Workers"        value={String(new Set(entries.map((e) => e.worker_name)).size)} color="#FBBF24" />
+      {!loading && rows.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          <MetricTile label="Craftsman Units" value={String(rows.length)} color="#A78BFA" />
+          <MetricTile label="In Progress"     value={String(inProgress)}  color="#60A5FA" />
+          <MetricTile label="Completed"       value={String(completed)}   color="#34D399" />
+          <MetricTile label="Build Timer Hrs" value={toHHMM(timerHours)}   color="#FBBF24" />
         </div>
       )}
 
@@ -1124,32 +1191,29 @@ function CraftsmanBuildReport({ tenantId, showToast }: Props) {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                <SortTh label="Date"        col="clock_in" sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
-                <SortTh label="Worker"      col="worker"   sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
-                <th style={thSt}>Material Description</th>
-                <SortTh label="Job / Project" col="job" sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
-                <SortTh label="Hours"       col="hours"    sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
+                <th style={thSt}>Unit</th>
+                <th style={thSt}>Job / Project</th>
+                <th style={thSt}>Status</th>
+                <th style={thSt}>Completed</th>
               </tr>
             </thead>
             <tbody>
-              {loading ? <LoadingRows cols={5} /> : sorted.length === 0 ? (
-                <tr><td colSpan={5}><EmptyState msg="No craftsman build entries for this period." /></td></tr>
+              {loading ? <LoadingRows cols={4} /> : rows.length === 0 ? (
+                <tr><td colSpan={4}><EmptyState msg="No craftsman builds for this period." /></td></tr>
               ) : (
-                <>
-                  {sorted.map((e, i) => (
-                    <tr key={e.id} style={{ background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent' }}>
-                      <td style={tdSt}>{e.date ? new Date(e.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : fmtDate(e.clock_in)}</td>
-                      <td style={tdBold}>{e.worker_name ?? '—'}</td>
-                      <td style={tdSt}>{e.notes ?? '—'}</td>
-                      <td style={tdSt}>{e.job_number ? <code style={{ fontSize: 12 }}>{e.job_number}</code> : '—'}</td>
-                      <td style={tdSt}>{toHHMM(e.total_hours ?? calcHours(e.clock_in, e.clock_out))}</td>
+                rows.map((u, i) => {
+                  const sm = craftStatusMeta(u.status);
+                  return (
+                    <tr key={u.id} style={{ background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent' }}>
+                      <td style={tdBold}>{u.unit_label}</td>
+                      <td style={tdSt}>{jobLabel(u.job_number)}</td>
+                      <td style={tdSt}>
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: sm.color, background: sm.bg, whiteSpace: 'nowrap' }}>{sm.label}</span>
+                      </td>
+                      <td style={tdSt}>{u.completed_at ? new Date(u.completed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : <span style={{ color: 'var(--ink-mute)' }}>In progress</span>}</td>
                     </tr>
-                  ))}
-                  <tr style={{ background: 'rgba(167,139,250,0.06)', borderTop: '2px solid var(--line)' }}>
-                    <td style={{ ...tdBold, color: '#A78BFA' }} colSpan={4}>Total</td>
-                    <td style={{ ...tdBold, color: '#A78BFA' }}>{toHHMM(totalHours)}</td>
-                  </tr>
-                </>
+                  );
+                })
               )}
             </tbody>
           </table>

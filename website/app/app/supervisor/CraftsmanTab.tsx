@@ -153,10 +153,11 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
 
   const load = useCallback(async () => {
     try {
+      const UNIT_COLS = 'id, tenant_id, job_id, job_number, room_number, cabinet_number, unit_label, status, assigned_dept, is_split, production_status, created_at';
       const [unitRes, partRes] = await Promise.all([
         supabase
           .from('cabinet_units')
-          .select('id, tenant_id, job_id, job_number, room_number, cabinet_number, unit_label, status, assigned_dept, is_split, production_status, created_at')
+          .select(UNIT_COLS)
           .eq('tenant_id', tenantId)
           .in('assigned_dept', ['craftsman', 'production'])
           .limit(5000),
@@ -166,8 +167,27 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
           .eq('tenant_id', tenantId)
           .limit(10000),
       ]);
-      setUnits((unitRes.data as CabinetUnit[]) ?? []);
-      setParts((partRes.data as CraftPart[]) ?? []);
+      let unitList = (unitRes.data as CabinetUnit[]) ?? [];
+      const allParts = (partRes.data as CraftPart[]) ?? [];
+
+      // A cabinet also belongs in the craftsman tab when any of its parts was
+      // pushed to craftsman — those cabinets become 'split' and so are missed by
+      // the assigned_dept filter above. Pull them in by id.
+      const craftPartCabIds = Array.from(new Set(allParts
+        .filter((p) => p.assigned_dept === 'craftsman')
+        .map((p) => p.cabinet_unit_id)
+        .filter(Boolean))) as string[];
+      const missingIds = craftPartCabIds.filter((id) => !unitList.some((u) => u.id === id));
+      if (missingIds.length > 0) {
+        try {
+          const { data: extra } = await supabase
+            .from('cabinet_units').select(UNIT_COLS).eq('tenant_id', tenantId).in('id', missingIds);
+          unitList = [...unitList, ...((extra as CabinetUnit[]) ?? [])];
+        } catch { /* best-effort */ }
+      }
+
+      setUnits(unitList);
+      setParts(allParts);
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Could not load craftsman work', true);
     } finally {
@@ -177,19 +197,30 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
 
   useEffect(() => { void load(); }, [load]);
 
-  // Realtime — supervisor sees new units / dept reassignments instantly.
+  // Realtime — supervisor sees new units / dept reassignments AND part pushes
+  // (a part pushed to craftsman must surface its cabinet here instantly).
   useEffect(() => {
     const ch = supabase
       .channel('rt-sup-craftsman')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parts', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenantId, load]);
 
   const partsFor = useCallback((unitId: string) => parts.filter((p) => p.cabinet_unit_id === unitId), [parts]);
 
-  // Section 1 — assigned craftsman units grouped by job.
-  const craftsmanUnits = useMemo(() => units.filter((u) => u.assigned_dept === 'craftsman'), [units]);
+  // Cabinet ids that have at least one part pushed to craftsman.
+  const craftPartCabIds = useMemo(
+    () => new Set(parts.filter((p) => p.assigned_dept === 'craftsman').map((p) => p.cabinet_unit_id).filter(Boolean)),
+    [parts],
+  );
+
+  // Section 1 — units assigned to craftsman OR owning a craftsman part (splits).
+  const craftsmanUnits = useMemo(
+    () => units.filter((u) => u.assigned_dept === 'craftsman' || craftPartCabIds.has(u.id)),
+    [units, craftPartCabIds],
+  );
 
   const groupedByJob = useMemo(() => {
     const groups: Record<string, CabinetUnit[]> = {};
@@ -205,10 +236,13 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
       .sort((a, b) => jobLabelFor(a.job).localeCompare(jobLabelFor(b.job)));
   }, [craftsmanUnits, jobLabelFor]);
 
-  // Section 2 — production units whose label suggests craftsman work.
+  // Section 2 — production units whose label suggests craftsman work (and which
+  // don't already own a craftsman part).
   const suggestedUnits = useMemo(() =>
-    units.filter((u) => u.assigned_dept === 'production' && SUGGEST_KEYWORDS.some((kw) => u.unit_label.toLowerCase().includes(kw))),
-  [units]);
+    units.filter((u) => u.assigned_dept === 'production'
+      && !craftPartCabIds.has(u.id)
+      && SUGGEST_KEYWORDS.some((kw) => u.unit_label.toLowerCase().includes(kw))),
+  [units, craftPartCabIds]);
 
   // ── Actions ────────────────────────────────────────────────────────────────
 

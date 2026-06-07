@@ -1,14 +1,15 @@
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { colorToHex, recomputeCabinet } from '@/lib/partActions';
+import { sendNotify } from '@/lib/notify';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 
 // The Finishing department's home view. Shows the finish specs the supervisor set
-// for active jobs (color chips, door/edge summaries, room overrides, the uploaded
-// spec doc + drawings) and the list of individual parts that were pushed to the
-// Finishing dept ("Parts to Finish") with a Mark Complete action.
+// for active jobs, then a structured "parts to finish" flow: pick a job → check the
+// parts (grouped by cabinet, with select-all) → mark them complete. Each part can
+// also be kicked back to another dept via a CO/Damage report.
 
 type FinishSpec = {
   id: string;
@@ -36,6 +37,10 @@ type FinishPart = {
   part_name: string;
   cabinet_unit_id: string;
   job_number: string | null;
+  material: string | null;
+  width: number | null;
+  height: number | null;
+  depth: number | null;
   cabinetLabel: string;
   cabinetKey: string;
   jobPath: string;
@@ -44,7 +49,13 @@ type FinishPart = {
 interface Props {
   tenantId: string;
   showToast: (msg: string, error?: boolean) => void;
+  crewName?: string;
+  // Clock-in gate — finishing actions require an open shift.
+  isClockedIn?: boolean;
+  onRequireClock?: () => void;
 }
+
+const SEND_BACK_DEPTS = ['Production', 'Assembly', 'Craftsman'];
 
 const card: React.CSSProperties = { padding: '16px 18px', borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)' };
 const sectionLabel: React.CSSProperties = { fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 8 };
@@ -59,13 +70,52 @@ function specSummary(s: FinishSpec): boolean {
   return !!(s.cabinet_color || s.door_style || s.door_color || s.edge_banding_color || s.spec_file_url || s.special_notes);
 }
 
-export default function FinishingView({ tenantId, showToast }: Props) {
+function dimText(p: FinishPart): string {
+  const bits: string[] = [];
+  if (p.width)  bits.push(`${p.width}`);
+  if (p.height) bits.push(`${p.height}`);
+  if (p.depth)  bits.push(`${p.depth}`);
+  return bits.join('x');
+}
+
+function partDisplay(p: FinishPart): string {
+  const dims = dimText(p);
+  const bits = [p.part_name];
+  if (dims) bits.push(dims);
+  if (p.material) bits.push(p.material);
+  return bits.join(' — ');
+}
+
+// Thin-stroke icons.
+const IcoCheckbox = ({ checked }: { checked: boolean }) => (
+  <span style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${checked ? 'var(--teal)' : 'var(--ink-mute)'}`, background: checked ? 'var(--teal)' : 'transparent' }}>
+    {checked && <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#04201c" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+  </span>
+);
+const IcoAlert = () => (
+  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+  </svg>
+);
+
+export default function FinishingView({ tenantId, showToast, crewName = '', isClockedIn = true, onRequireClock }: Props) {
   const [specs, setSpecs] = useState<FinishSpec[]>([]);
   const [parts, setParts] = useState<FinishPart[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [selectedJob, setSelectedJob] = useState<string>('');
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [fullSpec, setFullSpec] = useState<FinishSpec | null>(null);
   const [specFile, setSpecFile] = useState<ViewerFile | null>(null);
+
+  // CO/Damage kickback modal
+  const [coPart, setCoPart] = useState<FinishPart | null>(null);
+  const [coType, setCoType] = useState<'damage' | 'change_order'>('damage');
+  const [coDesc, setCoDesc] = useState('');
+  const [coSendDept, setCoSendDept] = useState<string>('Production');
+  const [coPhoto, setCoPhoto] = useState<File | null>(null);
+  const [coPreview, setCoPreview] = useState<string | null>(null);
+  const [coSaving, setCoSaving] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -90,12 +140,12 @@ export default function FinishingView({ tenantId, showToast }: Props) {
       // Parts pushed to finishing (not yet complete).
       const { data: partRows } = await supabase
         .from('parts')
-        .select('id, part_name, cabinet_unit_id, job_number, status')
+        .select('id, part_name, cabinet_unit_id, job_number, material, width, height, depth, status')
         .eq('tenant_id', tenantId)
         .eq('assigned_dept', 'finishing')
         .neq('status', 'complete')
         .limit(400);
-      const pRows = (partRows as { id: string; part_name: string; cabinet_unit_id: string; job_number: string | null; status: string | null }[] | null) ?? [];
+      const pRows = (partRows as { id: string; part_name: string; cabinet_unit_id: string; job_number: string | null; material: string | null; width: number | null; height: number | null; depth: number | null; status: string | null }[] | null) ?? [];
 
       // Resolve cabinet labels + job paths.
       const cabIds = Array.from(new Set(pRows.map((p) => p.cabinet_unit_id).filter(Boolean)));
@@ -122,6 +172,7 @@ export default function FinishingView({ tenantId, showToast }: Props) {
         const cab = cabMap[p.cabinet_unit_id] ?? { label: 'Cabinet', key: '' };
         return {
           id: p.id, part_name: p.part_name, cabinet_unit_id: p.cabinet_unit_id, job_number: p.job_number,
+          material: p.material, width: p.width, height: p.height, depth: p.depth,
           cabinetLabel: cab.label, cabinetKey: cab.key,
           jobPath: (p.job_number && jobPathMap[p.job_number]) || (p.job_number ? `Job ${p.job_number}` : 'Unassigned'),
         };
@@ -142,19 +193,167 @@ export default function FinishingView({ tenantId, showToast }: Props) {
     return () => { supabase.removeChannel(ch); };
   }, [tenantId, load]);
 
-  async function markComplete(part: FinishPart) {
-    if (busy[part.id]) return;
-    setBusy((b) => ({ ...b, [part.id]: true }));
+  // ── Job list + selected-job grouping ───────────────────────────────────────
+  const jobOptions = useMemo(() => {
+    const map: Record<string, string> = {};
+    parts.forEach((p) => { const jn = p.job_number ?? '__nojob__'; if (!map[jn]) map[jn] = p.jobPath; });
+    return Object.entries(map)
+      .map(([jobNumber, jobPath]) => ({ jobNumber, label: jobPath.split('/').map((s) => s.trim()).join(' / ') }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [parts]);
+
+  // Keep a valid selected job as the parts list changes.
+  useEffect(() => {
+    if (jobOptions.length === 0) { if (selectedJob) setSelectedJob(''); return; }
+    if (!jobOptions.some((j) => j.jobNumber === selectedJob)) setSelectedJob(jobOptions[0].jobNumber);
+  }, [jobOptions, selectedJob]);
+
+  const jobParts = useMemo(
+    () => parts.filter((p) => (p.job_number ?? '__nojob__') === selectedJob),
+    [parts, selectedJob],
+  );
+
+  // Group selected job's parts by cabinet unit.
+  const cabinetGroups = useMemo(() => {
+    const groups: Record<string, { label: string; key: string; parts: FinishPart[] }> = {};
+    jobParts.forEach((p) => {
+      const g = (groups[p.cabinet_unit_id] ??= { label: p.cabinetLabel, key: p.cabinetKey, parts: [] });
+      g.parts.push(p);
+    });
+    return Object.entries(groups).map(([cabinetId, g]) => ({ cabinetId, ...g }));
+  }, [jobParts]);
+
+  const jobPartIds = useMemo(() => jobParts.map((p) => p.id), [jobParts]);
+  const allSelected = jobPartIds.length > 0 && jobPartIds.every((id) => checked.has(id));
+  const checkedInJob = jobPartIds.filter((id) => checked.has(id)).length;
+
+  function togglePart(id: string) {
+    setChecked((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  }
+  function toggleAll() {
+    setChecked((prev) => {
+      const n = new Set(prev);
+      if (allSelected) jobPartIds.forEach((id) => n.delete(id));
+      else jobPartIds.forEach((id) => n.add(id));
+      return n;
+    });
+  }
+  function toggleCabinet(ids: string[]) {
+    setChecked((prev) => {
+      const n = new Set(prev);
+      const all = ids.every((id) => n.has(id));
+      if (all) ids.forEach((id) => n.delete(id));
+      else ids.forEach((id) => n.add(id));
+      return n;
+    });
+  }
+
+  // ── Mark selected parts complete ───────────────────────────────────────────
+  async function markSelectedComplete() {
+    if (!isClockedIn) { onRequireClock?.(); return; }
+    const ids = jobPartIds.filter((id) => checked.has(id));
+    if (ids.length === 0 || bulkBusy) return;
+    setBulkBusy(true);
+    const affected = Array.from(new Set(jobParts.filter((p) => ids.includes(p.id)).map((p) => p.cabinet_unit_id)));
     try {
-      const { error } = await supabase.from('parts').update({ status: 'complete', production_status: 'complete', checked_at: new Date().toISOString() }).eq('id', part.id).eq('tenant_id', tenantId);
+      const { error } = await supabase.from('parts')
+        .update({ status: 'complete', production_status: 'complete', checked_at: new Date().toISOString(), checked_by: crewName || null })
+        .in('id', ids).eq('tenant_id', tenantId);
       if (error) throw error;
-      await recomputeCabinet(tenantId, part.cabinet_unit_id);
-      setParts((prev) => prev.filter((p) => p.id !== part.id));
-      showToast('Part marked complete');
+
+      for (const cabId of affected) {
+        await recomputeCabinet(tenantId, cabId);
+        // If the whole cabinet is now complete, let the supervisor know.
+        try {
+          const { data: cab } = await supabase.from('cabinet_units').select('status, unit_label, job_number').eq('id', cabId).maybeSingle();
+          const c = cab as { status: string | null; unit_label: string | null; job_number: string | null } | null;
+          if (c && c.status === 'complete') {
+            sendNotify({
+              tenant_id: tenantId, target: 'supervisor',
+              title: 'Cabinet complete',
+              body: `${c.unit_label || 'Cabinet'} — ${c.job_number ? `Job ${c.job_number}` : ''} finished in Finishing`,
+              url: '/app/supervisor',
+            });
+          }
+        } catch { /* notify best-effort */ }
+      }
+
+      setParts((prev) => prev.filter((p) => !ids.includes(p.id)));
+      setChecked((prev) => { const n = new Set(prev); ids.forEach((id) => n.delete(id)); return n; });
+      showToast(`${ids.length} part${ids.length === 1 ? '' : 's'} marked complete`);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Could not update part', true);
+      showToast(e instanceof Error ? e.message : 'Could not update parts', true);
     } finally {
-      setBusy((b) => ({ ...b, [part.id]: false }));
+      setBulkBusy(false);
+    }
+  }
+
+  // ── CO/Damage kickback ─────────────────────────────────────────────────────
+  function openCoDamage(part: FinishPart) {
+    if (!isClockedIn) { onRequireClock?.(); return; }
+    setCoPart(part);
+    setCoType('damage');
+    setCoDesc('');
+    setCoSendDept('Production');
+    setCoPhoto(null);
+    setCoPreview(null);
+  }
+  function closeCoDamage() {
+    setCoPart(null); setCoPhoto(null); setCoPreview(null); setCoDesc('');
+  }
+
+  async function submitCoDamage() {
+    if (!coPart || coSaving) return;
+    if (!isClockedIn) { onRequireClock?.(); return; }
+    setCoSaving(true);
+    try {
+      let photoUrl: string | null = null;
+      if (coPhoto) {
+        try {
+          const ext = coPhoto.name.split('.').pop() ?? 'jpg';
+          const path = `${tenantId}/${Date.now()}.${ext}`;
+          const { error: upErr } = await supabase.storage.from('damage-photos').upload(path, coPhoto, { upsert: true });
+          if (!upErr) { photoUrl = supabase.storage.from('damage-photos').getPublicUrl(path).data.publicUrl; }
+        } catch { /* photo optional */ }
+      }
+      const sendDept = coSendDept.toLowerCase();
+      const typeLabel = coType === 'change_order' ? 'Change Order' : 'Damage';
+      const note = `${typeLabel} from Finishing — ${coPart.cabinetLabel}. After repair → ${coSendDept}.${coDesc.trim() ? ` ${coDesc.trim()}` : ''}`;
+
+      const { error: dmgErr } = await supabase.from('damage_reports').insert({
+        tenant_id:   tenantId,
+        part_name:   coPart.part_name,
+        dept:        'Finishing',
+        notes:       note,
+        photo_url:   photoUrl,
+        status:      'open',
+        report_type: coType,
+        ...(coPart.job_number && { job_id: coPart.job_number }),
+      });
+      if (dmgErr) throw dmgErr;
+
+      // Kick the part back to the chosen dept for rework.
+      const { error: partErr } = await supabase.from('parts')
+        .update({ assigned_dept: sendDept, production_status: 'pending', status: 'pending' })
+        .eq('id', coPart.id).eq('tenant_id', tenantId);
+      if (partErr) throw partErr;
+      await recomputeCabinet(tenantId, coPart.cabinet_unit_id);
+
+      sendNotify({
+        tenant_id: tenantId, target: 'supervisor',
+        title: `${typeLabel} report from Finishing`,
+        body: `${coPart.part_name} — ${coPart.jobPath.split('/').map((s) => s.trim()).join(' / ')} — tap to review`,
+        url: '/app/supervisor',
+      });
+
+      setParts((prev) => prev.filter((p) => p.id !== coPart.id));
+      setChecked((prev) => { const n = new Set(prev); n.delete(coPart.id); return n; });
+      showToast(`Sent to ${coSendDept} for rework`);
+      closeCoDamage();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Could not submit report', true);
+    } finally {
+      setCoSaving(false);
     }
   }
 
@@ -253,34 +452,100 @@ export default function FinishingView({ tenantId, showToast }: Props) {
         )}
       </div>
 
-      {/* ── Parts to Finish ────────────────────────────────────────────────── */}
-      {parts.length > 0 && (
+      {/* ── Parts to Finish — structured selection flow ────────────────────── */}
+      {!loading && parts.length > 0 && (
         <div style={{ marginBottom: 32 }}>
           <div style={sectionLabel}>
             <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/></svg>
             Parts to Finish ({parts.length})
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {parts.map((p) => (
-              <div key={p.id} style={{ ...card, display: 'flex', alignItems: 'center', gap: 12, padding: '13px 16px' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.part_name}</div>
-                  <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.cabinetLabel} · {p.jobPath.split('/').map((x) => x.trim()).join(' / ')}</div>
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
-                  <ViewDrawingsButton tenantId={tenantId} jobNumber={p.job_number} cabinetKey={p.cabinetKey} compact />
-                  <button
-                    onClick={() => void markComplete(p)}
-                    disabled={busy[p.id]}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', borderRadius: 8, background: 'rgba(45,225,201,0.1)', border: '1px solid rgba(45,225,201,0.3)', color: 'var(--teal)', fontSize: 12, fontWeight: 700, cursor: busy[p.id] ? 'not-allowed' : 'pointer', opacity: busy[p.id] ? 0.6 : 1, fontFamily: 'inherit' }}
-                  >
-                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                    Done
-                  </button>
-                </div>
-              </div>
-            ))}
+
+          {/* STEP 1 — Job selector */}
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ ...rowLabel, marginBottom: 6 }}>Job</div>
+            <select
+              value={selectedJob}
+              onChange={(e) => setSelectedJob(e.target.value)}
+              style={{ width: '100%', padding: '11px 12px', borderRadius: 10, background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}
+            >
+              {jobOptions.map((j) => (
+                <option key={j.jobNumber} value={j.jobNumber}>{j.label}</option>
+              ))}
+            </select>
           </div>
+
+          {/* STEP 2 — Parts checklist grouped by cabinet */}
+          {jobPartIds.length > 0 && (
+            <button
+              onClick={toggleAll}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '7px 12px', borderRadius: 8, background: 'none', border: '1px solid var(--line)', color: 'var(--ink-dim)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+            >
+              <IcoCheckbox checked={allSelected} />
+              {allSelected ? 'Deselect All' : 'Select All'}
+            </button>
+          )}
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {cabinetGroups.map((g) => {
+              const ids = g.parts.map((p) => p.id);
+              const cabAll = ids.every((id) => checked.has(id));
+              return (
+                <div key={g.cabinetId} style={card}>
+                  {/* Cabinet header — select all within cabinet */}
+                  <button
+                    onClick={() => toggleCabinet(ids)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', padding: 0, marginBottom: 10 }}
+                  >
+                    <IcoCheckbox checked={cabAll} />
+                    <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{g.label}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--ink-mute)' }}>{g.parts.length} part{g.parts.length === 1 ? '' : 's'}</span>
+                  </button>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {g.parts.map((p) => {
+                      const isChecked = checked.has(p.id);
+                      return (
+                        <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <button
+                            onClick={() => togglePart(p.id)}
+                            style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, background: isChecked ? 'rgba(94,234,212,0.06)' : 'transparent', border: `1px solid ${isChecked ? 'rgba(94,234,212,0.25)' : 'var(--line)'}`, borderRadius: 10, padding: '10px 12px', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            <IcoCheckbox checked={isChecked} />
+                            <span style={{ fontSize: 13.5, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partDisplay(p)}</span>
+                          </button>
+                          <ViewDrawingsButton tenantId={tenantId} jobNumber={p.job_number} cabinetKey={p.cabinetKey} compact />
+                          <button
+                            onClick={() => openCoDamage(p)}
+                            title="Report a change order or damage and send back for rework"
+                            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5, padding: '7px 10px', borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.28)', color: '#F87171', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                          >
+                            <IcoAlert /> CO/Damage
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* STEP 3 — Mark complete */}
+          <button
+            onClick={() => void markSelectedComplete()}
+            disabled={checkedInJob === 0 || bulkBusy}
+            style={{
+              marginTop: 16, width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8,
+              padding: '13px', borderRadius: 12, fontSize: 14, fontWeight: 700, fontFamily: 'inherit',
+              background: checkedInJob > 0 && !bulkBusy ? 'rgba(45,225,201,0.14)' : 'var(--bg-1)',
+              border: `1px solid ${checkedInJob > 0 && !bulkBusy ? 'rgba(45,225,201,0.4)' : 'var(--line)'}`,
+              color: checkedInJob > 0 && !bulkBusy ? 'var(--teal)' : 'var(--ink-mute)',
+              cursor: checkedInJob > 0 && !bulkBusy ? 'pointer' : 'not-allowed',
+            }}
+          >
+            <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            {bulkBusy ? 'Saving…' : `Mark ${checkedInJob} part${checkedInJob === 1 ? '' : 's'} complete`}
+          </button>
         </div>
       )}
 
@@ -315,6 +580,76 @@ export default function FinishingView({ tenantId, showToast }: Props) {
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── CO / Damage kickback modal ─────────────────────────────────────── */}
+      {coPart && (
+        <div onClick={(e) => { if (e.target === e.currentTarget && !coSaving) closeCoDamage(); }} style={{ position: 'fixed', inset: 0, zIndex: 410, background: 'rgba(0,0,0,0.78)', backdropFilter: 'blur(5px)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 16, overflowY: 'auto' }}>
+          <div style={{ background: '#0a0d10', border: '1px solid var(--line-strong)', borderRadius: 20, width: '100%', maxWidth: 440, margin: '24px 0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--line)' }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>CO / Damage</div>
+              <button onClick={closeCoDamage} disabled={coSaving} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }}><svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+            </div>
+            <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {/* Report Type toggle */}
+              <div>
+                <div style={{ ...rowLabel, marginBottom: 6 }}>Report Type</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {([['damage', 'Damage'], ['change_order', 'Change Order']] as [typeof coType, string][]).map(([val, label]) => {
+                    const active = coType === val;
+                    const accent = val === 'damage' ? '#F87171' : '#FBBF24';
+                    return (
+                      <button key={val} onClick={() => setCoType(val)}
+                        style={{ flex: 1, padding: '10px', borderRadius: 10, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer', color: active ? accent : 'var(--ink-mute)', background: active ? `${accent}1f` : 'var(--bg-1)', border: `1px solid ${active ? accent : 'var(--line)'}` }}>
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Prefilled context */}
+              <div style={{ ...card, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{coPart.part_name}</div>
+                <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{coPart.cabinetLabel} · {coPart.jobPath.split('/').map((x) => x.trim()).join(' / ')}</div>
+                <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>Reporter: {crewName || 'Crew'}</div>
+              </div>
+
+              {/* Description */}
+              <div>
+                <div style={{ ...rowLabel, marginBottom: 6 }}>Description</div>
+                <textarea value={coDesc} onChange={(e) => setCoDesc(e.target.value)} rows={3} placeholder={coType === 'change_order' ? 'What needs to change…' : 'Describe the damage…'}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 13, resize: 'vertical', fontFamily: 'inherit' }} />
+              </div>
+
+              {/* Send back to dept */}
+              <div>
+                <div style={{ ...rowLabel, marginBottom: 6 }}>After repair, send to:</div>
+                <select value={coSendDept} onChange={(e) => setCoSendDept(e.target.value)}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}>
+                  {SEND_BACK_DEPTS.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+
+              {/* Optional photo */}
+              <div>
+                <div style={{ ...rowLabel, marginBottom: 6 }}>Photo (optional)</div>
+                <input type="file" accept="image/*" capture="environment"
+                  onChange={(e) => { const f = e.target.files?.[0] ?? null; setCoPhoto(f); setCoPreview(f ? URL.createObjectURL(f) : null); }}
+                  style={{ fontSize: 13, color: 'var(--ink-dim)' }} />
+                {coPreview && <img src={coPreview} alt="preview" style={{ marginTop: 8, width: 120, height: 90, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--line)', display: 'block' }} />}
+              </div>
+
+              <button
+                onClick={() => void submitCoDamage()}
+                disabled={coSaving}
+                style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '12px', borderRadius: 10, background: coType === 'change_order' ? '#FBBF24' : '#F87171', color: '#1a1206', border: 'none', fontSize: 14, fontWeight: 700, cursor: coSaving ? 'wait' : 'pointer', fontFamily: 'inherit', opacity: coSaving ? 0.6 : 1 }}
+              >
+                {coSaving ? 'Submitting…' : `Submit & send to ${coSendDept}`}
+              </button>
             </div>
           </div>
         </div>

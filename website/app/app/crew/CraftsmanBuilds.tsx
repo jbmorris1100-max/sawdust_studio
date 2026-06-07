@@ -147,13 +147,30 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   const load = useCallback(async () => {
     if (!tenantId) return;
     try {
-      const { data: unitData } = await supabase
+      const UNIT_COLS = 'id, job_number, room_number, job_id, unit_label, status, assigned_dept, is_split, split_from_id, parent_unit_id';
+      // Cabinets belong to craftsman when the unit is assigned to craftsman OR any
+      // of its parts has been pushed to craftsman (which leaves the cabinet as a
+      // 'split'). Resolve the part-owned cabinet ids first, then a single query.
+      let cabIdsWithCraftPart: string[] = [];
+      try {
+        const { data: cp } = await supabase
+          .from('parts')
+          .select('cabinet_unit_id')
+          .eq('tenant_id', tenantId)
+          .eq('assigned_dept', 'craftsman');
+        cabIdsWithCraftPart = Array.from(new Set(((cp as { cabinet_unit_id: string | null }[] | null) ?? [])
+          .map((r) => r.cabinet_unit_id).filter(Boolean))) as string[];
+      } catch { /* best-effort */ }
+
+      const baseQuery = supabase
         .from('cabinet_units')
-        .select('id, job_number, room_number, job_id, unit_label, status, assigned_dept, is_split, split_from_id, parent_unit_id')
+        .select(UNIT_COLS)
         .eq('tenant_id', tenantId)
-        .eq('assigned_dept', 'craftsman')
         .neq('status', 'complete')
         .order('job_number', { ascending: false });
+      const { data: unitData } = cabIdsWithCraftPart.length > 0
+        ? await baseQuery.or(`assigned_dept.eq.craftsman,id.in.(${cabIdsWithCraftPart.join(',')})`)
+        : await baseQuery.eq('assigned_dept', 'craftsman');
       const list = (unitData as CUnit[] | null) ?? [];
       setUnits(list);
 

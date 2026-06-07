@@ -106,6 +106,7 @@ type DamageReport = {
   flag_type: string | null;
   assembler_name: string | null;
   cabinet_unit_id: string | null;
+  report_type: string | null;
 };
 
 type JobDrawing = {
@@ -847,7 +848,7 @@ export default function SupervisorPage() {
   }, []);
 
   // Damage filter tab
-  const [damageFilter, setDamageFilter] = useState<'all' | 'damaged' | 'missing' | 'wrong_part'>('all');
+  const [damageFilter, setDamageFilter] = useState<'all' | 'damage' | 'change_order' | 'missing' | 'wrong_part'>('all');
 
   // Resolution modal
   const [resolvingId,   setResolvingId]   = useState<string | null>(null);
@@ -945,7 +946,7 @@ export default function SupervisorPage() {
         supabase.from('time_clock').select('id, worker_name, dept, clock_in, status').eq('tenant_id', tenant.id).is('clock_out', null).order('clock_in', { ascending: true }),
         supabase.from('messages').select('id, sender_name, dept, body, created_at, read_at, topic, payload').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
         supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
-        supabase.from('damage_reports').select('id, part_name, job_id, dept, notes, photo_url, status, created_at, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
+        supabase.from('damage_reports').select('id, part_name, job_id, dept, notes, photo_url, status, created_at, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, report_type').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
       ]);
       if (crewRes.data)   setActiveCrew(crewRes.data as CrewRow[]);
       if (msgRes.data)    setMessages(msgRes.data as Message[]);
@@ -1056,16 +1057,24 @@ export default function SupervisorPage() {
   useEffect(() => { void loadPipeline(); }, [loadPipeline]);
 
   // ── Craftsman tab badge count (active units, realtime) ─────────────────────
+  // Counts active cabinets assigned to craftsman OR owning a craftsman part
+  // (splits), deduped — mirrors what the Craftsman tab actually shows.
   const loadCraftsmanCount = useCallback(async () => {
     if (!tenant) return;
     try {
-      const { count } = await supabase
-        .from('cabinet_units')
-        .select('id', { count: 'exact', head: true })
-        .eq('tenant_id', tenant.id)
-        .eq('assigned_dept', 'craftsman')
-        .neq('status', 'complete');
-      setCraftsmanCount(count ?? 0);
+      const [assignedRes, partRes] = await Promise.all([
+        supabase.from('cabinet_units').select('id, status').eq('tenant_id', tenant.id).eq('assigned_dept', 'craftsman').neq('status', 'complete'),
+        supabase.from('parts').select('cabinet_unit_id').eq('tenant_id', tenant.id).eq('assigned_dept', 'craftsman'),
+      ]);
+      const active = new Set<string>();
+      ((assignedRes.data as { id: string }[] | null) ?? []).forEach((u) => active.add(u.id));
+      const partCabIds = Array.from(new Set(((partRes.data as { cabinet_unit_id: string | null }[] | null) ?? []).map((p) => p.cabinet_unit_id).filter(Boolean))) as string[];
+      const extraIds = partCabIds.filter((id) => !active.has(id));
+      if (extraIds.length > 0) {
+        const { data: extra } = await supabase.from('cabinet_units').select('id, status').eq('tenant_id', tenant.id).in('id', extraIds).neq('status', 'complete');
+        ((extra as { id: string }[] | null) ?? []).forEach((u) => active.add(u.id));
+      }
+      setCraftsmanCount(active.size);
     } catch (_) { /* table/column may not exist until migrations run */ }
   }, [tenant]);
 
@@ -1075,6 +1084,7 @@ export default function SupervisorPage() {
     const ch = supabase
       .channel('rt-sup-craftsman-count')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenant.id}` }, () => { void loadCraftsmanCount(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parts', filter: `tenant_id=eq.${tenant.id}` }, () => { void loadCraftsmanCount(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenant, loadCraftsmanCount]);
@@ -1732,6 +1742,7 @@ export default function SupervisorPage() {
       flag_type: null,
       assembler_name: null,
       cabinet_unit_id: null,
+      report_type: 'damage',
       resolution_type: null,
       resolution_notes: null,
       resolved_by: null,
@@ -1754,9 +1765,10 @@ export default function SupervisorPage() {
         dept: supDmgDept,
         status: 'open',
         tenant_id: tenant!.id,
+        report_type: 'damage',
         ...(supDmgJobNum.trim() && { job_id: supDmgJobNum.trim() }),
         ...(photoUrl && { photo_url: photoUrl }),
-      }).select('id, part_name, job_id, dept, notes, photo_url, status, created_at').single();
+      }).select('id, part_name, job_id, dept, notes, photo_url, status, created_at, report_type').single();
       if (error) throw error;
       setDamage((prev) => prev.map((d) => d.id === optimisticId ? (data as DamageReport) : d));
       sendNotify({
@@ -3560,10 +3572,11 @@ export default function SupervisorPage() {
             {/* Filter tabs */}
             <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 16 }}>
               {([
-                { key: 'all',        label: 'All' },
-                { key: 'damaged',    label: 'Damage' },
-                { key: 'missing',    label: 'Missing Parts' },
-                { key: 'wrong_part', label: 'Wrong Part' },
+                { key: 'all',          label: 'All' },
+                { key: 'damage',       label: 'Damage' },
+                { key: 'change_order', label: 'Change Orders' },
+                { key: 'missing',      label: 'Missing Parts' },
+                { key: 'wrong_part',   label: 'Wrong Part' },
               ] as { key: typeof damageFilter; label: string }[]).map(({ key, label }) => (
                 <button
                   key={key}
@@ -3638,9 +3651,12 @@ export default function SupervisorPage() {
               ) : (() => {
                 const filtered = damage.filter((d) => {
                   if (damageFilter === 'all') return true;
-                  if (damageFilter === 'damaged')    return d.flag_type === 'damaged'    || (!d.flag_type && d.status !== null);
-                  if (damageFilter === 'missing')    return d.flag_type === 'missing';
-                  if (damageFilter === 'wrong_part') return d.flag_type === 'wrong_part';
+                  // report_type splits human "Damage" vs "Change Order" (legacy rows
+                  // with no report_type count as damage); missing/wrong_part are scan flags.
+                  if (damageFilter === 'damage')       return (d.report_type ?? 'damage') === 'damage';
+                  if (damageFilter === 'change_order') return d.report_type === 'change_order';
+                  if (damageFilter === 'missing')      return d.flag_type === 'missing';
+                  if (damageFilter === 'wrong_part')   return d.flag_type === 'wrong_part';
                   return true;
                 });
                 if (filtered.length === 0) {
@@ -3663,6 +3679,12 @@ export default function SupervisorPage() {
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
                             <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{d.part_name}</span>
                             <StatusBadge status={d.status} />
+                            {/* Report type — Change Order (amber) vs Damage (red) */}
+                            {d.report_type === 'change_order' ? (
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: '#FBBF24', background: 'rgba(251,191,36,0.12)' }}>Change Order</span>
+                            ) : (
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: '#F87171', background: 'rgba(248,113,113,0.12)' }}>Damage</span>
+                            )}
                             {fc && (
                               <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: fc.c, background: fc.bg, textTransform: 'capitalize' }}>
                                 {(d.flag_type ?? '').replace('_', ' ')}

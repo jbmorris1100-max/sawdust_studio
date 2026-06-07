@@ -626,6 +626,7 @@ export default function CrewPage() {
   // Damage modal
   const [dmgWhat,         setDmgWhat]         = useState('');
   const [dmgDept,         setDmgDept]         = useState('');
+  const [dmgType,         setDmgType]         = useState<'damage' | 'change_order'>('damage');
   const [dmgPhoto,        setDmgPhoto]        = useState<File | null>(null);
   const [dmgPhotoPreview, setDmgPhotoPreview] = useState<string | null>(null);
   const [dmgScanStep,     setDmgScanStep]     = useState<'camera' | 'preview'>('camera');
@@ -1258,6 +1259,7 @@ export default function CrewPage() {
   function openDamage() {
     setDmgWhat('');
     setDmgDept(crewDept);
+    setDmgType('damage');
     setDmgPhoto(null);
     setDmgPhotoPreview(null);
     setDmgScanStep('camera');
@@ -1882,10 +1884,13 @@ export default function CrewPage() {
     setCutPartExpanded({});
     setCutLoading(true);
     try {
+      // Production only owns parts assigned to it (or unassigned — null defaults
+      // to production). Parts pushed to craftsman/assembly/finishing drop out here.
       const { data } = await supabase
         .from('parts')
         .select('id, part_name, material, width, height, depth, quantity, production_status, cut_by, cut_at, cut_photo_url')
         .eq('cabinet_unit_id', unit.id)
+        .or('assigned_dept.eq.production,assigned_dept.is.null')
         .order('part_name');
       setCutParts((data as ProdPart[]) ?? []);
     } catch (_) {}
@@ -2601,20 +2606,22 @@ export default function CrewPage() {
         catch (_) { /* photo upload failed — continue without it */ }
       }
       const dept = dmgDept.trim() || crewDept || 'Unknown';
+      const typeLabel = dmgType === 'change_order' ? 'Change Order' : 'Damage';
       const { error } = await supabase.from('damage_reports').insert({
-        part_name: dmgWhat.trim() || 'Damage report',
+        part_name:   dmgWhat.trim() || `${typeLabel} report`,
         dept,
-        notes:     null,
-        photo_url: photoUrl,
-        status:    'open',
-        tenant_id: tenant!.id,
+        notes:       null,
+        photo_url:   photoUrl,
+        status:      'open',
+        report_type: dmgType,
+        tenant_id:   tenant!.id,
       });
       if (error) throw error;
       sendNotify({
         tenant_id: tenant!.id,
         target: 'supervisor',
-        title: 'Damage Report',
-        body: `${crewName || 'Crew'} reported damage in ${dept}`,
+        title: `${typeLabel} Report`,
+        body: `${crewName || 'Crew'} reported a ${typeLabel.toLowerCase()} in ${dept}`,
         url: '/app/supervisor',
       });
       void logShiftEvent({
@@ -2972,7 +2979,7 @@ export default function CrewPage() {
           {crewDept === 'Craftsman' && tenant ? (
             <CraftsmanBuilds tenantId={tenant.id} crewName={crewName} timeClockId={activeTimeClockId} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} />
           ) : crewDept === 'Finishing' && tenant ? (
-            <FinishingView tenantId={tenant.id} showToast={showToast} />
+            <FinishingView tenantId={tenant.id} showToast={showToast} crewName={crewName} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} />
           ) : !activeJobLoading && (
             activeJob ? (
               <div style={{ marginBottom: 32, padding: '18px 20px', borderRadius: 16, background: 'var(--bg-1)', border: '1px solid var(--line)', borderLeft: '3px solid var(--teal)' }}>
@@ -3579,6 +3586,22 @@ export default function CrewPage() {
           ) : (
             /* ── Step 2: Preview + submit ── */
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {/* Report Type — required toggle */}
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--ink-mute)', fontWeight: 600, marginBottom: 6 }}>Report Type</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {([['damage', 'Damage'], ['change_order', 'Change Order']] as ['damage' | 'change_order', string][]).map(([val, label]) => {
+                    const active = dmgType === val;
+                    const accent = val === 'damage' ? '#F87171' : '#FBBF24';
+                    return (
+                      <button key={val} type="button" onClick={() => setDmgType(val)}
+                        style={{ flex: 1, padding: '9px', borderRadius: 10, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer', color: active ? accent : 'var(--ink-mute)', background: active ? `${accent}1f` : 'transparent', border: `1px solid ${active ? accent : 'var(--line)'}` }}>
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
                 <img src={dmgPhotoPreview!} alt="damage" style={{ width: 100, height: 75, objectFit: 'cover', borderRadius: 10, border: '1px solid var(--line)', flexShrink: 0 }} />
                 <button type="button"
