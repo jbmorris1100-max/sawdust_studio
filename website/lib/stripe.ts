@@ -5,7 +5,7 @@ import Stripe from 'stripe';
 // apiVersion is intentionally omitted so the SDK's pinned default is used,
 // which keeps object shapes (e.g. items[].current_period_end) in sync with
 // the installed stripe package and avoids type drift on upgrade.
-export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? '');
+export const stripe = new Stripe((process.env.STRIPE_SECRET_KEY ?? '').trim());
 
 // ── Plan model ──────────────────────────────────────────────────────────────
 // A "plan" is the internal name we persist on tenants.plan. It encodes both the

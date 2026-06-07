@@ -56,8 +56,9 @@ async function pushSupervisor(origin: string, tenant_id: string, title: string, 
 }
 
 export async function POST(req: Request) {
-  const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!secret || !process.env.STRIPE_SECRET_KEY) {
+  // Trimmed to tolerate whitespace/newlines introduced when pasting into Vercel.
+  const webhookSecret = (process.env.STRIPE_WEBHOOK_SECRET ?? '').trim();
+  if (!webhookSecret || !process.env.STRIPE_SECRET_KEY) {
     return NextResponse.json({ error: 'Stripe webhook not configured' }, { status: 500 });
   }
   const db = serviceDb();
@@ -73,7 +74,7 @@ export async function POST(req: Request) {
   const rawBody = await req.text();
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(rawBody, sig, secret);
+    event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
   } catch (err: unknown) {
     console.error('Webhook signature verification failed:', err);
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
