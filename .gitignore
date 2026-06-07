@@ -40,3 +40,9 @@ yarn-error.*
 /ios
 /android
 .vercel
+supabase/.temp/
+*.zip
+expo-qr.png
+qr.png
+design_handoff_inlineiq_landing/
+src/screens/
