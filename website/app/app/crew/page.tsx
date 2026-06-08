@@ -1072,6 +1072,7 @@ export default function CrewPage() {
         .select('id, unit_label, job_number, cabinet_number, room_number, status, production_status')
         .eq('tenant_id', tenant.id)
         .neq('production_status', 'complete')
+        .neq('status', 'complete')
         .order('job_number', { ascending: true });
       const unitList = (units as Omit<ProdUnit, 'partsTotal' | 'partsCut' | 'jobPath' | 'dueDate'>[]) ?? [];
 
