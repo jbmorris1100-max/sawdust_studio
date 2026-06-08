@@ -290,6 +290,8 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
   const [qcBusy,      setQcBusy]      = useState<string | null>(null);
   const [qcFailUnit,  setQcFailUnit]  = useState<CabinetUnit | null>(null);
   const [qcFailNotes, setQcFailNotes] = useState('');
+  // Dept the failed cabinet is sent back to (label form; lowercased on write).
+  const [qcFailDept,  setQcFailDept]  = useState('Assembly');
 
   // ── Data load ──────────────────────────────────────────────────────────────
 
@@ -442,29 +444,32 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
   async function failQC() {
     const unit = qcFailUnit;
     if (!unit || qcBusy) return;
-    setQcBusy(unit.id);
     const notes = qcFailNotes.trim();
+    if (!notes) return; // reason is required
+    const chosenDept = qcFailDept;        // label, e.g. "Production"
+    const deptKey = chosenDept.toLowerCase();
+    setQcBusy(unit.id);
     try {
       const { error } = await supabase.from('cabinet_units')
-        .update({ status: 'flagged', assigned_dept: 'assembly', flagged_reason: notes || 'Failed QC' })
+        .update({ status: 'flagged', assigned_dept: deptKey, flagged_reason: notes })
         .eq('id', unit.id);
       if (error) throw error;
       // Log the kickback as a damage report so it shows in the supervisor's queue.
       try {
         await supabase.from('damage_reports').insert({
           tenant_id: tenantId, part_name: unit.unit_label, dept: 'Assembly', status: 'open',
-          report_type: 'damage', notes: `Failed QC — ${notes || 'see supervisor'}`,
+          report_type: 'damage', notes: `Failed QC — ${notes}`,
           cabinet_unit_id: unit.id, ...(unit.job_number && { job_id: unit.job_number }),
         });
       } catch { /* best-effort */ }
       sendNotify({
-        tenant_id: tenantId, target: 'crew', dept_target: 'Assembly',
+        tenant_id: tenantId, target: 'crew', dept_target: chosenDept,
         title: 'Cabinet failed QC',
-        body: `${unit.cabinet_number || unit.unit_label} failed QC — ${notes || 'see supervisor'}`,
+        body: `${unit.unit_label} failed QC — ${notes || 'see supervisor'}`,
         url: '/app/crew',
       });
-      showToast('Sent back to Assembly');
-      setQcFailUnit(null); setQcFailNotes('');
+      showToast(`Sent back to ${chosenDept}`);
+      setQcFailUnit(null); setQcFailNotes(''); setQcFailDept('Assembly');
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'QC update failed', true);
     } finally {
@@ -834,18 +839,18 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
       {qcFailUnit && (
         <div
           style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(5px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
-          onClick={(e) => { if (e.target === e.currentTarget && !qcBusy) setQcFailUnit(null); }}
+          onClick={(e) => { if (e.target === e.currentTarget && !qcBusy) { setQcFailUnit(null); setQcFailNotes(''); setQcFailDept('Assembly'); } }}
         >
           <div style={{ background: '#0a0d10', border: '1px solid var(--line-strong)', borderRadius: 20, width: '100%', maxWidth: 460, padding: 28, display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: '#F87171' }}>Fail QC — send back to Assembly</div>
-              <button onClick={() => setQcFailUnit(null)} disabled={!!qcBusy} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: '#F87171' }}>Fail QC</div>
+              <button onClick={() => { setQcFailUnit(null); setQcFailNotes(''); setQcFailDept('Assembly'); }} disabled={!!qcBusy} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }}>
                 <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
             <div style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{qcFailUnit.cabinet_number ? `${qcFailUnit.cabinet_number} — ` : ''}{qcFailUnit.unit_label}</div>
             <div>
-              <label style={{ fontSize: 12, color: 'var(--ink-mute)', fontWeight: 600, display: 'block', marginBottom: 5 }}>Notes for the assembly crew</label>
+              <label style={{ fontSize: 12, color: 'var(--ink-mute)', fontWeight: 600, display: 'block', marginBottom: 5 }}>Reason for failure</label>
               <textarea
                 className="form-input"
                 value={qcFailNotes}
@@ -855,14 +860,28 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                 style={{ width: '100%', resize: 'none' }}
               />
             </div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--ink-mute)', fontWeight: 600, display: 'block', marginBottom: 5 }}>Send back to:</label>
+              <select
+                className="form-input"
+                value={qcFailDept}
+                onChange={(e) => setQcFailDept(e.target.value)}
+                disabled={!!qcBusy}
+                style={{ width: '100%', cursor: 'pointer' }}
+              >
+                {['Assembly', 'Production', 'Craftsman', 'Finishing'].map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+            </div>
             <div style={{ display: 'flex', gap: 10 }}>
-              <button className="btn btn-ghost" onClick={() => setQcFailUnit(null)} disabled={!!qcBusy} style={{ flex: 1, justifyContent: 'center' }}>Cancel</button>
+              <button className="btn btn-ghost" onClick={() => { setQcFailUnit(null); setQcFailNotes(''); setQcFailDept('Assembly'); }} disabled={!!qcBusy} style={{ flex: 1, justifyContent: 'center' }}>Cancel</button>
               <button
                 onClick={() => void failQC()}
-                disabled={!!qcBusy}
-                style={{ flex: 2, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '12px', borderRadius: 10, background: '#F87171', color: '#1a0606', border: 'none', fontSize: 14, fontWeight: 700, cursor: qcBusy ? 'wait' : 'pointer', fontFamily: 'inherit', opacity: qcBusy ? 0.6 : 1 }}
+                disabled={!!qcBusy || !qcFailNotes.trim()}
+                style={{ flex: 2, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '12px', borderRadius: 10, background: '#F87171', color: '#1a0606', border: 'none', fontSize: 14, fontWeight: 700, cursor: (qcBusy || !qcFailNotes.trim()) ? 'not-allowed' : 'pointer', fontFamily: 'inherit', opacity: (qcBusy || !qcFailNotes.trim()) ? 0.6 : 1 }}
               >
-                {qcBusy ? 'Sending…' : 'Send back to Assembly'}
+                {qcBusy ? 'Sending…' : 'Fail & Send Back'}
               </button>
             </div>
           </div>

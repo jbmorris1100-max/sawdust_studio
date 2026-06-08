@@ -756,7 +756,9 @@ export default function CrewPage() {
   const [cutPartExpanded,setCutPartExpanded]= useState<Record<string, boolean>>({});
   const [cutActioning,   setCutActioning]   = useState<Record<string, boolean>>({});
   const [cutBulkBusy,    setCutBulkBusy]    = useState(false);
-  const [prodFlash,      setProdFlash]      = useState<string | null>(null);
+  // Inline "Complete" confirmation: null = hidden; number = count of parts on
+  // this cabinet still not marked cut (drives the prompt above the action bar).
+  const [cutCompletePrompt, setCutCompletePrompt] = useState<number | null>(null);
 
   // Camera (shared between damage + parts modals — only one open at a time)
   const videoRef         = useRef<HTMLVideoElement>(null);
@@ -2016,73 +2018,61 @@ export default function CrewPage() {
     }
   }
 
-  async function markAllStatus(status: 'cutting' | 'cut') {
-    if (!requireClockIn()) return;
-    if (!cutUnit || cutBulkBusy || !tenant) return;
-    setCutBulkBusy(true);
-    const now = new Date().toISOString();
-    const patch: Record<string, unknown> = { production_status: status };
-    if (status === 'cut') { patch.cut_by = crewName || null; patch.cut_at = now; patch.cut_confirmed = true; }
-    setCutParts((ps) => ps.map((p) => ({ ...p, production_status: status, cut_by: status === 'cut' ? (crewName || null) : p.cut_by, cut_at: status === 'cut' ? now : p.cut_at })));
-    try {
-      const ids = cutParts.map((p) => p.id);
-      if (ids.length > 0) {
-        const { error } = await supabase.from('parts').update(patch).in('id', ids);
-        if (error) throw error;
-      }
-      await supabase.from('cabinet_units').update({ production_status: status }).eq('id', cutUnit.id);
+  // ── Production: "Complete" this cabinet ────────────────────────────────────
+  // cutParts only ever holds this cabinet's production-owned, not-yet-cut parts
+  // (parts pushed to other depts are filtered out at load; cut taps update them
+  // in place). "Complete" leaves all of that exactly as-is and moves on — unless
+  // some parts were never marked cut, in which case we prompt first.
 
-      if (status === 'cut') {
-        const readyBody = `${cutUnit.unit_label} — ${cutUnit.jobPath} is ready for assembly`;
-        // System events never go in the messages table (that's human chat only).
-        // Push the Assembly crew (they're the handoff recipients) — sendNotify
-        // also logs this to the notifications table for their bell.
-        sendNotify({
-          tenant_id: tenant.id,
-          target: 'crew',
-          dept_target: 'Assembly',
-          title: 'Ready for Assembly',
-          body: readyBody,
-          url: '/app/crew',
-        });
-        // Also surface it in the supervisor notification bell (no push needed).
-        try {
-          await supabase.from('notifications').insert({
-            tenant_id: tenant.id,
-            target_type: 'supervisor',
-            title: 'Ready for Assembly',
-            body: readyBody,
-            url: '/app/supervisor',
-          });
-        } catch (_) { /* bell log is best-effort */ }
-        void checkProductionComplete(cutUnit.job_number);
-        setProdFlash('Cabinet ready for assembly');
-        setTimeout(() => { setProdFlash(null); closeCutView(); void loadProduction(); }, 2000);
-      } else {
-        void loadProduction();
-      }
-    } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : 'Update failed', true);
-    } finally {
-      setCutBulkBusy(false);
-    }
-  }
-
-  // "Next Cabinet" — leave the current cut state exactly as-is (each part's
-  // status is already persisted on tap) and move on to the next cabinet. Logs a
-  // skip event, re-checks whether Production is now complete for the job, then
-  // returns to the cut list.
-  async function nextCabinet() {
+  // Shared completion path (runs after either the no-prompt or "mark all" route).
+  // Never touches parts that were pushed to other depts — they stay put.
+  async function finishCabinetComplete() {
     if (!cutUnit) return;
     const unit = cutUnit;
+    setCutCompletePrompt(null);
     void logShiftEvent({
       tenantId: tenant!.id, timeClockId: activeTimeClockId,
-      workerName: crewName || 'Production', eventType: 'cabinet_skipped', dept: 'Production',
+      workerName: crewName || 'Production', eventType: 'production_cabinet_complete', dept: 'Production',
       metadata: { unit_id: unit.id, unit_label: unit.unit_label, job_number: unit.job_number },
     });
     void checkProductionComplete(unit.job_number);
     closeCutView();
     void loadProduction();
+  }
+
+  // Complete button: if every part is cut/pushed, complete straight away;
+  // otherwise surface the inline confirmation prompt with the unmarked count.
+  function completeCabinet() {
+    if (!cutUnit) return;
+    const unmarked = cutParts.filter((p) => !isPartCut(p.production_status)).length;
+    if (unmarked > 0) { setCutCompletePrompt(unmarked); return; }
+    void finishCabinetComplete();
+  }
+
+  // "Mark All Cut & Complete": flag every remaining production-owned uncut part
+  // as cut, then run the shared completion path.
+  async function markAllCutAndComplete() {
+    if (!requireClockIn()) return;
+    if (!cutUnit || cutBulkBusy || !tenant) return;
+    setCutBulkBusy(true);
+    const now = new Date().toISOString();
+    try {
+      const ids = cutParts.filter((p) => !isPartCut(p.production_status)).map((p) => p.id);
+      if (ids.length > 0) {
+        const { error } = await supabase.from('parts')
+          .update({ production_status: 'cut', cut_by: crewName || null, cut_at: now, cut_confirmed: true })
+          .in('id', ids);
+        if (error) throw error;
+        setCutParts((ps) => ps.map((p) => ids.includes(p.id)
+          ? { ...p, production_status: 'cut', cut_by: crewName || null, cut_at: now }
+          : p));
+      }
+      await finishCabinetComplete();
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Update failed', true);
+    } finally {
+      setCutBulkBusy(false);
+    }
   }
 
   async function handlePartPhoto(partId: string, file: File) {
@@ -4698,8 +4688,8 @@ export default function CrewPage() {
             ) : cutParts.length === 0 ? (
               <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
                 <div>All parts cut or pushed to other depts</div>
-                <button onClick={() => void nextCabinet()}
-                  style={{ minHeight: 48, padding: '0 22px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-1)', color: 'var(--ink-dim)', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Next Cabinet</button>
+                <button onClick={() => completeCabinet()}
+                  style={{ minHeight: 48, padding: '0 22px', borderRadius: 12, border: 'none', background: '#2DE1C9', color: '#051A12', fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit' }}>Complete</button>
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 640, margin: '0 auto' }}>
@@ -4764,24 +4754,30 @@ export default function CrewPage() {
             )}
           </div>
 
+          {/* Inline "unmarked parts" confirmation — sits just above the action bar */}
+          {cutCompletePrompt != null && (
+            <div style={{ position: 'absolute', left: 0, right: 0, bottom: 'calc(74px + env(safe-area-inset-bottom))', padding: '14px 16px', borderTop: '1px solid var(--line)', background: 'rgba(5,6,8,0.97)', backdropFilter: 'blur(10px)' }}>
+              <div style={{ maxWidth: 640, margin: '0 auto' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 12 }}>
+                  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  <span style={{ fontSize: 13.5, color: 'var(--ink-dim)', fontWeight: 600 }}>{cutCompletePrompt} part{cutCompletePrompt === 1 ? '' : 's'} {cutCompletePrompt === 1 ? 'is' : 'are'} not yet marked cut. What would you like to do?</span>
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button onClick={() => setCutCompletePrompt(null)} disabled={cutBulkBusy}
+                    style={{ flex: 1, minHeight: 48, borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-1)', color: 'var(--ink-dim)', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy ? 0.5 : 1 }}>Cancel</button>
+                  <button onClick={() => void markAllCutAndComplete()} disabled={cutBulkBusy}
+                    style={{ flex: 1, minHeight: 48, borderRadius: 12, border: 'none', background: '#2DE1C9', color: '#051A12', fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy ? 0.5 : 1 }}>{cutBulkBusy ? 'Saving…' : 'Mark All Cut & Complete'}</button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* bottom action bar */}
           <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, display: 'flex', gap: 10, padding: '12px 16px', paddingBottom: 'calc(12px + env(safe-area-inset-bottom))', borderTop: '1px solid var(--line)', background: 'rgba(5,6,8,0.92)', backdropFilter: 'blur(10px)' }}>
-            <button onClick={() => void nextCabinet()} disabled={cutBulkBusy}
-              style={{ flex: '0 0 auto', minHeight: 50, padding: '0 18px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-1)', color: 'var(--ink-dim)', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy ? 0.5 : 1 }}>Next Cabinet</button>
-            <button onClick={() => void markAllStatus('cut')} disabled={cutBulkBusy || cutParts.length === 0}
-              style={{ flex: 1, minHeight: 50, borderRadius: 12, border: 'none', background: '#2DE1C9', color: '#051A12', fontSize: 15, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy || cutParts.length === 0 ? 0.5 : 1 }}>
-              {cutBulkBusy ? 'Saving…' : 'Mark All Cut'}
+            <button onClick={() => completeCabinet()} disabled={cutBulkBusy}
+              style={{ flex: 1, minHeight: 50, borderRadius: 12, border: 'none', background: '#2DE1C9', color: '#051A12', fontSize: 15, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy ? 0.5 : 1 }}>
+              {cutBulkBusy ? 'Saving…' : 'Complete'}
             </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Production "ready for assembly" flash ──────────────────────────────── */}
-      {prodFlash && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(5,6,8,0.88)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1600, pointerEvents: 'none' }}>
-          <div style={{ background: '#052E16', border: '1px solid #34D399', borderRadius: 16, padding: '22px 40px', display: 'flex', alignItems: 'center', gap: 14 }}>
-            <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            <span style={{ fontSize: 18, fontWeight: 700, color: '#34D399' }}>{prodFlash}</span>
           </div>
         </div>
       )}
