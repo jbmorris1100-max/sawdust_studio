@@ -99,10 +99,10 @@ export async function pushPartToDept(opts: {
   workerName?: string;
 }): Promise<void> {
   const toLower = opts.toDept.toLowerCase();
-  // 1. Reassign the part (this must succeed). Pushing back to Production resets
-  // production_status to 'not_cut' so it re-enters the cut queue immediately.
-  const update: Record<string, unknown> = { assigned_dept: toLower };
-  if (toLower === 'production') update.production_status = 'not_cut';
+  // 1. Reassign the part (this must succeed). Leaving Production means Production
+  // is done with this part, so always mark it cut — this keeps the production cut
+  // queue unambiguous (a part is either still to-cut in Production, or it's gone).
+  const update: Record<string, unknown> = { assigned_dept: toLower, production_status: 'cut' };
   const { error } = await supabase.from('parts').update(update).eq('id', opts.part.id).eq('tenant_id', opts.tenantId);
   if (error) throw error;
 

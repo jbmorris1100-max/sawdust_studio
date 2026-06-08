@@ -1086,8 +1086,10 @@ export default function CrewPage() {
           if (!(p.assigned_dept === 'production' || p.assigned_dept == null)) return;
           const e = (counts[p.cabinet_unit_id] ??= { total: 0, cut: 0, remaining: 0 });
           e.total++;
-          if (isPartCut(p.production_status)) e.cut++;
-          else e.remaining++; // not_cut / cutting / null → still to cut
+          // Remaining = production-owned and not yet cut/complete. Anything 'cut'
+          // (including parts pushed to other depts, now auto-marked cut) is done.
+          if (p.production_status !== 'cut' && p.production_status !== 'complete') e.remaining++;
+          else e.cut++;
         });
       }
 
@@ -1943,8 +1945,8 @@ export default function CrewPage() {
       const rows = (data as (ProdPart & { assigned_dept: string | null })[]) ?? [];
       const visible = rows.filter((p) =>
         (p.assigned_dept === 'production' || p.assigned_dept == null) &&
-        p.production_status !== 'complete' &&
-        !isPartCut(p.production_status),   // not_cut / cutting / null only
+        p.production_status !== 'cut' &&
+        p.production_status !== 'complete',
       );
       setCutParts(visible);
     } catch (_) {}
@@ -4686,11 +4688,7 @@ export default function CrewPage() {
             {cutLoading ? (
               <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32 }}>Loading parts…</div>
             ) : cutParts.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-                <div>All parts cut or pushed to other depts</div>
-                <button onClick={() => completeCabinet()}
-                  style={{ minHeight: 48, padding: '0 22px', borderRadius: 12, border: 'none', background: '#2DE1C9', color: '#051A12', fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit' }}>Complete</button>
-              </div>
+              <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32 }}>All parts cut or pushed to other depts</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 640, margin: '0 auto' }}>
                 {cutParts.map((p) => {
