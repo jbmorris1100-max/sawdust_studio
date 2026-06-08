@@ -32,7 +32,9 @@ type DbPart = {
 
 type DbUnit = { id: string; unit_label: string };
 
-type Classification = { dept: 'craftsman' | 'production'; reason: string };
+// dept is usually 'craftsman'|'production' from the AI, but a routing rule can
+// also assign 'finishing'|'assembly', so the stored dept is a plain string.
+type Classification = { dept: string; reason: string };
 
 type AiItem = {
   unit_id: string;
@@ -46,6 +48,47 @@ type LearnedPattern = {
   assigned_dept: string;
   times_confirmed: number;
 };
+
+// Supervisor-editable routing rule (table: routing_rules). Evaluated before the
+// learned patterns and the AI — a matching rule is a hard override.
+type RoutingRule = {
+  priority: number;
+  condition_field: string;   // 'part_name' | 'material' | 'unit_label' | 'cabinet_type'
+  condition_operator: string; // 'contains' | 'equals' | 'starts_with'
+  condition_value: string;
+  assigned_dept: string;      // 'production' | 'craftsman' | 'finishing' | 'assembly'
+};
+
+// Test one field value against a rule operator (all case-insensitive).
+function matchOperator(field: string, operator: string, value: string): boolean {
+  const f = (field || '').toLowerCase();
+  const v = (value || '').toLowerCase();
+  if (!v) return false;
+  switch (operator) {
+    case 'equals':      return f === v;
+    case 'starts_with': return f.startsWith(v);
+    case 'contains':
+    default:            return f.includes(v);
+  }
+}
+
+// First matching rule (rules arrive in priority ASC order) wins → return its
+// dept. No match → null, and the unit falls through to learned patterns + AI.
+function applyRoutingRules(unitLabel: string, parts: DbPart[], rules: RoutingRule[]): string | null {
+  for (const rule of rules) {
+    const { condition_field: fieldName, condition_operator: op, condition_value: val } = rule;
+    let hit = false;
+    if (fieldName === 'unit_label') {
+      hit = matchOperator(unitLabel, op, val);
+    } else if (fieldName === 'part_name') {
+      hit = parts.some((p) => matchOperator(p.part_name || '', op, val));
+    } else if (fieldName === 'material') {
+      hit = parts.some((p) => matchOperator(p.material || '', op, val));
+    }
+    if (hit) return rule.assigned_dept;
+  }
+  return null;
+}
 
 // Keywords that reliably indicate a custom craftsman build. Used both to extract
 // a reusable learned pattern from a label and as a cheap pre-AI hint.
@@ -93,13 +136,16 @@ export async function POST(req: Request) {
   let units: DbUnit[] = [];
   let parts: DbPart[] = [];
   let learned: LearnedPattern[] = [];
+  let routingRules: RoutingRule[] = [];
   try {
-    const [unitsRes, learnedRes] = await Promise.all([
+    const [unitsRes, learnedRes, rulesRes] = await Promise.all([
       db.from('cabinet_units').select('id, unit_label').eq('tenant_id', tenantId).eq('job_number', jobNumber),
       db.from('craftsman_classifications').select('unit_label_pattern, assigned_dept, times_confirmed').eq('tenant_id', tenantId),
+      db.from('routing_rules').select('priority, condition_field, condition_operator, condition_value, assigned_dept').eq('tenant_id', tenantId).eq('is_active', true).order('priority', { ascending: true }),
     ]);
     units = (unitsRes.data as DbUnit[] | null) ?? [];
     learned = (learnedRes.data as LearnedPattern[] | null) ?? [];
+    routingRules = (rulesRes.data as RoutingRule[] | null) ?? [];
     if (units.length > 0) {
       const ids = units.map((u) => u.id);
       const { data: partsData } = await db
@@ -127,6 +173,13 @@ export async function POST(req: Request) {
 
   for (const unit of units) {
     const lower = unit.unit_label.toLowerCase();
+    // Supervisor routing rules are a hard override — checked before learned
+    // patterns and the AI. First matching rule (priority order) wins.
+    const ruleDept = applyRoutingRules(unit.unit_label, partsByUnit.get(unit.id) ?? [], routingRules);
+    if (ruleDept) {
+      decided.set(unit.id, { dept: ruleDept, reason: 'Routing rule match' });
+      continue;
+    }
     // Strongest matching learned pattern (highest times_confirmed).
     let best: LearnedPattern | null = null;
     for (const lp of learned) {
@@ -178,6 +231,13 @@ Return ONLY a valid JSON array:
       ? learned.map((l) => `- "${l.unit_label_pattern}" → ${l.assigned_dept} (${l.times_confirmed}× confirmed)`).join('\n')
       : '(none yet)';
 
+    // Shop-specific routing rules the supervisor configured. Units matching a
+    // rule are already decided above; this is context so the AI's judgment on
+    // the *remaining* units stays consistent with the shop's conventions.
+    const rulesSummary = routingRules.length
+      ? routingRules.map((r) => `- if ${r.condition_field} ${r.condition_operator} "${r.condition_value}" → ${r.assigned_dept}`).join('\n')
+      : '(none configured)';
+
     const unitsPayload = remaining.map((u) => ({
       unit_id: u.id,
       unit_label: u.unit_label,
@@ -190,7 +250,7 @@ Return ONLY a valid JSON array:
       })),
     }));
 
-    const userMessage = `Shop learned patterns:\n${learnedSummary}\n\nUnits to classify:\n${JSON.stringify(unitsPayload, null, 2)}`;
+    const userMessage = `Shop routing rules (supervisor-configured department conventions):\n${rulesSummary}\n\nShop learned patterns:\n${learnedSummary}\n\nUnits to classify:\n${JSON.stringify(unitsPayload, null, 2)}`;
 
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {

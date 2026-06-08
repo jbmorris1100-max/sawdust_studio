@@ -106,6 +106,20 @@ export async function pushPartToDept(opts: {
   const { error } = await supabase.from('parts').update(update).eq('id', opts.part.id).eq('tenant_id', opts.tenantId);
   if (error) throw error;
 
+  // 1b. part_dept_events — a timestamped log of every dept transition, the
+  // foundation for time-in-dept tracking and bottleneck detection.
+  try {
+    await supabase.from('part_dept_events').insert({
+      tenant_id: opts.tenantId,
+      part_id: opts.part.id,
+      cabinet_unit_id: opts.part.cabinet_unit_id,
+      job_number: opts.part.job_number ?? null,
+      from_dept: opts.fromDept || null,
+      to_dept: toLower,
+      worker_name: opts.workerName || null,
+    });
+  } catch { /* best-effort */ }
+
   // 2. shift_event (time_clock_id may be null for supervisor-initiated pushes).
   try {
     await supabase.from('shift_events').insert({

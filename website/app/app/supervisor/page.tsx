@@ -11,6 +11,8 @@ import SetupWizard from './SetupWizard';
 import AssemblyTab from './AssemblyTab';
 import CraftsmanTab from './CraftsmanTab';
 import CrewTab from './CrewTab';
+import RoutingRulesPanel from './RoutingRulesPanel';
+import JobDrillDown from './JobDrillDown';
 import FinishSpecsModal from './FinishSpecsModal';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import JobSearch, { type SearchTarget } from '@/components/JobSearch';
@@ -648,6 +650,9 @@ export default function SupervisorPage() {
 
   // Production pipeline (Overview)
   const [pipeline, setPipeline] = useState<PipelineRow[]>([]);
+  // Overview Production Pipeline: which job row is expanded to its part-level
+  // drill-down (one at a time; tap again to collapse).
+  const [expandedJob, setExpandedJob] = useState<string | null>(null);
 
   // Active craftsman unit count — drives the Craftsman tab badge. Kept at page
   // level (not inside the tab) so the badge shows even when the tab is inactive,
@@ -2705,10 +2710,13 @@ export default function SupervisorPage() {
                   {pipeline.map((p) => {
                     const total = p.cabinetsTotal || 1;
                     const seg = (n: number) => `${(n / total) * 100}%`;
+                    const isExpanded = expandedJob === p.jobNumber;
                     return (
-                      <button key={p.jobNumber} onClick={() => setTab('assembly')}
-                        style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--line)', cursor: 'pointer', padding: '14px 20px', fontFamily: 'inherit' }}>
+                      <div key={p.jobNumber}>
+                      <button onClick={() => setExpandedJob((cur) => cur === p.jobNumber ? null : p.jobNumber)}
+                        style={{ width: '100%', textAlign: 'left', background: isExpanded ? 'rgba(45,225,201,0.04)' : 'none', border: 'none', borderBottom: '1px solid var(--line)', cursor: 'pointer', padding: '14px 20px', fontFamily: 'inherit' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 9, flexWrap: 'wrap' }}>
+                          <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transition: 'transform 0.2s', transform: isExpanded ? 'rotate(90deg)' : 'none' }}><polyline points="9 18 15 12 9 6"/></svg>
                           <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{p.jobPath.split('/').join(' / ')}</span>
                           {p.dueDate && (() => { const m = dueMeta(p.dueDate); return (
                             <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: `${m.color}22`, color: m.color, ...(m.overdue ? { animation: 'craftsPulse 1.4s ease-in-out infinite' } : {}) }}>Due {m.label}</span>
@@ -2733,6 +2741,10 @@ export default function SupervisorPage() {
                           {p.cabinetsCut}/{p.cabinetsTotal} cabinets cut · {p.assembly} in assembly{p.done ? ` · ${p.done} done` : ''}
                         </div>
                       </button>
+                      {isExpanded && tenant && (
+                        <JobDrillDown tenantId={tenant.id} jobNumber={p.jobNumber} showToast={showToast} />
+                      )}
+                      </div>
                     );
                   })}
                 </div>
@@ -4165,6 +4177,9 @@ export default function SupervisorPage() {
           {/* ── AI tab ──────────────────────────────────────────────────────────── */}
           {tab === 'ai' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+              {/* Routing Rules — supervisor-editable dept assignments the classifier applies first */}
+              {tenant && <RoutingRulesPanel tenantId={tenant.id} showToast={showToast} />}
 
               {/* Mode selector */}
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
