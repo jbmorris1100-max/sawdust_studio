@@ -285,6 +285,27 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         .eq('id', unit.id);
       if (error) throw error;
 
+      // 1b. Log the build duration as a time_clock row so the Reports tab
+      // (which sums time_clock WHERE status='craftsman_build') sees the hours.
+      const clockInISO = start ?? new Date(Date.now() - (durationMin ?? 0) * 60000).toISOString();
+      const now = new Date().toISOString();
+      if (durationMin && durationMin > 0) {
+        try {
+          await supabase.from('time_clock').insert({
+            tenant_id: tenantId,
+            worker_name: crewName || 'Craftsman',
+            dept: 'Craftsman',
+            clock_in: clockInISO,
+            clock_out: now,
+            date: now.split('T')[0],
+            total_hours: durationMin / 60,
+            status: 'craftsman_build',
+            notes: `Build: ${unit.unit_label}`,
+            job_number: unit.job_number ?? null,
+          });
+        } catch { /* best-effort */ }
+      }
+
       // 2. All of this unit's parts → Finishing, marked cut (they're built).
       try {
         await supabase.from('parts')

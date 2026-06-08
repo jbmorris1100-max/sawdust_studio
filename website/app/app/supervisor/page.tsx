@@ -2724,10 +2724,10 @@ export default function SupervisorPage() {
                         </div>
                         {/* 4-segment pipeline bar: Production | Assembly | Finishing | Done */}
                         <div style={{ display: 'flex', height: 9, borderRadius: 5, overflow: 'hidden', background: 'rgba(255,255,255,0.06)' }}>
-                          <div title="Production" style={{ width: seg(p.production), background: '#3a4a46', transition: 'width .3s' }} />
-                          <div title="Assembly"   style={{ width: seg(p.assembly),   background: '#FBBF24', transition: 'width .3s' }} />
-                          <div title="Finishing"  style={{ width: seg(p.finishing),  background: '#60A5FA', transition: 'width .3s' }} />
-                          <div title="Done"       style={{ width: seg(p.done),       background: '#2DE1C9', transition: 'width .3s' }} />
+                          <div title="Production" style={{ width: seg(p.production), background: '#2DE1C9', transition: 'width .3s' }} />
+                          <div title="Assembly"   style={{ width: seg(p.assembly),   background: '#3B82F6', transition: 'width .3s' }} />
+                          <div title="Finishing"  style={{ width: seg(p.finishing),  background: '#F97316', transition: 'width .3s' }} />
+                          <div title="Done"       style={{ width: seg(p.done),       background: '#34D399', transition: 'width .3s' }} />
                         </div>
                         <div style={{ fontSize: 11.5, color: 'var(--ink-mute)', marginTop: 7 }}>
                           {p.cabinetsCut}/{p.cabinetsTotal} cabinets cut · {p.assembly} in assembly{p.done ? ` · ${p.done} done` : ''}

@@ -98,8 +98,7 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
   const [parts, setParts] = useState<FinishPart[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedJob, setSelectedJob] = useState<string>('');
-  // Per-unit "Needs finishing?" toggle (default yes) and the unit currently saving.
-  const [needsFinishing, setNeedsFinishing] = useState<Record<string, boolean>>({});
+  // The unit currently saving.
   const [unitBusy, setUnitBusy] = useState<string | null>(null);
   const [fullSpec, setFullSpec] = useState<FinishSpec | null>(null);
   const [specFile, setSpecFile] = useState<ViewerFile | null>(null);
@@ -439,9 +438,8 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
           </div>
 
           {/* Job folder accordion — jobs collapsed by default; tap a job to
-              expand its units to finish. One job open at a time. Each unit has a
-              "Needs finishing?" toggle: Yes shows the work + Mark Finishing
-              Complete; No completes it straight away. */}
+              expand its units to finish. One job open at a time. Each unit shows
+              its parts + CO/Damage and a Mark Finishing Complete button. */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {jobOptions.map((j) => {
               const jobOpen = selectedJob === j.jobNumber;
@@ -459,7 +457,6 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '12px 14px 14px', borderTop: '1px solid var(--line)' }}>
                       {groups.map((g) => {
               const ids = g.parts.map((p) => p.id);
-              const needs = needsFinishing[g.cabinetId] ?? true;
               const busy = unitBusy === g.cabinetId;
               const jobNumber = g.parts[0]?.job_number ?? null;
               const dims = g.parts.map(dimText).find(Boolean) || '';
@@ -471,38 +468,22 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
                     <span style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--ink-mute)' }}>{g.parts.length} part{g.parts.length === 1 ? '' : 's'}</span>
                   </div>
 
-                  {/* Needs finishing? toggle */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                    <span style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginRight: 4 }}>Needs finishing?</span>
-                    {([['Yes', true], ['No', false]] as [string, boolean][]).map(([label, val]) => {
-                      const active = needs === val;
-                      return (
-                        <button key={label} onClick={() => setNeedsFinishing((s) => ({ ...s, [g.cabinetId]: val }))}
-                          style={{ padding: '6px 16px', borderRadius: 8, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer', color: active ? 'var(--teal)' : 'var(--ink-mute)', background: active ? 'rgba(45,225,201,0.12)' : 'var(--bg-1)', border: `1px solid ${active ? 'rgba(45,225,201,0.4)' : 'var(--line)'}` }}>
-                          {label}
+                  {/* Finishing work — parts list with drawings + CO/Damage */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                    {g.parts.map((p) => (
+                      <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '6px 0' }}>{partDisplay(p)}</span>
+                        <ViewDrawingsButton tenantId={tenantId} jobNumber={p.job_number} cabinetKey={p.cabinetKey} compact />
+                        <button
+                          onClick={() => openCoDamage(p)}
+                          title="Report a change order or damage and send back for rework"
+                          style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5, padding: '7px 10px', borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.28)', color: '#F87171', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                        >
+                          <IcoAlert /> CO/Damage
                         </button>
-                      );
-                    })}
+                      </div>
+                    ))}
                   </div>
-
-                  {/* Finishing work — parts list with drawings + CO/Damage (only when finishing is needed) */}
-                  {needs && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
-                      {g.parts.map((p) => (
-                        <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '6px 0' }}>{partDisplay(p)}</span>
-                          <ViewDrawingsButton tenantId={tenantId} jobNumber={p.job_number} cabinetKey={p.cabinetKey} compact />
-                          <button
-                            onClick={() => openCoDamage(p)}
-                            title="Report a change order or damage and send back for rework"
-                            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5, padding: '7px 10px', borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.28)', color: '#F87171', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
-                          >
-                            <IcoAlert /> CO/Damage
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
 
                   {/* Complete the unit */}
                   <button
@@ -511,7 +492,7 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
                     style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '12px', borderRadius: 10, fontSize: 14, fontWeight: 700, fontFamily: 'inherit', background: busy ? 'var(--bg-1)' : 'rgba(45,225,201,0.14)', border: `1px solid ${busy ? 'var(--line)' : 'rgba(45,225,201,0.4)'}`, color: busy ? 'var(--ink-mute)' : 'var(--teal)', cursor: busy ? 'wait' : 'pointer' }}
                   >
                     <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                    {busy ? 'Saving…' : needs ? 'Mark Finishing Complete' : 'Mark Complete'}
+                    {busy ? 'Saving…' : 'Mark Finishing Complete'}
                   </button>
                 </div>
               );

@@ -247,6 +247,17 @@ function isPartCut(s: string | null | undefined): boolean {
   return !!s && CUT_STATUSES.includes(s);
 }
 
+// Production cut-view hint: which parts need a finishing step (edge banding,
+// paint/stain) before assembly. Drives an amber pill on the cut-view part row.
+function getFinishingFlag(partName: string, material: string | null): string | null {
+  const n = (partName + ' ' + (material || '')).toLowerCase();
+  if (n.includes('edge') || n.includes('banding')) return 'Edge Band';
+  if (n.includes('door') || n.includes('drawer front')) return 'Paint/Stain';
+  if (n.includes('face frame') || n.includes('faceframe')) return 'Paint/Stain';
+  if (n.includes('end panel') || n.includes('side panel')) return 'Paint/Stain';
+  return null;
+}
+
 // ── Shift event logger (fire-and-forget) ─────────────────────────────────────
 
 async function logShiftEvent(params: {
@@ -2055,6 +2066,23 @@ export default function CrewPage() {
     } finally {
       setCutBulkBusy(false);
     }
+  }
+
+  // "Next Cabinet" — leave the current cut state exactly as-is (each part's
+  // status is already persisted on tap) and move on to the next cabinet. Logs a
+  // skip event, re-checks whether Production is now complete for the job, then
+  // returns to the cut list.
+  async function nextCabinet() {
+    if (!cutUnit) return;
+    const unit = cutUnit;
+    void logShiftEvent({
+      tenantId: tenant!.id, timeClockId: activeTimeClockId,
+      workerName: crewName || 'Production', eventType: 'cabinet_skipped', dept: 'Production',
+      metadata: { unit_id: unit.id, unit_label: unit.unit_label, job_number: unit.job_number },
+    });
+    void checkProductionComplete(unit.job_number);
+    closeCutView();
+    void loadProduction();
   }
 
   async function handlePartPhoto(partId: string, file: File) {
@@ -4668,19 +4696,28 @@ export default function CrewPage() {
             {cutLoading ? (
               <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32 }}>Loading parts…</div>
             ) : cutParts.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32 }}>No parts on this cabinet.</div>
+              <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+                <div>All parts cut or pushed to other depts</div>
+                <button onClick={() => void nextCabinet()}
+                  style={{ minHeight: 48, padding: '0 22px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-1)', color: 'var(--ink-dim)', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Next Cabinet</button>
+              </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 640, margin: '0 auto' }}>
                 {cutParts.map((p) => {
                   const expanded = cutPartExpanded[p.id] ?? false;
                   const dims = [p.width, p.height, p.depth].filter((d) => d != null).join(' × ');
+                  const flag = getFinishingFlag(p.part_name, p.material);
                   return (
                     <div key={p.id} style={{ border: '1px solid var(--line)', borderRadius: 12, overflow: 'hidden', background: 'var(--bg-1)' }}>
                       <button onClick={() => setCutPartExpanded((e) => ({ ...e, [p.id]: !expanded }))}
                         style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', padding: '13px 14px', display: 'flex', alignItems: 'center', gap: 12, fontFamily: 'inherit', minHeight: 44 }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>{p.part_name}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</div>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.part_name}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</span>
+                            {flag && <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(251,191,36,0.12)', color: '#FBBF24', flexShrink: 0 }}>{flag}</span>}
+                          </div>
                           <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{dims}{p.material ? `${dims ? ' — ' : ''}${p.material}` : ''}</div>
+                          {flag && <div style={{ fontSize: 11, color: '#FBBF24', marginTop: 2 }}>Needs finishing before assembly</div>}
                         </div>
                         <CutStatusBadge status={p.production_status} />
                       </button>
@@ -4729,8 +4766,8 @@ export default function CrewPage() {
 
           {/* bottom action bar */}
           <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, display: 'flex', gap: 10, padding: '12px 16px', paddingBottom: 'calc(12px + env(safe-area-inset-bottom))', borderTop: '1px solid var(--line)', background: 'rgba(5,6,8,0.92)', backdropFilter: 'blur(10px)' }}>
-            <button onClick={() => void markAllStatus('cutting')} disabled={cutBulkBusy || cutParts.length === 0}
-              style={{ flex: '0 0 auto', minHeight: 50, padding: '0 18px', borderRadius: 12, border: '1px solid rgba(251,191,36,0.4)', background: 'rgba(251,191,36,0.1)', color: '#FBBF24', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy || cutParts.length === 0 ? 0.5 : 1 }}>Mark All Cutting</button>
+            <button onClick={() => void nextCabinet()} disabled={cutBulkBusy}
+              style={{ flex: '0 0 auto', minHeight: 50, padding: '0 18px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-1)', color: 'var(--ink-dim)', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy ? 0.5 : 1 }}>Next Cabinet</button>
             <button onClick={() => void markAllStatus('cut')} disabled={cutBulkBusy || cutParts.length === 0}
               style={{ flex: 1, minHeight: 50, borderRadius: 12, border: 'none', background: '#2DE1C9', color: '#051A12', fontSize: 15, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy || cutParts.length === 0 ? 0.5 : 1 }}>
               {cutBulkBusy ? 'Saving…' : 'Mark All Cut'}

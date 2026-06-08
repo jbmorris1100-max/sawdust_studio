@@ -180,13 +180,16 @@ function rowStyle(indent: number, flagged: boolean, divider: boolean): CSSProper
   };
 }
 
-// Colored label for a department badge on split child tickets.
+// Colored label for a department badge. Shared dept color map so the supervisor
+// Production Pipeline colors persist into this expanded detail view.
+//   Production=#2DE1C9 · Assembly=#3B82F6 · Craftsman=#FBBF24 · Finishing=#F97316 · Complete=#34D399
 function deptMeta(dept: string | null): { label: string; color: string } {
   switch ((dept ?? '').toLowerCase()) {
-    case 'craftsman':  return { label: 'Craftsman',  color: '#5EEAD4' };
-    case 'assembly':   return { label: 'Assembly',   color: '#60A5FA' };
-    case 'finishing':  return { label: 'Finishing',  color: '#FBBF24' };
-    case 'production': return { label: 'Production', color: '#8BA5A0' };
+    case 'production': return { label: 'Production', color: '#2DE1C9' };
+    case 'assembly':   return { label: 'Assembly',   color: '#3B82F6' };
+    case 'craftsman':  return { label: 'Craftsman',  color: '#FBBF24' };
+    case 'finishing':  return { label: 'Finishing',  color: '#F97316' };
+    case 'complete':   return { label: 'Complete',   color: '#34D399' };
     default:           return { label: dept || 'Unassigned', color: '#8BA5A0' };
   }
 }
@@ -727,6 +730,13 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                                 </span>
                                 <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 10 }}>{total} part{total !== 1 ? 's' : ''}</span>
                               </div>
+                              {/* Assigned-dept badge — keeps the pipeline dept colors on expand. */}
+                              {unit.assigned_dept && unit.assigned_dept !== 'split' && (() => {
+                                const dm = deptMeta(unit.assigned_dept);
+                                return (
+                                  <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 20, color: dm.color, background: `${dm.color}22`, border: `1px solid ${dm.color}40`, flexShrink: 0 }}>{dm.label}</span>
+                                );
+                              })()}
                               {isPartSplit && !allPartsComplete ? (
                                 <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', padding: '2px 7px', borderRadius: 20, color: '#A78BFA', background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.3)', flexShrink: 0 }}>PARTIAL</span>
                               ) : (
