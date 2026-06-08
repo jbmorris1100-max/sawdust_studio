@@ -87,11 +87,6 @@ function partDisplay(p: FinishPart): string {
 }
 
 // Thin-stroke icons.
-const IcoCheckbox = ({ checked }: { checked: boolean }) => (
-  <span style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${checked ? 'var(--teal)' : 'var(--ink-mute)'}`, background: checked ? 'var(--teal)' : 'transparent' }}>
-    {checked && <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#04201c" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
-  </span>
-);
 const IcoAlert = () => (
   <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     <path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
@@ -103,8 +98,9 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
   const [parts, setParts] = useState<FinishPart[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedJob, setSelectedJob] = useState<string>('');
-  const [checked, setChecked] = useState<Set<string>>(new Set());
-  const [bulkBusy, setBulkBusy] = useState(false);
+  // Per-unit "Needs finishing?" toggle (default yes) and the unit currently saving.
+  const [needsFinishing, setNeedsFinishing] = useState<Record<string, boolean>>({});
+  const [unitBusy, setUnitBusy] = useState<string | null>(null);
   const [fullSpec, setFullSpec] = useState<FinishSpec | null>(null);
   const [specFile, setSpecFile] = useState<ViewerFile | null>(null);
 
@@ -223,68 +219,55 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
     return Object.entries(groups).map(([cabinetId, g]) => ({ cabinetId, ...g }));
   }, [jobParts]);
 
-  const jobPartIds = useMemo(() => jobParts.map((p) => p.id), [jobParts]);
-  const allSelected = jobPartIds.length > 0 && jobPartIds.every((id) => checked.has(id));
-  const checkedInJob = jobPartIds.filter((id) => checked.has(id)).length;
-
-  function togglePart(id: string) {
-    setChecked((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
-  }
-  function toggleAll() {
-    setChecked((prev) => {
-      const n = new Set(prev);
-      if (allSelected) jobPartIds.forEach((id) => n.delete(id));
-      else jobPartIds.forEach((id) => n.add(id));
-      return n;
-    });
-  }
-  function toggleCabinet(ids: string[]) {
-    setChecked((prev) => {
-      const n = new Set(prev);
-      const all = ids.every((id) => n.has(id));
-      if (all) ids.forEach((id) => n.delete(id));
-      else ids.forEach((id) => n.add(id));
-      return n;
-    });
+  // ── Job completion ─────────────────────────────────────────────────────────
+  // When every cabinet for a job is complete (across all depts) mark the job done.
+  async function maybeCompleteJob(jobNumber: string | null) {
+    if (!jobNumber) return;
+    try {
+      const { data } = await supabase
+        .from('cabinet_units').select('status').eq('tenant_id', tenantId).eq('job_number', jobNumber);
+      const rows = (data as { status: string | null }[] | null) ?? [];
+      if (rows.length === 0 || !rows.every((r) => r.status === 'complete')) return;
+      const label = (parts.find((p) => p.job_number === jobNumber)?.jobPath || `Job ${jobNumber}`).split('/').map((s) => s.trim()).join(' / ');
+      try { await supabase.from('jobs').update({ status: 'complete' }).eq('tenant_id', tenantId).eq('job_number', jobNumber); } catch { /* best-effort */ }
+      try { await supabase.from('jobs').update({ completed_at: new Date().toISOString() }).eq('tenant_id', tenantId).eq('job_number', jobNumber); } catch { /* column optional */ }
+      sendNotify({ tenant_id: tenantId, target: 'supervisor', title: 'Job complete', body: `${label} is complete — all depts done`, url: '/app/supervisor' });
+    } catch { /* best-effort */ }
   }
 
-  // ── Mark selected parts complete ───────────────────────────────────────────
-  async function markSelectedComplete() {
+  // ── Mark a whole unit complete (finishing done, or none needed) ─────────────
+  async function markUnitComplete(cabinetId: string, partIds: string[], jobNumber: string | null, unitLabel: string) {
     if (!isClockedIn) { onRequireClock?.(); return; }
-    const ids = jobPartIds.filter((id) => checked.has(id));
-    if (ids.length === 0 || bulkBusy) return;
-    setBulkBusy(true);
-    const affected = Array.from(new Set(jobParts.filter((p) => ids.includes(p.id)).map((p) => p.cabinet_unit_id)));
+    if (unitBusy || partIds.length === 0) return;
+    setUnitBusy(cabinetId);
+    const now = new Date().toISOString();
     try {
       const { error } = await supabase.from('parts')
-        .update({ status: 'complete', production_status: 'complete', checked_at: new Date().toISOString(), checked_by: crewName || null })
-        .in('id', ids).eq('tenant_id', tenantId);
+        .update({ status: 'complete', production_status: 'complete', checked_at: now, checked_by: crewName || null })
+        .in('id', partIds).eq('tenant_id', tenantId);
       if (error) throw error;
 
-      for (const cabId of affected) {
-        await recomputeCabinet(tenantId, cabId);
-        // If the whole cabinet is now complete, let the supervisor know.
-        try {
-          const { data: cab } = await supabase.from('cabinet_units').select('status, unit_label, job_number').eq('id', cabId).maybeSingle();
-          const c = cab as { status: string | null; unit_label: string | null; job_number: string | null } | null;
-          if (c && c.status === 'complete') {
-            sendNotify({
-              tenant_id: tenantId, target: 'supervisor',
-              title: 'Cabinet complete',
-              body: `${c.unit_label || 'Cabinet'} — ${c.job_number ? `Job ${c.job_number}` : ''} finished in Finishing`,
-              url: '/app/supervisor',
-            });
-          }
-        } catch { /* notify best-effort */ }
-      }
+      // Roll the cabinet up to complete.
+      try {
+        await supabase.from('cabinet_units')
+          .update({ status: 'complete', completed_at: now, assigned_dept: 'complete' })
+          .eq('id', cabinetId).eq('tenant_id', tenantId);
+      } catch { /* best-effort */ }
 
-      setParts((prev) => prev.filter((p) => !ids.includes(p.id)));
-      setChecked((prev) => { const n = new Set(prev); ids.forEach((id) => n.delete(id)); return n; });
-      showToast(`${ids.length} part${ids.length === 1 ? '' : 's'} marked complete`);
+      sendNotify({
+        tenant_id: tenantId, target: 'supervisor',
+        title: 'Cabinet complete',
+        body: `${unitLabel} — ${jobNumber ? `Job ${jobNumber}` : ''} finished in Finishing`,
+        url: '/app/supervisor',
+      });
+
+      setParts((prev) => prev.filter((p) => !partIds.includes(p.id)));
+      showToast('Marked complete — great work');
+      void maybeCompleteJob(jobNumber);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Could not update parts', true);
+      showToast(e instanceof Error ? e.message : 'Could not update unit', true);
     } finally {
-      setBulkBusy(false);
+      setUnitBusy(null);
     }
   }
 
@@ -347,7 +330,6 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
       });
 
       setParts((prev) => prev.filter((p) => p.id !== coPart.id));
-      setChecked((prev) => { const n = new Set(prev); n.delete(coPart.id); return n; });
       showToast(`Sent to ${coSendDept} for rework`);
       closeCoDamage();
     } catch (e) {
@@ -474,45 +456,44 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
             </select>
           </div>
 
-          {/* STEP 2 — Parts checklist grouped by cabinet */}
-          {jobPartIds.length > 0 && (
-            <button
-              onClick={toggleAll}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '7px 12px', borderRadius: 8, background: 'none', border: '1px solid var(--line)', color: 'var(--ink-dim)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
-            >
-              <IcoCheckbox checked={allSelected} />
-              {allSelected ? 'Deselect All' : 'Select All'}
-            </button>
-          )}
-
+          {/* STEP 2 — One card per cabinet/unit. Each has a "Needs finishing?"
+              toggle: Yes shows the finishing work + Mark Finishing Complete; No
+              completes it straight away (no work needed). */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {cabinetGroups.map((g) => {
               const ids = g.parts.map((p) => p.id);
-              const cabAll = ids.every((id) => checked.has(id));
+              const needs = needsFinishing[g.cabinetId] ?? true;
+              const busy = unitBusy === g.cabinetId;
+              const jobNumber = g.parts[0]?.job_number ?? null;
+              const dims = g.parts.map(dimText).find(Boolean) || '';
               return (
                 <div key={g.cabinetId} style={card}>
-                  {/* Cabinet header — select all within cabinet */}
-                  <button
-                    onClick={() => toggleCabinet(ids)}
-                    style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', padding: 0, marginBottom: 10 }}
-                  >
-                    <IcoCheckbox checked={cabAll} />
-                    <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{g.label}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                    <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{g.label}</span>
+                    {dims && <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{dims}</span>}
                     <span style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--ink-mute)' }}>{g.parts.length} part{g.parts.length === 1 ? '' : 's'}</span>
-                  </button>
+                  </div>
 
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {g.parts.map((p) => {
-                      const isChecked = checked.has(p.id);
+                  {/* Needs finishing? toggle */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                    <span style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginRight: 4 }}>Needs finishing?</span>
+                    {([['Yes', true], ['No', false]] as [string, boolean][]).map(([label, val]) => {
+                      const active = needs === val;
                       return (
+                        <button key={label} onClick={() => setNeedsFinishing((s) => ({ ...s, [g.cabinetId]: val }))}
+                          style={{ padding: '6px 16px', borderRadius: 8, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer', color: active ? 'var(--teal)' : 'var(--ink-mute)', background: active ? 'rgba(45,225,201,0.12)' : 'var(--bg-1)', border: `1px solid ${active ? 'rgba(45,225,201,0.4)' : 'var(--line)'}` }}>
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Finishing work — parts list with drawings + CO/Damage (only when finishing is needed) */}
+                  {needs && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                      {g.parts.map((p) => (
                         <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <button
-                            onClick={() => togglePart(p.id)}
-                            style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, background: isChecked ? 'rgba(94,234,212,0.06)' : 'transparent', border: `1px solid ${isChecked ? 'rgba(94,234,212,0.25)' : 'var(--line)'}`, borderRadius: 10, padding: '10px 12px', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
-                          >
-                            <IcoCheckbox checked={isChecked} />
-                            <span style={{ fontSize: 13.5, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partDisplay(p)}</span>
-                          </button>
+                          <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '6px 0' }}>{partDisplay(p)}</span>
                           <ViewDrawingsButton tenantId={tenantId} jobNumber={p.job_number} cabinetKey={p.cabinetKey} compact />
                           <button
                             onClick={() => openCoDamage(p)}
@@ -522,30 +503,23 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
                             <IcoAlert /> CO/Damage
                           </button>
                         </div>
-                      );
-                    })}
-                  </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Complete the unit */}
+                  <button
+                    onClick={() => void markUnitComplete(g.cabinetId, ids, jobNumber, g.label)}
+                    disabled={busy}
+                    style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '12px', borderRadius: 10, fontSize: 14, fontWeight: 700, fontFamily: 'inherit', background: busy ? 'var(--bg-1)' : 'rgba(45,225,201,0.14)', border: `1px solid ${busy ? 'var(--line)' : 'rgba(45,225,201,0.4)'}`, color: busy ? 'var(--ink-mute)' : 'var(--teal)', cursor: busy ? 'wait' : 'pointer' }}
+                  >
+                    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    {busy ? 'Saving…' : needs ? 'Mark Finishing Complete' : 'Mark Complete'}
+                  </button>
                 </div>
               );
             })}
           </div>
-
-          {/* STEP 3 — Mark complete */}
-          <button
-            onClick={() => void markSelectedComplete()}
-            disabled={checkedInJob === 0 || bulkBusy}
-            style={{
-              marginTop: 16, width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8,
-              padding: '13px', borderRadius: 12, fontSize: 14, fontWeight: 700, fontFamily: 'inherit',
-              background: checkedInJob > 0 && !bulkBusy ? 'rgba(45,225,201,0.14)' : 'var(--bg-1)',
-              border: `1px solid ${checkedInJob > 0 && !bulkBusy ? 'rgba(45,225,201,0.4)' : 'var(--line)'}`,
-              color: checkedInJob > 0 && !bulkBusy ? 'var(--teal)' : 'var(--ink-mute)',
-              cursor: checkedInJob > 0 && !bulkBusy ? 'pointer' : 'not-allowed',
-            }}
-          >
-            <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            {bulkBusy ? 'Saving…' : `Mark ${checkedInJob} part${checkedInJob === 1 ? '' : 's'} complete`}
-          </button>
         </div>
       )}
 

@@ -143,6 +143,9 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   const [success, setSuccess] = useState<{ kept: number; pushed: number; dept: string } | null>(null);
   const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Job folder selector — craftsman works one job at a time.
+  const [selectedJob, setSelectedJob] = useState<string>('');
+
   // ── Load ────────────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
     if (!tenantId) return;
@@ -230,6 +233,13 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
 
   useEffect(() => () => { if (successTimer.current) clearTimeout(successTimer.current); }, []);
 
+  // Keep the selected job valid as the unit list changes (auto-select the first).
+  useEffect(() => {
+    const keys = Array.from(new Set(units.map((u) => u.job_number || '__nojob__')));
+    if (keys.length === 0) { if (selectedJob) setSelectedJob(''); return; }
+    if (!keys.includes(selectedJob)) setSelectedJob(keys[0]);
+  }, [units, selectedJob]);
+
   function persistStarts(next: Record<string, string>) {
     setBuildStarts(next);
     try { localStorage.setItem(BUILDS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
@@ -256,70 +266,61 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     }
   }
 
+  // "Mark Build Complete" — the craftsman is done building. The unit and all of
+  // its parts hand off automatically to Finishing (no manual push). Craftsman
+  // never marks finishing complete; that lives in the Finishing dept now.
   async function markBuildComplete(unit: CUnit) {
+    if (!isClockedIn) { onRequireClock?.(); return; }
     if (busyUnit) return;
     setBusyUnit(unit.id);
     const start = buildStarts[unit.id];
     const durationMin = start ? Math.round((Date.now() - new Date(start).getTime()) / 60000) : null;
     try {
-      const { error } = await supabase.from('cabinet_units').update({ status: 'finishing' }).eq('id', unit.id);
+      // 1. Unit → Finishing.
+      const { error } = await supabase.from('cabinet_units')
+        .update({ status: 'finishing', assigned_dept: 'finishing' })
+        .eq('id', unit.id);
       if (error) throw error;
-      // Log the build to shift_events.
+
+      // 2. All of this unit's parts → Finishing, marked cut (they're built).
+      try {
+        await supabase.from('parts')
+          .update({ assigned_dept: 'finishing', production_status: 'cut' })
+          .eq('cabinet_unit_id', unit.id).eq('tenant_id', tenantId);
+      } catch { /* best-effort — unit hand-off already succeeded */ }
+
+      // 3. Log the build completion to shift_events.
       if (timeClockId) {
         try {
           await supabase.from('shift_events').insert({
             tenant_id: tenantId, time_clock_id: timeClockId, worker_name: crewName || 'Craftsman',
-            event_type: 'craftsman_build', dept: 'Craftsman',
-            metadata: { unit_id: unit.id, unit_label: unit.unit_label, job_number: unit.job_number, duration_min: durationMin },
+            event_type: 'craftsman_build_complete', dept: 'Craftsman',
+            metadata: { unit_id: unit.id, unit_label: unit.unit_label, job_number: unit.job_number, worker_name: crewName || 'Craftsman', duration_min: durationMin },
           });
         } catch { /* best effort */ }
       }
-      const next = { ...buildStarts }; delete next[unit.id]; persistStarts(next);
-      setUnits((prev) => prev.map((u) => u.id === unit.id ? { ...u, status: 'finishing' } : u));
-      showToast('Ready for finishing');
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Could not update build', true);
-    } finally {
-      setBusyUnit(null);
-    }
-  }
 
-  async function markFinishingComplete(unit: CUnit) {
-    if (busyUnit) return;
-    setBusyUnit(unit.id);
-    try {
-      const { error } = await supabase.from('cabinet_units')
-        .update({ status: 'complete', completed_at: new Date().toISOString() })
-        .eq('id', unit.id);
-      if (error) throw error;
-
-      // Parent rollup: if this unit is part of a split, and every sibling in the
-      // group is now complete, ensure the original parent unit is marked complete.
-      const parentId = unit.parent_unit_id || unit.split_from_id;
-      if (parentId) {
-        try {
-          const { data: siblings } = await supabase
-            .from('cabinet_units').select('id, status')
-            .eq('tenant_id', tenantId)
-            .or(`id.eq.${parentId},parent_unit_id.eq.${parentId},split_from_id.eq.${parentId}`);
-          const sibs = (siblings as { id: string; status: string }[] | null) ?? [];
-          const allComplete = sibs.every((s) => s.id === unit.id || s.status === 'complete');
-          if (allComplete) {
-            await supabase.from('cabinet_units').update({ status: 'complete' }).eq('id', parentId).neq('status', 'complete');
-          }
-        } catch { /* rollup best-effort; supervisor view also computes parent status */ }
-      }
-
+      const jl = jobLabel(unit.job_number);
+      // 4. Push the Finishing crew.
+      sendNotify({
+        tenant_id: tenantId, target: 'crew', dept_target: 'Finishing',
+        title: 'Ready for finishing',
+        body: `${unit.unit_label} — ${jl} is ready for finishing`,
+        url: '/app/crew',
+      });
+      // 5. Supervisor bell.
       sendNotify({
         tenant_id: tenantId, target: 'supervisor',
-        title: 'Build complete',
-        body: `${unit.unit_label} — ${jobLabel(unit.job_number)} is complete`,
+        title: 'Craftsman complete',
+        body: `${unit.unit_label} sent to Finishing — ${jl}`,
         url: '/app/supervisor',
       });
-      setUnits((prev) => prev.filter((u) => u.id !== unit.id)); // drops off the active list
-      showToast('Marked complete');
+
+      const next = { ...buildStarts }; delete next[unit.id]; persistStarts(next);
+      setUnits((prev) => prev.filter((u) => u.id !== unit.id)); // drops off the craftsman list
+      showToast('Build complete — sent to Finishing');
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Could not complete', true);
+      showToast(e instanceof Error ? e.message : 'Could not update build', true);
     } finally {
       setBusyUnit(null);
     }
@@ -478,6 +479,8 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   const byJob: Record<string, CUnit[]> = {};
   units.forEach((u) => { const k = u.job_number || '__nojob__'; (byJob[k] ??= []).push(u); });
   const jobKeys = Object.keys(byJob);
+  const activeJobKey = jobKeys.includes(selectedJob) ? selectedJob : (jobKeys[0] ?? '');
+  const jobUnits = byJob[activeJobKey] ?? [];
 
   return (
     <div style={{ marginBottom: 32 }}>
@@ -490,16 +493,39 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         <div style={{ textAlign: 'center', padding: '28px 0', color: 'var(--ink-mute)', fontSize: 13 }}>Loading builds…</div>
       ) : jobKeys.length === 0 ? (
         <div style={{ padding: '20px', borderRadius: 16, background: 'var(--bg-1)', border: '1px solid var(--line)', textAlign: 'center' }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink-dim)' }}>No craftsman builds assigned</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink-dim)' }}>No active work assigned</div>
           <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 6 }}>Ask your supervisor to upload a cutlist.</div>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {jobKeys.map((jk) => (
-            <div key={jk}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--teal)', marginBottom: 8 }}>{jobLabel(jk === '__nojob__' ? null : jk)}</div>
+        <>
+          {/* Job folder selector — one dropdown for all assigned jobs (rush jobs
+              can be picked in any order; no queue is enforced). A single job
+              auto-selects with no dropdown. */}
+          {jobKeys.length > 1 ? (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: 'var(--ink-mute)', fontWeight: 600, marginBottom: 6 }}>Job</div>
+              <select
+                value={activeJobKey}
+                onChange={(e) => setSelectedJob(e.target.value)}
+                style={{ width: '100%', padding: '11px 12px', borderRadius: 10, background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}
+              >
+                {jobKeys.map((jk) => (
+                  <option key={jk} value={jk}>
+                    {jobLabel(jk === '__nojob__' ? null : jk)} ({byJob[jk].length} piece{byJob[jk].length === 1 ? '' : 's'})
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--teal)', marginBottom: 12 }}>
+              {jobLabel(activeJobKey === '__nojob__' ? null : activeJobKey)}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div key={activeJobKey}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {byJob[jk].map((unit) => {
+                {jobUnits.map((unit) => {
                   const ps = unitParts(unit.id);
                   const sm = statusMeta(unit.status);
                   const start = buildStarts[unit.id];
@@ -559,10 +585,8 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
                           <button className="btn btn-primary" disabled={busy} onClick={() => markBuildComplete(unit)} style={{ flex: 1, justifyContent: 'center', opacity: busy ? 0.6 : 1 }}>Mark Build Complete</button>
                         )}
                         {unit.status === 'finishing' && (
-                          <button disabled={busy} onClick={() => markFinishingComplete(unit)}
-                            style={{ flex: 1, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderRadius: 10, background: 'rgba(52,211,153,0.12)', border: '1px solid rgba(52,211,153,0.3)', color: '#34D399', fontSize: 13, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }}>
-                            Mark Finishing Complete
-                          </button>
+                          /* Legacy units left in 'finishing' status under craftsman — hand them off. */
+                          <button className="btn btn-primary" disabled={busy} onClick={() => markBuildComplete(unit)} style={{ flex: 1, justifyContent: 'center', opacity: busy ? 0.6 : 1 }}>Send to Finishing</button>
                         )}
                       </div>
                     </div>
@@ -570,8 +594,8 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
                 })}
               </div>
             </div>
-          ))}
-        </div>
+          </div>
+        </>
       )}
 
       {/* ── Part-selection / push overlay ───────────────────────────────────── */}

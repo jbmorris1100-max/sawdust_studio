@@ -1038,7 +1038,7 @@ export default function SupervisorPage() {
         if (cut(c.production_status)) row.cabinetsCut++;
         if (c.status === 'complete') row.done++;
         else if (c.status === 'finishing') row.finishing++;
-        else if (c.status === 'in_assembly' || c.status === 'flagged') row.assembly++;
+        else if (c.status === 'in_assembly' || c.status === 'flagged' || c.status === 'ready_for_qc') row.assembly++;
         else row.production++;
         // Track the depts a split touches so the row can badge them (e.g. [Craftsman] [Assembly]).
         if (c.is_split) {

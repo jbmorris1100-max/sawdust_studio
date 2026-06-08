@@ -737,7 +737,8 @@ export default function CrewPage() {
   // ── Active job card (prominent, above quick actions) ───────────────────────
   const [activeJob, setActiveJob] = useState<ActiveJobCard | null>(null);
   const [activeJobLoading, setActiveJobLoading] = useState(true);
-  const [prodExpanded, setProdExpanded] = useState<Record<string, boolean>>({});
+  // Production job folder — the currently selected job in the cut list.
+  const [prodSelectedJob, setProdSelectedJob] = useState<string>('');
   const [cutUnit,        setCutUnit]        = useState<ProdUnit | null>(null);
   const [cutParts,       setCutParts]       = useState<ProdPart[]>([]);
   const [cutLoading,     setCutLoading]     = useState(false);
@@ -1112,6 +1113,15 @@ export default function CrewPage() {
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenant, crewDept, loadProduction]);
+
+  // Keep the Production job selector pointed at a job that still has uncut work.
+  useEffect(() => {
+    const activePaths = Array.from(new Set(
+      prodUnits.filter((u) => !isPartCut(u.production_status)).map((u) => u.jobPath),
+    ));
+    if (activePaths.length === 0) { if (prodSelectedJob) setProdSelectedJob(''); return; }
+    if (!activePaths.includes(prodSelectedJob)) setProdSelectedJob(activePaths[0]);
+  }, [prodUnits, prodSelectedJob]);
 
   // ── Active job loader (current job card) ───────────────────────────────────
   // Production: the most recent job with a cabinet still to cut.
@@ -1795,7 +1805,8 @@ export default function CrewPage() {
       enqueue('part_scan', {
         updates,
         cabinet_unit_id: assemblyScanUnit.id,
-        unit_status:     hasFlagged ? 'flagged' : 'complete',
+        // Assembled cabinets go to the supervisor QC gate, never straight to complete.
+        unit_status:     hasFlagged ? 'flagged' : 'ready_for_qc',
         damage_reports,
       });
       setAssemblyScanDone(true);
@@ -1820,11 +1831,27 @@ export default function CrewPage() {
         }).eq('id', p.id);
       }));
 
-      // Update cabinet unit status
-      const newUnitStatus = hasFlagged ? 'flagged' : 'complete';
-      const unitUpdate: Record<string, unknown> = { status: newUnitStatus };
-      if (!hasFlagged) unitUpdate.completed_at = new Date().toISOString();
+      // Update cabinet unit status. Assembled cabinets do NOT go straight to
+      // complete — they move to the supervisor QC gate (ready_for_qc).
+      const unitUpdate: Record<string, unknown> = hasFlagged
+        ? { status: 'flagged' }
+        : { status: 'ready_for_qc', assigned_dept: 'qc' };
       await supabase.from('cabinet_units').update(unitUpdate).eq('id', assemblyScanUnit.id);
+
+      // Notify the supervisor that this cabinet is waiting for QC.
+      if (!hasFlagged) {
+        const jl = assemblyScanUnit.job_number ? `Job ${assemblyScanUnit.job_number}` : '';
+        const body = `${assemblyScanUnit.unit_label}${jl ? ` — ${jl}` : ''} is ready for QC`;
+        sendNotify({ tenant_id: tenant!.id, target: 'supervisor', title: 'Ready for QC', body, url: '/app/supervisor' });
+        try {
+          await supabase.from('notifications').insert({ tenant_id: tenant!.id, target_type: 'supervisor', title: 'Ready for QC', body, url: '/app/supervisor' });
+        } catch (_) { /* bell log best-effort */ }
+        void logShiftEvent({
+          tenantId: tenant!.id, timeClockId: activeTimeClockId,
+          workerName: crewName || 'Crew', eventType: 'assembly_complete', dept: crewDept,
+          metadata: { unit_id: assemblyScanUnit.id, unit_label: assemblyScanUnit.unit_label, job_number: assemblyScanUnit.job_number, worker_name: crewName || 'Crew' },
+        });
+      }
 
       // Create damage reports for flagged parts
       if (hasFlagged) {
@@ -1898,6 +1925,51 @@ export default function CrewPage() {
   }
   function closeCutView() { setCutUnit(null); setCutParts([]); setCutPartExpanded({}); }
 
+  // ── Production auto-complete ────────────────────────────────────────────────
+  // After any part status change or push, check whether a job still has any
+  // production-owned parts left to cut. When none remain (all cut OR pushed to
+  // another dept) the job is done in Production: roll its cabinets to 'cut', log
+  // the milestone, notify the supervisor, and let it drop out of the cut list.
+  async function checkProductionComplete(jobNumber: string | null) {
+    if (!jobNumber || !tenant) return;
+    try {
+      // Production owns parts assigned to it (or unassigned → defaults to production).
+      const { data } = await supabase
+        .from('parts')
+        .select('production_status')
+        .eq('tenant_id', tenant.id)
+        .eq('job_number', jobNumber)
+        .or('assigned_dept.eq.production,assigned_dept.is.null');
+      const rows = (data as { production_status: string | null }[] | null) ?? [];
+      const remaining = rows.filter((p) => !isPartCut(p.production_status)).length;
+      if (remaining > 0) return;
+
+      // Roll any not-yet-cut cabinets for this job up to 'cut'.
+      try {
+        await supabase
+          .from('cabinet_units')
+          .update({ production_status: 'cut' })
+          .eq('tenant_id', tenant.id)
+          .eq('job_number', jobNumber)
+          .or('production_status.is.null,production_status.eq.not_cut,production_status.eq.cutting');
+      } catch (_) { /* best-effort */ }
+
+      const jobPath = prodUnits.find((u) => u.job_number === jobNumber)?.jobPath || `Job ${jobNumber}`;
+      void logShiftEvent({
+        tenantId: tenant.id, timeClockId: activeTimeClockId,
+        workerName: crewName || 'Production', eventType: 'production_complete',
+        dept: 'Production', metadata: { job_number: jobNumber, job_path: jobPath },
+      });
+      const body = `Production complete — ${jobPath.split('/').join(' / ')} ready for assembly`;
+      sendNotify({ tenant_id: tenant.id, target: 'supervisor', title: 'Production complete', body, url: '/app/supervisor' });
+      try {
+        await supabase.from('notifications').insert({ tenant_id: tenant.id, target_type: 'supervisor', title: 'Production complete', body, url: '/app/supervisor' });
+      } catch (_) { /* bell log best-effort */ }
+      showToast('Job complete in Production — moving to Assembly');
+      void loadProduction();
+    } catch (_) { /* best-effort */ }
+  }
+
   async function markPartStatus(partId: string, status: 'cutting' | 'cut') {
     if (!requireClockIn()) return;
     if (cutActioning[partId]) return;
@@ -1911,6 +1983,7 @@ export default function CrewPage() {
     try {
       const { error } = await supabase.from('parts').update(patch).eq('id', partId);
       if (error) throw error;
+      if (status === 'cut' && cutUnit) void checkProductionComplete(cutUnit.job_number);
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Update failed', true);
     } finally {
@@ -1957,6 +2030,7 @@ export default function CrewPage() {
             url: '/app/supervisor',
           });
         } catch (_) { /* bell log is best-effort */ }
+        void checkProductionComplete(cutUnit.job_number);
         setProdFlash('Cabinet ready for assembly');
         setTimeout(() => { setProdFlash(null); closeCutView(); void loadProduction(); }, 2000);
       } else {
@@ -3100,54 +3174,69 @@ export default function CrewPage() {
 
               {prodLoading && prodUnits.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '28px 0', color: 'var(--ink-mute)', fontSize: 13 }}>Loading cut list…</div>
-              ) : prodUnits.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '28px 0', color: 'var(--ink-mute)', fontSize: 13 }}>No cabinets to cut. New jobs will appear here automatically.</div>
               ) : (() => {
+                // Group by job; a job stays in the cut list while it has any uncut work.
                 const groups: Record<string, ProdUnit[]> = {};
                 prodUnits.forEach((u) => { (groups[u.jobPath] ??= []).push(u); });
+                const activePaths = Object.keys(groups).filter((jp) => groups[jp].some((u) => !isPartCut(u.production_status)));
+                if (activePaths.length === 0) {
+                  return <div style={{ textAlign: 'center', padding: '28px 0', color: 'var(--ink-mute)', fontSize: 13 }}>No active work assigned. New jobs will appear here automatically.</div>;
+                }
+                const jobPath = activePaths.includes(prodSelectedJob) ? prodSelectedJob : activePaths[0];
+                const units = groups[jobPath] ?? [];
+                const cutCount = units.filter((u) => isPartCut(u.production_status)).length;
+                const total = units.length;
+                const pct = total ? Math.round((cutCount / total) * 100) : 0;
+                const due = units.find((u) => u.dueDate)?.dueDate ?? null;
+                const uncut = (g: ProdUnit[]) => g.filter((u) => !isPartCut(u.production_status)).length;
                 return (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {Object.entries(groups).map(([jobPath, units]) => {
-                      const cutCount = units.filter((u) => isPartCut(u.production_status)).length;
-                      const total = units.length;
-                      const pct = total ? Math.round((cutCount / total) * 100) : 0;
-                      const open = prodExpanded[jobPath] ?? false;
-                      const jobStatus = cutCount === 0 ? 'Not Started' : cutCount === total ? 'Complete' : 'In Progress';
-                      const statusColor = cutCount === 0 ? '#8BA5A0' : cutCount === total ? '#2DE1C9' : '#FBBF24';
-                      const due = units.find((u) => u.dueDate)?.dueDate ?? null;
-                      return (
-                        <div key={jobPath} style={{ border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden', background: 'var(--bg-1)' }}>
-                          <button onClick={() => setProdExpanded((e) => ({ ...e, [jobPath]: !open }))}
-                            style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', padding: '16px 18px', fontFamily: 'inherit' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-                              <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{jobPath.split('/').join(' / ')}</span>
-                              <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: `${statusColor}22`, color: statusColor }}>{jobStatus}</span>
-                              {due && <DueBadge dueDate={due} />}
-                              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{cutCount}/{total} cut</span>
-                              <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}><path d="M6 9l6 6 6-6"/></svg>
-                            </div>
-                            <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
-                              <div style={{ width: `${pct}%`, height: '100%', background: statusColor, transition: 'width .3s' }} />
-                            </div>
-                          </button>
+                    {/* Job folder selector — pick any job (no queue; rush jobs allowed). */}
+                    {activePaths.length > 1 ? (
+                      <div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-mute)', fontWeight: 600, marginBottom: 6 }}>Job</div>
+                        <select
+                          value={jobPath}
+                          onChange={(e) => setProdSelectedJob(e.target.value)}
+                          style={{ width: '100%', padding: '11px 12px', borderRadius: 10, background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}
+                        >
+                          {activePaths.map((jp) => (
+                            <option key={jp} value={jp}>{jp.split('/').join(' / ')} ({uncut(groups[jp])} piece{uncut(groups[jp]) === 1 ? '' : 's'})</option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{jobPath.split('/').join(' / ')}</span>
+                        {due && <DueBadge dueDate={due} />}
+                      </div>
+                    )}
 
-                          {open && (
-                            <div style={{ borderTop: '1px solid var(--line)' }}>
-                              {units.map((u) => (
-                                <button key={u.id} onClick={() => void openCutView(u)}
-                                  style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--line)', cursor: 'pointer', padding: '13px 18px', display: 'flex', alignItems: 'center', gap: 12, fontFamily: 'inherit', minHeight: 44 }}>
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.unit_label}</div>
-                                    <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{u.partsCut}/{u.partsTotal} part{u.partsTotal === 1 ? '' : 's'} cut</div>
-                                  </div>
-                                  <CutStatusBadge status={u.production_status} />
-                                </button>
-                              ))}
-                            </div>
-                          )}
+                    {/* Selected job progress */}
+                    <div style={{ border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden', background: 'var(--bg-1)' }}>
+                      <div style={{ padding: '14px 18px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{cutCount}/{total} cut</span>
+                          {activePaths.length > 1 && due && <DueBadge dueDate={due} />}
+                          <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: '#FBBF2422', color: '#FBBF24' }}>In Progress</span>
                         </div>
-                      );
-                    })}
+                        <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
+                          <div style={{ width: `${pct}%`, height: '100%', background: '#FBBF24', transition: 'width .3s' }} />
+                        </div>
+                      </div>
+                      <div style={{ borderTop: '1px solid var(--line)' }}>
+                        {units.map((u) => (
+                          <button key={u.id} onClick={() => void openCutView(u)}
+                            style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--line)', cursor: 'pointer', padding: '13px 18px', display: 'flex', alignItems: 'center', gap: 12, fontFamily: 'inherit', minHeight: 44 }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.unit_label}</div>
+                              <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{u.partsCut}/{u.partsTotal} part{u.partsTotal === 1 ? '' : 's'} cut</div>
+                            </div>
+                            <CutStatusBadge status={u.production_status} />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 );
               })()}
@@ -4621,7 +4710,19 @@ export default function CrewPage() {
                             jobPath={cutUnit.jobPath}
                             timeClockId={activeTimeClockId}
                             workerName={crewName}
-                            onPushed={() => setCutParts((ps) => ps.filter((x) => x.id !== p.id))}
+                            onPushed={(toDept) => {
+                              setCutParts((ps) => ps.filter((x) => x.id !== p.id));
+                              // Log where the parts went (Part 2) and re-check whether
+                              // Production is now empty for this job.
+                              if ((toDept || '').toLowerCase() === 'craftsman') {
+                                void logShiftEvent({
+                                  tenantId: tenant!.id, timeClockId: activeTimeClockId,
+                                  workerName: crewName || 'Production', eventType: 'parts_pushed_to_craftsman',
+                                  dept: 'Production', metadata: { part_ids: [p.id], job_number: cutUnit.job_number, dest_dept: 'craftsman' },
+                                });
+                              }
+                              void checkProductionComplete(cutUnit.job_number);
+                            }}
                             onToast={showToast}
                           />
                         </div>

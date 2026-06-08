@@ -6,6 +6,7 @@ import { DEFAULT_DEPARTMENTS } from '@/lib/auth';
 import PartPushButton from '@/components/PartPushButton';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 import { deptDisplay } from '@/lib/partActions';
+import { sendNotify } from '@/lib/notify';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -127,6 +128,7 @@ const IcoRing = () => (
 function statusMeta(status: string): { label: string; color: string; bg: string; border: string } {
   switch (status) {
     case 'complete':    return { label: 'Complete',    color: '#34D399', bg: 'rgba(52,211,153,0.1)',   border: 'rgba(52,211,153,0.25)' };
+    case 'ready_for_qc':return { label: 'Ready for QC', color: '#2DE1C9', bg: 'rgba(45,225,201,0.12)', border: 'rgba(45,225,201,0.35)' };
     case 'finishing':   return { label: 'Finishing',   color: '#FBBF24', bg: 'rgba(251,191,36,0.1)',   border: 'rgba(251,191,36,0.3)'  };
     case 'building':    return { label: 'Building',    color: '#60A5FA', bg: 'rgba(96,165,250,0.1)',   border: 'rgba(96,165,250,0.25)' };
     case 'in_assembly': return { label: 'In Assembly', color: '#60A5FA', bg: 'rgba(96,165,250,0.1)',   border: 'rgba(96,165,250,0.25)' };
@@ -281,6 +283,11 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
   const [msgDept,    setMsgDept]    = useState('Assembly');
   const [msgSending, setMsgSending] = useState(false);
 
+  // ── QC gate state ──────────────────────────────────────────────────────────
+  const [qcBusy,      setQcBusy]      = useState<string | null>(null);
+  const [qcFailUnit,  setQcFailUnit]  = useState<CabinetUnit | null>(null);
+  const [qcFailNotes, setQcFailNotes] = useState('');
+
   // ── Data load ──────────────────────────────────────────────────────────────
 
   const [migrationNeeded, setMigrationNeeded] = useState(false);
@@ -385,6 +392,83 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
     }
   }
 
+  // ── QC gate (supervisor) ───────────────────────────────────────────────────
+  // A cabinet never goes straight from Assembly to Complete — it lands in
+  // 'ready_for_qc' and the supervisor is the gate.
+
+  // When every cabinet for a job is complete, mark the job complete too. Assembly,
+  // Craftsman and Finishing all roll their units up to cabinet_units.status, so a
+  // job is done when none of its cabinets are outstanding.
+  const maybeCompleteJob = useCallback(async (jobNumber: string | null) => {
+    if (!jobNumber) return;
+    try {
+      const { data } = await supabase
+        .from('cabinet_units').select('status').eq('tenant_id', tenantId).eq('job_number', jobNumber);
+      const rows = (data as { status: string | null }[] | null) ?? [];
+      if (rows.length === 0 || !rows.every((r) => r.status === 'complete')) return;
+      // jobs.status is a known column; completed_at may not exist pre-migration —
+      // set them separately so a missing column can't block the status update.
+      try { await supabase.from('jobs').update({ status: 'complete' }).eq('tenant_id', tenantId).eq('job_number', jobNumber); } catch { /* best-effort */ }
+      try { await supabase.from('jobs').update({ completed_at: new Date().toISOString() }).eq('tenant_id', tenantId).eq('job_number', jobNumber); } catch { /* column optional */ }
+      const label = jobLabelFor(jobNumber);
+      sendNotify({ tenant_id: tenantId, target: 'supervisor', title: 'Job complete', body: `${label} is complete — all depts done`, url: '/app/supervisor' });
+      showToast(`${label} is complete — all depts done`);
+    } catch { /* best-effort */ }
+  }, [tenantId, showToast]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function passQC(unit: CabinetUnit) {
+    if (qcBusy) return;
+    setQcBusy(unit.id);
+    setUnits((prev) => prev.map((u) => u.id === unit.id ? { ...u, status: 'complete', completed_at: new Date().toISOString() } : u));
+    try {
+      const { error } = await supabase.from('cabinet_units')
+        .update({ status: 'complete', completed_at: new Date().toISOString(), assigned_dept: 'complete' })
+        .eq('id', unit.id);
+      if (error) throw error;
+      try { await supabase.from('parts').update({ status: 'complete' }).eq('cabinet_unit_id', unit.id).eq('tenant_id', tenantId); } catch { /* best-effort */ }
+      showToast('QC passed');
+      void maybeCompleteJob(unit.job_number);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'QC update failed', true);
+      void loadAll();
+    } finally {
+      setQcBusy(null);
+    }
+  }
+
+  async function failQC() {
+    const unit = qcFailUnit;
+    if (!unit || qcBusy) return;
+    setQcBusy(unit.id);
+    const notes = qcFailNotes.trim();
+    try {
+      const { error } = await supabase.from('cabinet_units')
+        .update({ status: 'flagged', assigned_dept: 'assembly', flagged_reason: notes || 'Failed QC' })
+        .eq('id', unit.id);
+      if (error) throw error;
+      // Log the kickback as a damage report so it shows in the supervisor's queue.
+      try {
+        await supabase.from('damage_reports').insert({
+          tenant_id: tenantId, part_name: unit.unit_label, dept: 'Assembly', status: 'open',
+          report_type: 'damage', notes: `Failed QC — ${notes || 'see supervisor'}`,
+          cabinet_unit_id: unit.id, ...(unit.job_number && { job_id: unit.job_number }),
+        });
+      } catch { /* best-effort */ }
+      sendNotify({
+        tenant_id: tenantId, target: 'crew', dept_target: 'Assembly',
+        title: 'Cabinet failed QC',
+        body: `${unit.cabinet_number || unit.unit_label} failed QC — ${notes || 'see supervisor'}`,
+        url: '/app/crew',
+      });
+      showToast('Sent back to Assembly');
+      setQcFailUnit(null); setQcFailNotes('');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'QC update failed', true);
+    } finally {
+      setQcBusy(null);
+    }
+  }
+
   // ── Computed data ──────────────────────────────────────────────────────────
 
   const unitParts = (unitId: string) => allParts.filter((p) => p.cabinet_unit_id === unitId);
@@ -399,11 +483,13 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
     return jobNumber === 'No Job' ? 'No Job' : `Job ${jobNumber}`;
   };
 
-  // Cabinets sorted flagged-first (flagged float to the top of every room group), then newest.
+  // Cabinets sorted by attention priority: flagged first, then Ready-for-QC
+  // (the supervisor's queue), then newest.
+  const cabPriority = (s: string | null) => (s === 'flagged' ? 0 : s === 'ready_for_qc' ? 1 : 2);
   const sortCabs = (list: CabinetUnit[]) =>
     [...list].sort((a, b) => {
-      if (a.status === 'flagged' && b.status !== 'flagged') return -1;
-      if (b.status === 'flagged' && a.status !== 'flagged') return 1;
+      const pa = cabPriority(a.status), pb = cabPriority(b.status);
+      if (pa !== pb) return pa - pb;
       return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
     });
 
@@ -675,6 +761,26 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                                   <PartsList parts={parts} pushCtx={pushCtx} />
                                 )}
 
+                                {/* QC gate — supervisor passes or fails an assembled cabinet */}
+                                {unit.status === 'ready_for_qc' && (
+                                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                                    <button
+                                      onClick={() => void passQC(unit)}
+                                      disabled={qcBusy === unit.id}
+                                      style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', borderRadius: 9, background: 'rgba(52,211,153,0.14)', border: '1px solid rgba(52,211,153,0.4)', color: '#34D399', fontSize: 13, fontWeight: 700, cursor: qcBusy === unit.id ? 'wait' : 'pointer', fontFamily: 'inherit', opacity: qcBusy === unit.id ? 0.6 : 1 }}
+                                    >
+                                      <IcoCheck /> Pass QC
+                                    </button>
+                                    <button
+                                      onClick={() => { setQcFailUnit(unit); setQcFailNotes(''); }}
+                                      disabled={qcBusy === unit.id}
+                                      style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', borderRadius: 9, background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.35)', color: '#F87171', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                                    >
+                                      <IcoWrong /> Fail QC
+                                    </button>
+                                  </div>
+                                )}
+
                                 {/* Message Team for flagged cabinet */}
                                 {isFlagged && (
                                   <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
@@ -711,6 +817,45 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* ── Fail QC Modal ─────────────────────────────────────────────────── */}
+      {qcFailUnit && (
+        <div
+          style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(5px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
+          onClick={(e) => { if (e.target === e.currentTarget && !qcBusy) setQcFailUnit(null); }}
+        >
+          <div style={{ background: '#0a0d10', border: '1px solid var(--line-strong)', borderRadius: 20, width: '100%', maxWidth: 460, padding: 28, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: '#F87171' }}>Fail QC — send back to Assembly</div>
+              <button onClick={() => setQcFailUnit(null)} disabled={!!qcBusy} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }}>
+                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{qcFailUnit.cabinet_number ? `${qcFailUnit.cabinet_number} — ` : ''}{qcFailUnit.unit_label}</div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--ink-mute)', fontWeight: 600, display: 'block', marginBottom: 5 }}>Notes for the assembly crew</label>
+              <textarea
+                className="form-input"
+                value={qcFailNotes}
+                onChange={(e) => setQcFailNotes(e.target.value)}
+                rows={4}
+                placeholder="What needs to be fixed…"
+                style={{ width: '100%', resize: 'none' }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn btn-ghost" onClick={() => setQcFailUnit(null)} disabled={!!qcBusy} style={{ flex: 1, justifyContent: 'center' }}>Cancel</button>
+              <button
+                onClick={() => void failQC()}
+                disabled={!!qcBusy}
+                style={{ flex: 2, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '12px', borderRadius: 10, background: '#F87171', color: '#1a0606', border: 'none', fontSize: 14, fontWeight: 700, cursor: qcBusy ? 'wait' : 'pointer', fontFamily: 'inherit', opacity: qcBusy ? 0.6 : 1 }}
+              >
+                {qcBusy ? 'Sending…' : 'Send back to Assembly'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
