@@ -99,8 +99,11 @@ export async function pushPartToDept(opts: {
   workerName?: string;
 }): Promise<void> {
   const toLower = opts.toDept.toLowerCase();
-  // 1. Reassign the part (this must succeed).
-  const { error } = await supabase.from('parts').update({ assigned_dept: toLower }).eq('id', opts.part.id).eq('tenant_id', opts.tenantId);
+  // 1. Reassign the part (this must succeed). Pushing back to Production resets
+  // production_status to 'not_cut' so it re-enters the cut queue immediately.
+  const update: Record<string, unknown> = { assigned_dept: toLower };
+  if (toLower === 'production') update.production_status = 'not_cut';
+  const { error } = await supabase.from('parts').update(update).eq('id', opts.part.id).eq('tenant_id', opts.tenantId);
   if (error) throw error;
 
   // 2. shift_event (time_clock_id may be null for supervisor-initiated pushes).

@@ -473,7 +473,7 @@ function DailyMetrics({ entries }: { entries: ClockEntry[] }) {
   const maxJobHrs = topJobs[0]?.[1] ?? 1;
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr) 2fr', gap: 12, marginBottom: 4 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr)) minmax(0, 2fr)', gap: 12, marginBottom: 4 }}>
       <MetricTile label="Total Hours" value={toHHMM(totalHours)} color="#2DE1C9" />
       <MetricTile label="Avg / Worker" value={toHHMM(avgHours)} color="#5EEAD4" />
       <MetricTile label="≥90% Accounted" value={`${pctFull}%`} color={pctFull >= 90 ? '#34D399' : pctFull >= 70 ? '#FBBF24' : '#F87171'} />
@@ -1041,7 +1041,7 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
       )}
 
       {/* Open issues */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12 }}>
         {[
           { title: 'Open Damage', items: damage.slice(0, 6), color: '#F87171', getLabel: (r: DamageRow) => r.part_name, getStatus: (r: DamageRow) => r.status },
           { title: 'Pending Inventory', items: needs.slice(0, 6), color: '#FBBF24', getLabel: (r: NeedRow) => r.item, getStatus: (r: NeedRow) => r.status },
@@ -1178,7 +1178,7 @@ function CraftsmanBuildReport({ tenantId, showToast }: Props) {
       </div>
 
       {!loading && rows.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12 }}>
           <MetricTile label="Craftsman Units" value={String(rows.length)} color="#A78BFA" />
           <MetricTile label="In Progress"     value={String(inProgress)}  color="#60A5FA" />
           <MetricTile label="Completed"       value={String(completed)}   color="#34D399" />
@@ -1497,7 +1497,7 @@ function PartsQCReport({ tenantId, showToast }: Props) {
       </div>
 
       {!loading && rows.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
           <MetricTile label="Total Parts" value={String(rows.length)} color="#5EEAD4" />
           <MetricTile label="QC Pass Rate" value={passRate !== null ? `${passRate}%` : 'N/A'}
             color={passRate === null ? 'var(--ink-mute)' : passRate >= 90 ? '#34D399' : passRate >= 70 ? '#FBBF24' : '#F87171'} />
@@ -1557,7 +1557,7 @@ export default function ReportsTab({ tenantId, showToast, onGoToCrew }: Props) {
   const [active, setActive] = useState<ReportKey>('daily');
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, width: '100%', maxWidth: '100%', minWidth: 0, overflowX: 'hidden' }}>
       <div>
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 4 }}>Reports</div>
         <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6 }}>
@@ -1565,11 +1565,11 @@ export default function ReportsTab({ tenantId, showToast, onGoToCrew }: Props) {
         </p>
       </div>
 
-      {/* Secondary nav */}
-      <div style={{ display: 'flex', gap: 2, overflowX: 'auto', borderBottom: '1px solid var(--line)', paddingBottom: 0, marginBottom: 2 }}>
+      {/* Secondary nav — horizontally scrollable so it never overflows the page */}
+      <div style={{ display: 'flex', gap: 2, overflowX: 'auto', WebkitOverflowScrolling: 'touch', borderBottom: '1px solid var(--line)', paddingBottom: 0, marginBottom: 2, maxWidth: '100%' }}>
         {REPORT_NAV.map(({ key, label }) => (
           <button key={key} onClick={() => setActive(key)} style={{
-            padding: '8px 13px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+            padding: '8px 13px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0,
             color: active === key ? 'var(--teal)' : 'var(--ink-mute)',
             background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit',
             borderBottom: active === key ? '2px solid var(--teal)' : '2px solid transparent',

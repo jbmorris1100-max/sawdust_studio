@@ -198,26 +198,21 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [parts]);
 
-  // Keep a valid selected job as the parts list changes.
+  // Collapse a job that no longer exists. Default is all-collapsed (no auto-open).
   useEffect(() => {
-    if (jobOptions.length === 0) { if (selectedJob) setSelectedJob(''); return; }
-    if (!jobOptions.some((j) => j.jobNumber === selectedJob)) setSelectedJob(jobOptions[0].jobNumber);
+    if (!selectedJob) return;
+    if (!jobOptions.some((j) => j.jobNumber === selectedJob)) setSelectedJob('');
   }, [jobOptions, selectedJob]);
 
-  const jobParts = useMemo(
-    () => parts.filter((p) => (p.job_number ?? '__nojob__') === selectedJob),
-    [parts, selectedJob],
-  );
-
-  // Group selected job's parts by cabinet unit.
-  const cabinetGroups = useMemo(() => {
+  // Group one job's parts by cabinet unit.
+  const groupsForJob = useCallback((jobNumber: string) => {
     const groups: Record<string, { label: string; key: string; parts: FinishPart[] }> = {};
-    jobParts.forEach((p) => {
+    parts.filter((p) => (p.job_number ?? '__nojob__') === jobNumber).forEach((p) => {
       const g = (groups[p.cabinet_unit_id] ??= { label: p.cabinetLabel, key: p.cabinetKey, parts: [] });
       g.parts.push(p);
     });
     return Object.entries(groups).map(([cabinetId, g]) => ({ cabinetId, ...g }));
-  }, [jobParts]);
+  }, [parts]);
 
   // ── Job completion ─────────────────────────────────────────────────────────
   // When every cabinet for a job is complete (across all depts) mark the job done.
@@ -315,9 +310,10 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
       });
       if (dmgErr) throw dmgErr;
 
-      // Kick the part back to the chosen dept for rework.
+      // Kick the part back to the chosen dept for rework. Sending to Production
+      // resets it to 'not_cut' so it re-enters the cut queue.
       const { error: partErr } = await supabase.from('parts')
-        .update({ assigned_dept: sendDept, production_status: 'pending', status: 'pending' })
+        .update({ assigned_dept: sendDept, production_status: sendDept === 'production' ? 'not_cut' : 'pending', status: 'pending' })
         .eq('id', coPart.id).eq('tenant_id', tenantId);
       if (partErr) throw partErr;
       await recomputeCabinet(tenantId, coPart.cabinet_unit_id);
@@ -442,25 +438,26 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
             Parts to Finish ({parts.length})
           </div>
 
-          {/* STEP 1 — Job selector */}
-          <div style={{ marginBottom: 14 }}>
-            <div style={{ ...rowLabel, marginBottom: 6 }}>Job</div>
-            <select
-              value={selectedJob}
-              onChange={(e) => setSelectedJob(e.target.value)}
-              style={{ width: '100%', padding: '11px 12px', borderRadius: 10, background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}
-            >
-              {jobOptions.map((j) => (
-                <option key={j.jobNumber} value={j.jobNumber}>{j.label}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* STEP 2 — One card per cabinet/unit. Each has a "Needs finishing?"
-              toggle: Yes shows the finishing work + Mark Finishing Complete; No
-              completes it straight away (no work needed). */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {cabinetGroups.map((g) => {
+          {/* Job folder accordion — jobs collapsed by default; tap a job to
+              expand its units to finish. One job open at a time. Each unit has a
+              "Needs finishing?" toggle: Yes shows the work + Mark Finishing
+              Complete; No completes it straight away. */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {jobOptions.map((j) => {
+              const jobOpen = selectedJob === j.jobNumber;
+              const groups = jobOpen ? groupsForJob(j.jobNumber) : [];
+              const count = parts.filter((p) => (p.job_number ?? '__nojob__') === j.jobNumber).length;
+              return (
+                <div key={j.jobNumber} style={{ borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)', overflow: 'hidden' }}>
+                  <button onClick={() => setSelectedJob(jobOpen ? '' : j.jobNumber)}
+                    style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
+                    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transition: 'transform 0.2s ease', transform: jobOpen ? 'rotate(90deg)' : 'none' }}><polyline points="9 6 15 12 9 18"/></svg>
+                    <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{j.label}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{count} piece{count === 1 ? '' : 's'}</span>
+                  </button>
+                  {jobOpen && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '12px 14px 14px', borderTop: '1px solid var(--line)' }}>
+                      {groups.map((g) => {
               const ids = g.parts.map((p) => p.id);
               const needs = needsFinishing[g.cabinetId] ?? true;
               const busy = unitBusy === g.cabinetId;
@@ -516,6 +513,11 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
                     <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                     {busy ? 'Saving…' : needs ? 'Mark Finishing Complete' : 'Mark Complete'}
                   </button>
+                </div>
+              );
+            })}
+                    </div>
+                  )}
                 </div>
               );
             })}

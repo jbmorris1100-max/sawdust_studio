@@ -186,7 +186,9 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
         } catch { /* best-effort */ }
       }
 
-      setUnits(unitList);
+      // Dedupe by id — a cabinet can match both the assigned_dept filter and the
+      // part-owned lookup above.
+      setUnits(Array.from(new Map(unitList.map((u) => [u.id, u])).values()));
       setParts(allParts);
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Could not load craftsman work', true);

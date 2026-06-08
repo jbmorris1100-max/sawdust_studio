@@ -143,7 +143,8 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   const [success, setSuccess] = useState<{ kept: number; pushed: number; dept: string } | null>(null);
   const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Job folder selector — craftsman works one job at a time.
+  // Job folder accordion — the currently expanded job ('' = all collapsed).
+  // Only one job is open at a time.
   const [selectedJob, setSelectedJob] = useState<string>('');
 
   // ── Load ────────────────────────────────────────────────────────────────────
@@ -174,7 +175,9 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
       const { data: unitData } = cabIdsWithCraftPart.length > 0
         ? await baseQuery.or(`assigned_dept.eq.craftsman,id.in.(${cabIdsWithCraftPart.join(',')})`)
         : await baseQuery.eq('assigned_dept', 'craftsman');
-      const list = (unitData as CUnit[] | null) ?? [];
+      // The .or() above can return the same cabinet twice (assigned to craftsman
+      // AND owning a craftsman part) — dedupe by id.
+      const list = Array.from(new Map(((unitData as CUnit[] | null) ?? []).map((u) => [u.id, u])).values());
       setUnits(list);
 
       if (list.length > 0) {
@@ -233,11 +236,11 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
 
   useEffect(() => () => { if (successTimer.current) clearTimeout(successTimer.current); }, []);
 
-  // Keep the selected job valid as the unit list changes (auto-select the first).
+  // Collapse a job that no longer exists. Default is all-collapsed (no auto-open).
   useEffect(() => {
-    const keys = Array.from(new Set(units.map((u) => u.job_number || '__nojob__')));
-    if (keys.length === 0) { if (selectedJob) setSelectedJob(''); return; }
-    if (!keys.includes(selectedJob)) setSelectedJob(keys[0]);
+    if (!selectedJob) return;
+    const keys = new Set(units.map((u) => u.job_number || '__nojob__'));
+    if (!keys.has(selectedJob)) setSelectedJob('');
   }, [units, selectedJob]);
 
   function persistStarts(next: Record<string, string>) {
@@ -479,8 +482,6 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   const byJob: Record<string, CUnit[]> = {};
   units.forEach((u) => { const k = u.job_number || '__nojob__'; (byJob[k] ??= []).push(u); });
   const jobKeys = Object.keys(byJob);
-  const activeJobKey = jobKeys.includes(selectedJob) ? selectedJob : (jobKeys[0] ?? '');
-  const jobUnits = byJob[activeJobKey] ?? [];
 
   return (
     <div style={{ marginBottom: 32 }}>
@@ -497,35 +498,25 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
           <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 6 }}>Ask your supervisor to upload a cutlist.</div>
         </div>
       ) : (
-        <>
-          {/* Job folder selector — one dropdown for all assigned jobs (rush jobs
-              can be picked in any order; no queue is enforced). A single job
-              auto-selects with no dropdown. */}
-          {jobKeys.length > 1 ? (
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 11, color: 'var(--ink-mute)', fontWeight: 600, marginBottom: 6 }}>Job</div>
-              <select
-                value={activeJobKey}
-                onChange={(e) => setSelectedJob(e.target.value)}
-                style={{ width: '100%', padding: '11px 12px', borderRadius: 10, background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}
-              >
-                {jobKeys.map((jk) => (
-                  <option key={jk} value={jk}>
-                    {jobLabel(jk === '__nojob__' ? null : jk)} ({byJob[jk].length} piece{byJob[jk].length === 1 ? '' : 's'})
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : (
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--teal)', marginBottom: 12 }}>
-              {jobLabel(activeJobKey === '__nojob__' ? null : activeJobKey)}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div key={activeJobKey}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {jobUnits.map((unit) => {
+        /* Job folder accordion — jobs collapsed by default; tap a job to expand
+           its pieces. Only one job open at a time. Rush jobs in any order. */
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {jobKeys.map((jk) => {
+            const open = selectedJob === jk;
+            const ju = byJob[jk];
+            return (
+              <div key={jk} style={{ borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)', overflow: 'hidden' }}>
+                <button
+                  onClick={() => setSelectedJob(open ? '' : jk)}
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                >
+                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transition: 'transform 0.2s ease', transform: open ? 'rotate(90deg)' : 'none' }}><polyline points="9 6 15 12 9 18"/></svg>
+                  <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{jobLabel(jk === '__nojob__' ? null : jk)}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{ju.length} piece{ju.length === 1 ? '' : 's'}</span>
+                </button>
+                {open && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '12px 14px 14px', borderTop: '1px solid var(--line)' }}>
+                {ju.map((unit) => {
                   const ps = unitParts(unit.id);
                   const sm = statusMeta(unit.status);
                   const start = buildStarts[unit.id];
@@ -593,9 +584,11 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
                   );
                 })}
               </div>
-            </div>
-          </div>
-        </>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
 
       {/* ── Part-selection / push overlay ───────────────────────────────────── */}
