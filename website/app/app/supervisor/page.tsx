@@ -177,6 +177,13 @@ const PLAN_IMPORT_FIELDS: { key: string; label: string; required?: boolean }[] =
 type MultiFileStatus = 'pending' | 'processing' | 'done' | 'error';
 type MultiFile = { id: string; file: File; status: MultiFileStatus; error?: string; units?: number };
 
+// Thrown by the batch processor when a lone CSV can't be auto-mapped: instead of
+// failing the file, the driver hands off to the manual column mapper (single-file
+// fallback). Never thrown when more than one file is in the queue.
+class ManualMapNeeded extends Error {
+  constructor() { super('manual-map-needed'); this.name = 'ManualMapNeeded'; }
+}
+
 // Human-readable file size for the bulk-upload queue rows.
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -2397,8 +2404,10 @@ export default function SupervisorPage() {
   }
 
   // Upload + record one file, then (for CSVs) auto-map and build the cut list.
-  // Throws on any failure so the batch driver can mark the row as an error.
-  async function processBatchFile(file: File, jobNumber: string, jobPath: string | null): Promise<number> {
+  // Throws on any failure so the batch driver can mark the row as an error. When
+  // `manualFallback` is set (single-file upload), a CSV whose columns can't be
+  // auto-detected opens the manual column mapper instead of erroring.
+  async function processBatchFile(file: File, jobNumber: string, jobPath: string | null, manualFallback = false): Promise<number> {
     const ext      = (file.name.split('.').pop() ?? 'bin').toLowerCase();
     const fileType = detectPlanFileType(ext);
     const path     = `${tenant!.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
@@ -2455,6 +2464,19 @@ export default function SupervisorPage() {
       depth:     pick(ai.depth),
     };
     if (!map.unit_id || !map.part_name) {
+      // Single-file upload → hand off to the manual mapper (pre-filled with
+      // whatever the AI did detect). Multi-file → surface as a queue error.
+      if (manualFallback) {
+        setPlanCsvHeaders(headers);
+        setPlanCsvRows(rows);
+        setPlanColumnMap({ unit_id: map.unit_id, part_name: map.part_name, room: map.room, material: map.material, width: map.width, height: map.height, depth: map.depth });
+        setPlanAiMapped(true);
+        setPlanAiMissing((['unit_id', 'part_name'] as const).filter((k) => !map[k]));
+        setPlanCountdown(null);
+        setPlanPendingId(drawing.id);
+        setPlanPendingJobNum(jobNumber);
+        throw new ManualMapNeeded();
+      }
       throw new Error('Couldn’t auto-detect Cabinet ID / Part Name columns — upload this file on its own to map manually');
     }
 
@@ -2487,6 +2509,9 @@ export default function SupervisorPage() {
     if (!ctx) return;
     const { jobNumber, jobPath } = ctx;
 
+    // A lone file can fall back to the manual column mapper for CSVs that can't
+    // be auto-detected; multi-file runs treat that case as a queue error.
+    const single = files.length === 1;
     const queue: MultiFile[] = files.map((f, i) => ({ id: `${Date.now()}-${i}-${f.name}`, file: f, status: 'pending' as const }));
     setMultiSummary(null);
     setMultiQueue(queue);
@@ -2501,12 +2526,20 @@ export default function SupervisorPage() {
       setMultiCurrentIdx(i + 1);
       setMultiQueue((prev) => prev.map((q, idx) => idx === i ? { ...q, status: 'processing' } : q));
       try {
-        const units = await processBatchFile(queue[i].file, jobNumber, jobPath);
+        const units = await processBatchFile(queue[i].file, jobNumber, jobPath, single);
         totalUnits += units;
         okCount++;
         jobsTouched.add(jobNumber);
         setMultiQueue((prev) => prev.map((q, idx) => idx === i ? { ...q, status: 'done', units } : q));
       } catch (err: unknown) {
+        // Single CSV needs manual mapping → clear the queue and let the mapper
+        // card below take over (it builds the cut list on confirm).
+        if (err instanceof ManualMapNeeded) {
+          setMultiQueue([]);
+          setMultiProcessing(false);
+          setMultiCurrentIdx(0);
+          return;
+        }
         failCount++;
         const msg = err instanceof Error ? err.message : 'Upload failed';
         setMultiQueue((prev) => prev.map((q, idx) => idx === i ? { ...q, status: 'error', error: msg } : q));
@@ -3957,12 +3990,12 @@ export default function SupervisorPage() {
           {tab === 'plans' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
               <div className="portal-card">
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 4 }}>Upload Plan</div>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 4 }}>Upload Plans</div>
                 <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6 }}>
-                  Plans is the home for every file — PDFs, layouts, and CSV cut lists. Upload a CSV to build the assembly cut list automatically.
+                  Plans is the home for every file — PDFs, layouts, and CSV cut lists. Drop one file or many at once; each is processed in turn and CSV cut lists have their columns mapped automatically.
                 </p>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+                <div style={{ marginBottom: 12 }}>
                   {/* Job / Project — smart selector */}
                   <div style={{ position: 'relative' }}>
                     <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Job / Project *</label>
@@ -4008,10 +4041,6 @@ export default function SupervisorPage() {
                         </div>
                       );
                     })()}
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Plan name / description</label>
-                    <input className="form-input" placeholder="e.g. Kitchen Layout, Cut List, Elevation Views" value={planLabel} onChange={(e) => setPlanLabel(e.target.value)} />
                   </div>
                 </div>
 
@@ -4065,109 +4094,52 @@ export default function SupervisorPage() {
                   </div>
                 </div>
 
-                <div style={{ marginBottom: 14 }}>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>File (PDF, CSV, image, SVG, DXF, XML, HTML, or spreadsheet) *</label>
-                  <label
-                    onDragOver={(e) => { e.preventDefault(); setPlanDropHover(true); }}
-                    onDragLeave={() => setPlanDropHover(false)}
-                    onDrop={(e) => { e.preventDefault(); setPlanDropHover(false); const f = e.dataTransfer.files?.[0]; if (f) setPlanFile(f); }}
+                {/* Unified drop zone — one file or many, processed sequentially */}
+                <div style={{ marginBottom: 4 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Files (PDF, CSV, image, SVG, DXF, XML, HTML, or spreadsheet) — one or many *</label>
+                  <div
+                    onDragOver={(e) => { e.preventDefault(); if (!multiProcessing && planJobReady) setMultiDropHover(true); }}
+                    onDragLeave={() => setMultiDropHover(false)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setMultiDropHover(false);
+                      if (multiProcessing || !planJobReady) return;
+                      const fs = Array.from(e.dataTransfer.files ?? []);
+                      if (fs.length) void runMultiUpload(fs);
+                    }}
                     style={{
                       position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                      gap: 8, width: '100%', padding: 24, borderRadius: 12, cursor: 'pointer',
-                      border: `1.5px dashed ${planDropHover ? '#5EEAD4' : '#2DE1C9'}`,
-                      background: planDropHover ? '#13302d' : '#0f1f1e',
+                      gap: 8, width: '100%', padding: 28, borderRadius: 12,
+                      cursor: (multiProcessing || !planJobReady) ? 'default' : 'pointer',
+                      border: `1.5px dashed ${multiDropHover ? '#5EEAD4' : '#2DE1C9'}`,
+                      background: multiDropHover ? '#13302d' : '#0f1f1e',
+                      opacity: (multiProcessing || !planJobReady) ? 0.6 : 1,
                       transition: 'border-color 120ms ease, background 120ms ease',
                     }}
-                    onMouseEnter={() => setPlanDropHover(true)}
-                    onMouseLeave={() => setPlanDropHover(false)}
                   >
                     <input
                       type="file"
+                      multiple
                       accept=".pdf,.csv,.svg,.html,.dxf,.xml,.xlsx,.xls,.jpg,.jpeg,.png,.webp"
-                      onChange={(e) => setPlanFile(e.target.files?.[0] ?? null)}
-                      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
+                      disabled={multiProcessing || !planJobReady}
+                      onChange={(e) => {
+                        const fs = Array.from(e.target.files ?? []);
+                        e.target.value = '';
+                        if (fs.length) void runMultiUpload(fs);
+                      }}
+                      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: (multiProcessing || !planJobReady) ? 'default' : 'pointer' }}
                     />
-                    {planFile ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, zIndex: 1 }}>
-                        <span style={{ fontSize: 14, color: '#2DE1C9', fontWeight: 600, wordBreak: 'break-all' }}>{planFile.name}</span>
-                        <button
-                          type="button"
-                          aria-label="Clear file"
-                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setPlanFile(null); }}
-                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, borderRadius: 6, background: 'rgba(45,225,201,0.12)', border: 'none', color: '#2DE1C9', cursor: 'pointer', flexShrink: 0 }}
-                        >
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#2DE1C9" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                          <polyline points="17 8 12 3 7 8"/>
-                          <line x1="12" y1="3" x2="12" y2="15"/>
-                        </svg>
-                        <span style={{ fontSize: 14, color: '#2DE1C9' }}>Drop file here or tap to browse</span>
-                        <span style={{ fontSize: 11, color: '#8BA5A0', textAlign: 'center' }}>PDF, CSV, SVG, DXF, XML, HTML, images, spreadsheets</span>
-                      </>
-                    )}
-                  </label>
-                </div>
-                <button
-                  className="btn btn-primary"
-                  style={{ opacity: (!planFile || !planJobReady || planUploading) ? 0.5 : 1, padding: '10px 24px' }}
-                  onClick={handlePlanUpload}
-                  disabled={!planFile || !planJobReady || planUploading}
-                >
-                  {planUploading ? 'Uploading…' : 'Upload Plan'}
-                </button>
-              </div>
-
-              {/* ── Bulk upload — multiple files, processed sequentially ───────── */}
-              <div className="portal-card">
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 4 }}>Bulk Upload</div>
-                <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6 }}>
-                  Drop or select multiple files at once. Each file is uploaded to the <strong style={{ color: 'var(--ink-dim)' }}>Job / Project selected above</strong> and processed one at a time — CSV cut lists have their columns mapped automatically.
-                </p>
-
-                <div
-                  onDragOver={(e) => { e.preventDefault(); if (!multiProcessing) setMultiDropHover(true); }}
-                  onDragLeave={() => setMultiDropHover(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setMultiDropHover(false);
-                    if (multiProcessing) return;
-                    const fs = Array.from(e.dataTransfer.files ?? []);
-                    if (fs.length) void runMultiUpload(fs);
-                  }}
-                  style={{
-                    position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                    gap: 8, width: '100%', padding: 28, borderRadius: 12,
-                    cursor: multiProcessing ? 'default' : 'pointer',
-                    border: `1.5px dashed ${multiDropHover ? '#5EEAD4' : '#2DE1C9'}`,
-                    background: multiDropHover ? '#13302d' : '#0f1f1e',
-                    opacity: multiProcessing ? 0.6 : 1,
-                    transition: 'border-color 120ms ease, background 120ms ease',
-                  }}
-                >
-                  <input
-                    type="file"
-                    multiple
-                    accept=".csv,.xlsx,.xls,.pdf,.svg,.png,.jpg,.jpeg,.html"
-                    disabled={multiProcessing}
-                    onChange={(e) => {
-                      const fs = Array.from(e.target.files ?? []);
-                      e.target.value = '';
-                      if (fs.length) void runMultiUpload(fs);
-                    }}
-                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: multiProcessing ? 'default' : 'pointer' }}
-                  />
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#2DE1C9" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="17 8 12 3 7 8"/>
-                    <line x1="12" y1="3" x2="12" y2="15"/>
-                  </svg>
-                  <span style={{ fontSize: 14, color: '#2DE1C9' }}>Drop files here or tap to browse</span>
-                  <span style={{ fontSize: 11, color: '#8BA5A0', textAlign: 'center' }}>CSV, PDF, SVG, HTML, images, spreadsheets — multiple at once</span>
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#2DE1C9" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                      <polyline points="17 8 12 3 7 8"/>
+                      <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    <span style={{ fontSize: 14, color: '#2DE1C9' }}>Drop files here or tap to browse</span>
+                    <span style={{ fontSize: 11, color: '#8BA5A0', textAlign: 'center' }}>PDF, CSV, SVG, DXF, XML, HTML, images, spreadsheets — one or many at once</span>
+                  </div>
+                  {!planJobReady && (
+                    <div style={{ fontSize: 11.5, color: '#FBBF24', marginTop: 8 }}>Choose a Job / Project above before uploading.</div>
+                  )}
                 </div>
 
                 {/* Progress indicator while the queue runs */}
