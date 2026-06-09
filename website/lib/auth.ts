@@ -19,6 +19,8 @@ export type Tenant = {
   created_at: string;
   setup_complete: boolean | null;
   departments: string[] | null;
+  // AI push-suggestion mode. Default 'learn' = no suggestions shown to crew.
+  ai_mode: 'learn' | 'assist' | 'autonomous' | null;
   // ── Stripe billing (nullable until a subscription exists) ──
   plan: PlanName | null;
   stripe_customer_id: string | null;

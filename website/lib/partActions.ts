@@ -84,7 +84,9 @@ async function learnRouting(tenantId: string, partName: string, fromDept: string
 
 // The Push Picker's suggested destination for a part: highest-confidence learned
 // route for this (part name pattern, from dept). null = no suggestion yet.
-export async function suggestedDestination(tenantId: string, partName: string, fromDept: string): Promise<string | null> {
+// confidence is 0–1 (the share of pushes for this pattern that went to this dept).
+export type RouteSuggestion = { toDept: string; confidence: number };
+export async function suggestedDestination(tenantId: string, partName: string, fromDept: string): Promise<RouteSuggestion | null> {
   const pattern = patternFromPartName(partName);
   if (!pattern) return null;
   try {
@@ -98,7 +100,9 @@ export async function suggestedDestination(tenantId: string, partName: string, f
       .order('times_confirmed', { ascending: false })
       .limit(1)
       .maybeSingle();
-    return (data as { to_dept: string } | null)?.to_dept ?? null;
+    const row = data as { to_dept: string; confidence_score: number | null } | null;
+    if (!row?.to_dept) return null;
+    return { toDept: row.to_dept, confidence: row.confidence_score ?? 0 };
   } catch {
     return null;
   }
@@ -179,21 +183,8 @@ export async function pushPart(opts: {
   // 4. Learn the push.
   try { await learnRouting(opts.tenantId, opts.partName, fromDept, toDept); } catch { /* best-effort */ }
 
-  // 5. Assembly rollup — when every part is in assembly/complete, the cabinet is
-  //    ready for the supervisor's QC gate.
-  if (toDept === 'assembly') {
-    try {
-      const { data } = await supabase.from('parts')
-        .select('assigned_dept, status').eq('cabinet_unit_id', opts.cabinetUnitId).eq('tenant_id', opts.tenantId);
-      const rows = (data as { assigned_dept: string | null; status: string | null }[] | null) ?? [];
-      const ready = rows.length > 0 && rows.every((p) => p.assigned_dept === 'assembly' || p.assigned_dept === 'complete' || p.status === 'complete');
-      if (ready) {
-        await supabase.from('cabinet_units').update({ status: 'ready_for_qc', assigned_dept: 'qc' }).eq('id', opts.cabinetUnitId);
-        const body = `${opts.partName ? 'Cabinet' : 'A cabinet'}${opts.jobNumber ? ` — Job ${opts.jobNumber}` : ''} is ready for QC`;
-        sendNotify({ tenant_id: opts.tenantId, target: 'supervisor', title: 'Ready for QC', body, url: '/app/supervisor' });
-      }
-    } catch { /* best-effort */ }
-  }
+  // 5. (QC is triggered explicitly by the Assembly / Finishing QC buttons — a
+  //    push alone never sends a cabinet to QC. See maybeNotifyJobQc.)
 
   // 6. Job completion rollup — when every cabinet in the job is complete.
   if (toDept === 'complete' && opts.jobNumber) {
@@ -264,6 +255,51 @@ export async function pushPartToDept(opts: {
     workerName: opts.workerName || 'Supervisor',
     timeClockId: opts.timeClockId ?? null,
   });
+}
+
+// ── QC gating ───────────────────────────────────────────────────────────────
+// A part is still "in production" (i.e. not yet accounted for at QC) while its
+// assigned_dept is one of the four working departments.
+const IN_PRODUCTION_DEPTS = ['production', 'craftsman', 'finishing', 'assembly'];
+
+// Has every part for EVERY cabinet in this job left the working departments?
+// This is the gate the spec requires before a job's QC notification may fire and
+// before the Assembly QC button is allowed to appear.
+export async function jobFullyAccounted(tenantId: string, jobNumber: string | null): Promise<boolean> {
+  if (!jobNumber) return false;
+  try {
+    const { data } = await supabase
+      .from('parts')
+      .select('assigned_dept, status')
+      .eq('tenant_id', tenantId)
+      .eq('job_number', jobNumber);
+    const rows = (data as { assigned_dept: string | null; status: string | null }[] | null) ?? [];
+    if (rows.length === 0) return false;
+    return rows.every((p) =>
+      p.status === 'complete' || !IN_PRODUCTION_DEPTS.includes((p.assigned_dept || 'production').toLowerCase()));
+  } catch {
+    return false;
+  }
+}
+
+// Fire the supervisor "ready for QC" notification only when the whole job is
+// accounted for (spec rule 7). Called by the Assembly / Finishing QC buttons
+// after they flip a cabinet to ready_for_qc. Silent otherwise.
+export async function maybeNotifyJobQc(tenantId: string, jobNumber: string | null, jobLabel?: string): Promise<boolean> {
+  if (!(await jobFullyAccounted(tenantId, jobNumber))) return false;
+  sendNotify({
+    tenant_id: tenantId, target: 'supervisor',
+    title: 'Job ready for QC',
+    body: `Job ${jobLabel || jobNumber} is ready for QC`,
+    url: '/app/supervisor',
+  });
+  try {
+    await supabase.from('notifications').insert({
+      tenant_id: tenantId, target_type: 'supervisor',
+      title: 'Job ready for QC', body: `Job ${jobLabel || jobNumber} is ready for QC`, url: '/app/supervisor',
+    });
+  } catch { /* bell log best-effort */ }
+  return true;
 }
 
 // ── Color parsing ───────────────────────────────────────────────────────────

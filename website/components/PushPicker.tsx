@@ -9,6 +9,8 @@ import { pushPart, suggestedDestination } from '@/lib/partActions';
 // + current dept) gets a teal highlight and a "Suggested" pill. One tap pushes —
 // no confirmation dialog. A wrong tap is fine; the AI just learns from it.
 
+export type AiMode = 'learn' | 'assist' | 'autonomous';
+
 interface Props {
   tenantId: string;
   partId: string;
@@ -20,6 +22,9 @@ interface Props {
   timeClockId: string | null;
   onPushed: (toDept: string) => void;
   onToast: (msg: string, error?: boolean) => void;
+  // AI mode gates suggestions. In 'learn' (default) the crew always picks
+  // manually — no highlight, no "Suggested" pill, no confidence score.
+  aiMode?: AiMode;
 }
 
 // Valid destinations from each department (the assembly flow uses Mark Cabinet
@@ -43,21 +48,28 @@ const IcoArrow = () => (
 
 export default function PushPicker({
   tenantId, partId, partName, cabinetUnitId, jobNumber,
-  currentDept, workerName, timeClockId, onPushed, onToast,
+  currentDept, workerName, timeClockId, onPushed, onToast, aiMode = 'learn',
 }: Props) {
   const from = (currentDept || '').toLowerCase();
   const dests = DESTINATIONS[from] ?? ['craftsman', 'finishing', 'assembly'];
   const [suggested, setSuggested] = useState<string | null>(null);
+  const [confidence, setConfidence] = useState<number>(0);
   const [busy, setBusy] = useState<string | null>(null);
+  const showAi = aiMode === 'assist' || aiMode === 'autonomous';
 
   useEffect(() => {
+    // In learn mode the AI stays silent — crew always picks manually.
+    if (!showAi) return;
     let cancelled = false;
     void suggestedDestination(tenantId, partName, from).then((s) => {
-      if (!cancelled && s && dests.includes(s)) setSuggested(s);
+      if (!cancelled && s && dests.includes(s.toDept)) { setSuggested(s.toDept); setConfidence(s.confidence); }
     });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantId, partName, from]);
+  }, [tenantId, partName, from, showAi]);
+
+  // Derived: never surface a suggestion outside assist/autonomous mode.
+  const shownSuggested = showAi ? suggested : null;
 
   async function push(toDept: string) {
     if (busy) return;
@@ -80,7 +92,7 @@ export default function PushPicker({
         <IcoArrow /> Push to
       </span>
       {dests.map((d) => {
-        const isSuggested = d === suggested;
+        const isSuggested = d === shownSuggested;
         const isBusy = busy === d;
         return (
           <button
@@ -103,7 +115,7 @@ export default function PushPicker({
             {isBusy ? 'Sending…' : LABEL[d] ?? d}
             {isSuggested && !isBusy && (
               <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', padding: '2px 6px', borderRadius: 20, background: 'rgba(4,32,28,0.18)', color: '#04201c' }}>
-                Suggested
+                {confidence > 0.85 ? `Suggested ${Math.round(confidence * 100)}%` : 'Suggested'}
               </span>
             )}
           </button>

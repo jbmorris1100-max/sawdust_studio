@@ -1,13 +1,21 @@
 'use client';
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { sendNotify } from '@/lib/notify';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 
-// The Assembly department's home view. Shows parts pushed to assembly, grouped by
-// job → cabinet (folder accordion). When every part for a cabinet is in assembly
-// or complete, a "Mark Cabinet Complete" button appears — tapping it sends the
-// cabinet to the supervisor's QC gate (status = 'ready_for_qc').
+// The Assembly department's home view. Parts pushed to assembly, grouped by
+// job -> cabinet (folder accordion). Each cabinet has START and MARK COMPLETE.
+//
+// START logs a clock_in to time_clock (dept = Assembly) — multiple crew can have
+// a build running on different cabinets at once, each its own row. MARK COMPLETE
+// stops that timer (clock_out + total_hours), records who finished it, and flips
+// the cabinet to 'pending_qc_check' — it does NOT send anything to QC on its own.
+//
+// A per-cabinet QC button only appears once the WHOLE job is assembled (every
+// cabinet marked complete and no parts left upstream). Tapping QC flips the
+// cabinet to ready_for_qc; when every cabinet in the job is ready, the supervisor
+// gets a single "Job ready for QC" notification.
 
 type AsmPart = {
   id: string;
@@ -22,7 +30,9 @@ type AsmPart = {
   status: string | null;
 };
 
-type CabInfo = { label: string; key: string };
+type CabInfo = { label: string; key: string; status: string | null; completedBy: string | null };
+// One running assembly build on this device, keyed by cabinet id.
+type ActiveBuild = { timeClockId: string; start: string };
 
 interface Props {
   tenantId: string;
@@ -31,6 +41,10 @@ interface Props {
   isClockedIn?: boolean;
   onRequireClock?: () => void;
 }
+
+const BUILDS_KEY = 'assembly_active_builds';
+// Cabinet has been marked complete (or beyond) — START/COMPLETE are done.
+const DONE_CAB_STATUSES = ['pending_qc_check', 'ready_for_qc', 'complete'];
 
 function dimText(p: AsmPart): string {
   return [p.width, p.height, p.depth].filter(Boolean).map((v) => `${v}"`).join(' x ');
@@ -42,16 +56,44 @@ function partDisplay(p: AsmPart): string {
   if (p.material) bits.push(p.material);
   return bits.join(' — ');
 }
+function fmtElapsed(startISO: string): string {
+  const secs = Math.max(0, Math.floor((Date.now() - new Date(startISO).getTime()) / 1000));
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
 
 export default function AssemblyCrewView({ tenantId, crewName = '', showToast, isClockedIn = true, onRequireClock }: Props) {
   const [parts, setParts] = useState<AsmPart[]>([]);
-  // cabinetReady[cabinetId] = every part on the cabinet is assembly/complete.
-  const [cabReady, setCabReady] = useState<Record<string, boolean>>({});
   const [cabInfo, setCabInfo] = useState<Record<string, CabInfo>>({});
+  // jobAssembled[jobNumber] = every cabinet in the job is marked complete and no
+  // part is still upstream — the gate for showing the QC button.
+  const [jobAssembled, setJobAssembled] = useState<Record<string, boolean>>({});
   const [jobPaths, setJobPaths] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [selectedJob, setSelectedJob] = useState<string>('');
   const [busyCab, setBusyCab] = useState<string | null>(null);
+  // Running builds on this device (cabinet id -> build). Persisted so a reload
+  // does not lose the timer.
+  const [builds, setBuilds] = useState<Record<string, ActiveBuild>>({});
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    try { const r = localStorage.getItem(BUILDS_KEY); if (r) setBuilds(JSON.parse(r) as Record<string, ActiveBuild>); } catch { /* ignore */ }
+  }, []);
+  const persistBuilds = useCallback((next: Record<string, ActiveBuild>) => {
+    setBuilds(next);
+    try { localStorage.setItem(BUILDS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+  }, []);
+
+  // Live tick while any build runs.
+  useEffect(() => {
+    if (Object.keys(builds).length === 0) return;
+    const iv = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(iv);
+  }, [builds]);
 
   const load = useCallback(async () => {
     try {
@@ -74,30 +116,46 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
       setParts(asm);
 
       const cabIds = Array.from(new Set(asm.map((p) => p.cabinet_unit_id).filter(Boolean)));
+      const jobNums = Array.from(new Set(asm.map((p) => p.job_number).filter(Boolean))) as string[];
       const info: Record<string, CabInfo> = {};
-      const ready: Record<string, boolean> = {};
       if (cabIds.length > 0) {
-        const [{ data: cabs }, { data: allParts }] = await Promise.all([
-          supabase.from('cabinet_units').select('id, unit_label, cabinet_number').in('id', cabIds),
-          supabase.from('parts').select('cabinet_unit_id, assigned_dept, status').in('cabinet_unit_id', cabIds),
-        ]);
-        ((cabs as { id: string; unit_label: string | null; cabinet_number: string | null }[] | null) ?? []).forEach((c) => {
-          info[c.id] = { label: c.unit_label || c.cabinet_number || 'Cabinet', key: c.cabinet_number || c.unit_label || '' };
+        const { data: cabs } = await supabase
+          .from('cabinet_units').select('id, unit_label, cabinet_number, status, completed_by').in('id', cabIds);
+        ((cabs as { id: string; unit_label: string | null; cabinet_number: string | null; status: string | null; completed_by: string | null }[] | null) ?? []).forEach((c) => {
+          info[c.id] = { label: c.unit_label || c.cabinet_number || 'Cabinet', key: c.cabinet_number || c.unit_label || '', status: c.status, completedBy: c.completed_by };
         });
-        // A cabinet is ready when every one of its parts is in assembly or complete.
-        const byCab: Record<string, { assigned_dept: string | null; status: string | null }[]> = {};
-        ((allParts as { cabinet_unit_id: string; assigned_dept: string | null; status: string | null }[] | null) ?? []).forEach((p) => {
-          (byCab[p.cabinet_unit_id] ??= []).push(p);
-        });
-        for (const id of cabIds) {
-          const ps = byCab[id] ?? [];
-          ready[id] = ps.length > 0 && ps.every((p) => p.assigned_dept === 'assembly' || p.assigned_dept === 'complete' || p.status === 'complete');
-        }
       }
       setCabInfo(info);
-      setCabReady(ready);
 
-      const jobNums = Array.from(new Set(asm.map((p) => p.job_number).filter(Boolean))) as string[];
+      // QC gate: per job, every cabinet must be marked complete and no part may
+      // remain in an upstream working dept (production/craftsman/finishing).
+      const assembled: Record<string, boolean> = {};
+      if (jobNums.length > 0) {
+        const [{ data: jobParts }, { data: jobCabs }] = await Promise.all([
+          supabase.from('parts').select('assigned_dept, status, job_number').eq('tenant_id', tenantId).in('job_number', jobNums),
+          supabase.from('cabinet_units').select('status, job_number').eq('tenant_id', tenantId).in('job_number', jobNums),
+        ]);
+        const partsByJob: Record<string, { assigned_dept: string | null; status: string | null }[]> = {};
+        ((jobParts as { assigned_dept: string | null; status: string | null; job_number: string | null }[] | null) ?? []).forEach((p) => {
+          if (p.job_number) (partsByJob[p.job_number] ??= []).push(p);
+        });
+        const cabsByJob: Record<string, { status: string | null }[]> = {};
+        ((jobCabs as { status: string | null; job_number: string | null }[] | null) ?? []).forEach((c) => {
+          if (c.job_number) (cabsByJob[c.job_number] ??= []).push(c);
+        });
+        for (const jn of jobNums) {
+          const ps = partsByJob[jn] ?? [];
+          const cs = cabsByJob[jn] ?? [];
+          const noneUpstream = ps.length > 0 && ps.every((p) => {
+            const d = (p.assigned_dept || 'production').toLowerCase();
+            return p.status === 'complete' || (d !== 'production' && d !== 'craftsman' && d !== 'finishing');
+          });
+          const allCabsDone = cs.length > 0 && cs.every((c) => DONE_CAB_STATUSES.includes((c.status || '').toLowerCase()));
+          assembled[jn] = noneUpstream && allCabsDone;
+        }
+      }
+      setJobAssembled(assembled);
+
       if (jobNums.length > 0) {
         try {
           const { data: jrows } = await supabase.from('jobs').select('job_number, job_path').eq('tenant_id', tenantId).in('job_number', jobNums);
@@ -144,8 +202,60 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
     return Object.entries(groups).map(([cabinetId, cp]) => ({ cabinetId, parts: cp }));
   };
 
-  async function markCabinetComplete(cabinetId: string, jobNumber: string | null, label: string) {
+  // START — open a clock_in row for this cabinet's build. Manual; multiple
+  // cabinets can run at once on different rows.
+  async function startBuild(cabinetId: string, jobNumber: string | null, label: string) {
     if (!isClockedIn) { onRequireClock?.(); return; }
+    if (builds[cabinetId]) return;
+    const now = new Date().toISOString();
+    try {
+      const { data, error } = await supabase.from('time_clock').insert({
+        tenant_id: tenantId, worker_name: crewName || 'Assembly', dept: 'Assembly',
+        clock_in: now, date: now.split('T')[0], status: 'assembly_work',
+        notes: `Assembly: ${label}`, job_number: jobNumber,
+      }).select('id').single();
+      if (error) throw error;
+      const id = (data as { id: string }).id;
+      persistBuilds({ ...builds, [cabinetId]: { timeClockId: id, start: now } });
+      try { await supabase.from('cabinet_units').update({ assembly_started_at: now }).eq('id', cabinetId).eq('tenant_id', tenantId).is('assembly_started_at', null); } catch { /* best-effort */ }
+      showToast('Build started');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Could not start build', true);
+    }
+  }
+
+  // MARK COMPLETE — stop this cabinet's timer, record who finished it, and flip
+  // the cabinet to pending_qc_check. Never triggers QC on its own.
+  async function markComplete(cabinetId: string, label: string) {
+    if (!isClockedIn) { onRequireClock?.(); return; }
+    if (busyCab) return;
+    setBusyCab(cabinetId);
+    const now = new Date().toISOString();
+    try {
+      const b = builds[cabinetId];
+      if (b) {
+        const totalHours = Math.max(0, (Date.now() - new Date(b.start).getTime()) / 3600000);
+        try {
+          await supabase.from('time_clock').update({ clock_out: now, total_hours: Math.round(totalHours * 100) / 100 }).eq('id', b.timeClockId);
+        } catch { /* best-effort */ }
+        const next = { ...builds }; delete next[cabinetId]; persistBuilds(next);
+      }
+      const { error } = await supabase.from('cabinet_units')
+        .update({ status: 'pending_qc_check', completed_by: crewName || 'Assembly' })
+        .eq('id', cabinetId).eq('tenant_id', tenantId);
+      if (error) throw error;
+      showToast(`${label} marked complete`);
+      void load();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Could not complete cabinet', true);
+    } finally {
+      setBusyCab(null);
+    }
+  }
+
+  // QC — send this cabinet to the supervisor's QC gate. Only callable once the
+  // whole job is assembled. Fires the job notification once every cabinet is in.
+  async function sendToQc(cabinetId: string, jobNumber: string | null, label: string) {
     if (busyCab) return;
     setBusyCab(cabinetId);
     try {
@@ -153,19 +263,35 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
         .update({ status: 'ready_for_qc', assigned_dept: 'qc' })
         .eq('id', cabinetId).eq('tenant_id', tenantId);
       if (error) throw error;
-      const body = `${label}${jobNumber ? ` — Job ${jobNumber}` : ''} is ready for QC`;
-      sendNotify({ tenant_id: tenantId, target: 'supervisor', title: 'Ready for QC', body, url: '/app/supervisor' });
-      try {
-        await supabase.from('notifications').insert({ tenant_id: tenantId, target_type: 'supervisor', title: 'Ready for QC', body, url: '/app/supervisor' });
-      } catch { /* bell log best-effort */ }
+      // Move this cabinet's parts out of assembly so the QC tab shows their final dept.
+      try { await supabase.from('parts').update({ assigned_dept: 'qc' }).eq('cabinet_unit_id', cabinetId).eq('tenant_id', tenantId).eq('assigned_dept', 'assembly'); } catch { /* best-effort */ }
+
+      // If every cabinet in the job is now ready_for_qc / complete, notify once.
+      if (jobNumber) {
+        try {
+          const { data } = await supabase.from('cabinet_units').select('status').eq('tenant_id', tenantId).eq('job_number', jobNumber);
+          const rows = (data as { status: string | null }[] | null) ?? [];
+          const allReady = rows.length > 0 && rows.every((r) => ['ready_for_qc', 'complete'].includes((r.status || '').toLowerCase()));
+          if (allReady) {
+            const body = `Job ${jobLabel(jobNumber)} is ready for QC`;
+            sendNotify({ tenant_id: tenantId, target: 'supervisor', title: 'Job ready for QC', body, url: '/app/supervisor' });
+            try { await supabase.from('notifications').insert({ tenant_id: tenantId, target_type: 'supervisor', title: 'Job ready for QC', body, url: '/app/supervisor' }); } catch { /* bell best-effort */ }
+          }
+        } catch { /* best-effort */ }
+      }
       setParts((prev) => prev.filter((p) => p.cabinet_unit_id !== cabinetId));
-      showToast('Cabinet sent to QC');
+      showToast(`${label} sent to QC`);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Could not complete cabinet', true);
+      showToast(e instanceof Error ? e.message : 'Could not send to QC', true);
     } finally {
       setBusyCab(null);
     }
   }
+
+  const btnBase: React.CSSProperties = {
+    flex: 1, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 7,
+    padding: '11px', borderRadius: 10, fontSize: 13.5, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
+  };
 
   return (
     <div style={{ marginBottom: 32 }}>
@@ -187,25 +313,34 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
             const open = selectedJob === j.jobNumber;
             const cabs = open ? cabinetsForJob(j.jobNumber) : [];
             const count = parts.filter((p) => (p.job_number ?? '__nojob__') === j.jobNumber).length;
+            const canQc = !!jobAssembled[j.jobNumber];
             return (
               <div key={j.jobNumber} style={{ borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)', overflow: 'hidden' }}>
                 <button onClick={() => setSelectedJob(open ? '' : j.jobNumber)}
                   style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
                   <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transition: 'transform 0.2s ease', transform: open ? 'rotate(90deg)' : 'none' }}><polyline points="9 6 15 12 9 18"/></svg>
                   <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{j.label}</span>
+                  {canQc && <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', padding: '2px 7px', borderRadius: 20, background: 'rgba(45,225,201,0.14)', color: 'var(--teal)' }}>Ready for QC</span>}
                   <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{count} part{count === 1 ? '' : 's'}</span>
                 </button>
                 {open && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '12px 14px 14px', borderTop: '1px solid var(--line)' }}>
                     {cabs.map((c) => {
-                      const info = cabInfo[c.cabinetId] ?? { label: 'Cabinet', key: '' };
-                      const ready = cabReady[c.cabinetId];
+                      const info = cabInfo[c.cabinetId] ?? { label: 'Cabinet', key: '', status: null, completedBy: null };
                       const busy = busyCab === c.cabinetId;
                       const jobNumber = c.parts[0]?.job_number ?? null;
+                      const build = builds[c.cabinetId];
+                      const isComplete = DONE_CAB_STATUSES.includes((info.status || '').toLowerCase());
                       return (
-                        <div key={c.cabinetId} style={{ padding: '16px 18px', borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)' }}>
+                        <div key={c.cabinetId} style={{ padding: '16px 18px', borderRadius: 14, background: 'var(--bg-1)', border: `1px solid ${build ? 'rgba(45,225,201,0.4)' : 'var(--line)'}` }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
                             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{info.label}</span>
+                            {build && (
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, color: 'var(--teal)', fontVariantNumeric: 'tabular-nums' }}>
+                                <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--teal)', display: 'inline-block', animation: 'asmPulse 1.4s ease-in-out infinite' }} />
+                                {fmtElapsed(build.start)}
+                              </span>
+                            )}
                             <span style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--ink-mute)' }}>{c.parts.length} part{c.parts.length === 1 ? '' : 's'}</span>
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
@@ -216,19 +351,51 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                               </div>
                             ))}
                           </div>
-                          {ready ? (
+
+                          {isComplete && info.completedBy && (
+                            <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginBottom: 10 }}>Completed by {info.completedBy}</div>
+                          )}
+
+                          {/* START + MARK COMPLETE */}
+                          <div style={{ display: 'flex', gap: 8 }}>
                             <button
-                              onClick={() => void markCabinetComplete(c.cabinetId, jobNumber, info.label)}
-                              disabled={busy}
-                              style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '12px', borderRadius: 10, fontSize: 14, fontWeight: 700, fontFamily: 'inherit', background: busy ? 'var(--bg-1)' : 'rgba(45,225,201,0.14)', border: `1px solid ${busy ? 'var(--line)' : 'rgba(45,225,201,0.4)'}`, color: busy ? 'var(--ink-mute)' : 'var(--teal)', cursor: busy ? 'wait' : 'pointer' }}
+                              onClick={() => void startBuild(c.cabinetId, jobNumber, info.label)}
+                              disabled={!!build || isComplete}
+                              style={{ ...btnBase,
+                                background: build || isComplete ? 'var(--bg-1)' : 'rgba(96,165,250,0.14)',
+                                border: `1px solid ${build || isComplete ? 'var(--line)' : 'rgba(96,165,250,0.4)'}`,
+                                color: build || isComplete ? 'var(--ink-mute)' : '#60A5FA',
+                                cursor: build || isComplete ? 'not-allowed' : 'pointer',
+                              }}
                             >
-                              <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                              {busy ? 'Saving…' : 'Mark Cabinet Complete'}
+                              <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                              Start
                             </button>
-                          ) : (
-                            <div style={{ fontSize: 12, color: 'var(--ink-mute)', textAlign: 'center', padding: '8px 0' }}>
-                              Waiting on other departments before this cabinet can be assembled.
-                            </div>
+                            <button
+                              onClick={() => void markComplete(c.cabinetId, info.label)}
+                              disabled={busy || isComplete}
+                              style={{ ...btnBase,
+                                background: isComplete ? 'var(--bg-1)' : 'rgba(45,225,201,0.14)',
+                                border: `1px solid ${isComplete ? 'var(--line)' : 'rgba(45,225,201,0.4)'}`,
+                                color: isComplete ? 'var(--ink-mute)' : 'var(--teal)',
+                                cursor: busy || isComplete ? 'wait' : 'pointer',
+                              }}
+                            >
+                              <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                              {isComplete ? 'Completed' : busy ? 'Saving…' : 'Mark Complete'}
+                            </button>
+                          </div>
+
+                          {/* QC — only when the whole job is assembled and this cabinet is complete */}
+                          {canQc && isComplete && (info.status || '').toLowerCase() !== 'ready_for_qc' && (
+                            <button
+                              onClick={() => void sendToQc(c.cabinetId, jobNumber, info.label)}
+                              disabled={busy}
+                              style={{ width: '100%', marginTop: 8, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '12px', borderRadius: 10, fontSize: 14, fontWeight: 700, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: busy ? 'wait' : 'pointer' }}
+                            >
+                              <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                              {busy ? 'Sending…' : 'Send to QC'}
+                            </button>
                           )}
                         </div>
                       );
@@ -240,6 +407,7 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
           })}
         </div>
       )}
+      <style>{`@keyframes asmPulse{0%,100%{opacity:1}50%{opacity:0.25}}`}</style>
     </div>
   );
 }

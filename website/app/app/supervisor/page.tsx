@@ -11,6 +11,7 @@ import SetupWizard from './SetupWizard';
 import AssemblyTab from './AssemblyTab';
 import CraftsmanTab from './CraftsmanTab';
 import CrewTab from './CrewTab';
+import QcTab from './QcTab';
 import RoutingRulesPanel from './RoutingRulesPanel';
 import JobDrillDown from './JobDrillDown';
 import FinishSpecsModal from './FinishSpecsModal';
@@ -20,6 +21,7 @@ import PushPrompt from '@/components/PushPrompt';
 import OfflineBanner from '@/components/OfflineBanner';
 import MessageThread from '@/components/MessageThread';
 import { sendNotify } from '@/lib/notify';
+import { deptDisplay } from '@/lib/partActions';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -325,7 +327,7 @@ type NotificationRow = {
   created_at: string;
 };
 
-type Tab = 'overview' | 'crew' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'assembly' | 'craftsman' | 'settings';
+type Tab = 'overview' | 'crew' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'assembly' | 'craftsman' | 'qc' | 'settings';
 
 type AiMode = 'learn' | 'assist' | 'autonomous';
 
@@ -677,6 +679,7 @@ export default function SupervisorPage() {
   // level (not inside the tab) so the badge shows even when the tab is inactive,
   // and refreshed in realtime as units are assigned / completed.
   const [craftsmanCount, setCraftsmanCount] = useState(0);
+  const [qcCount, setQcCount] = useState(0);
 
   // Notification center (header bell)
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
@@ -887,6 +890,8 @@ export default function SupervisorPage() {
   const [resNotes,      setResNotes]      = useState('');
   const [resBy,         setResBy]         = useState('Supervisor');
   const [resCost,       setResCost]       = useState('');
+  // "Replace Part" routing — where a Finishing/Assembly part returns to.
+  const [resReturnDept, setResReturnDept] = useState('Production');
   const [resSubmitting, setResSubmitting] = useState(false);
   const [moreOpen,         setMoreOpen]         = useState(false);
   const [expandedCrewId,   setExpandedCrewId]   = useState<string | null>(null);
@@ -1123,6 +1128,26 @@ export default function SupervisorPage() {
     return () => { supabase.removeChannel(ch); };
   }, [tenant, loadCraftsmanCount]);
 
+  // QC queue badge — cabinets crew have sent to QC.
+  const loadQcCount = useCallback(async () => {
+    if (!tenant) return;
+    try {
+      const { count } = await supabase.from('cabinet_units')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenant.id).eq('status', 'ready_for_qc');
+      setQcCount(count ?? 0);
+    } catch { /* best-effort */ }
+  }, [tenant]);
+  useEffect(() => {
+    if (!tenant) return;
+    void loadQcCount();
+    const ch = supabase
+      .channel('rt-sup-qc-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenant.id}` }, () => { void loadQcCount(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [tenant, loadQcCount]);
+
   // ── Notification center ─────────────────────────────────────────────────────
   const loadNotifications = useCallback(async () => {
     if (!tenant) return;
@@ -1281,6 +1306,19 @@ export default function SupervisorPage() {
   useEffect(() => {
     try { localStorage.setItem('ai_auto_settings', JSON.stringify(autoSettings)); } catch {}
   }, [autoSettings]);
+
+  // AI mode is stored on the tenant (DB) so the crew PWA — a different device
+  // with no access to this browser's localStorage — can gate push suggestions.
+  useEffect(() => {
+    const m = (tenant as { ai_mode?: AiMode } | null)?.ai_mode;
+    if (m === 'learn' || m === 'assist' || m === 'autonomous') setAiMode(m);
+  }, [tenant]);
+  const changeAiMode = useCallback((m: AiMode) => {
+    setAiMode(m);
+    const t = tenant;
+    if (!t) return;
+    void supabase.from('tenants').update({ ai_mode: m }).eq('id', t.id).then(() => {}, () => {});
+  }, [tenant]);
 
   // Auto-generate brief once when AI/Assist tab is first opened this session
   useEffect(() => {
@@ -1851,11 +1889,76 @@ export default function SupervisorPage() {
   // ── Damage status update ────────────────────────────────────────────────────
 
   function openResolutionModal(id: string) {
+    const report = damage.find((d) => d.id === id);
     setResolvingId(id);
     setResType('Repaired in shop');
     setResNotes('');
     setResBy('Supervisor');
     setResCost('');
+    // Default the return dept to the report's source dept (or Production).
+    setResReturnDept(report?.dept ? deptDisplay(report.dept) : 'Production');
+  }
+
+  // The report being resolved (for the modal's "Replace Part" routing UI).
+  const resolvingReport = resolvingId ? damage.find((d) => d.id === resolvingId) ?? null : null;
+  const resolvingSourceDept = (resolvingReport?.dept ?? '').toLowerCase();
+
+  // Route a replacement part back into production per the spec:
+  //   Production  → uncheck the part, reset to not_cut → it reappears in the cut list
+  //   Craftsman   → return to the craftsman queue
+  //   Finishing / Assembly → move to the supervisor-chosen dept
+  // Notifies the destination crew and logs a part_dept_event. Best-effort: a
+  // failure here never blocks the report from being marked resolved.
+  async function routeReplacementPart(report: DamageReport): Promise<void> {
+    if (!tenant) return;
+    const source = (report.dept ?? '').toLowerCase();
+    try {
+      // Find the damaged part (by cabinet when known, else by name within the job).
+      let q = supabase.from('parts')
+        .select('id, cabinet_unit_id, job_number, part_name')
+        .eq('tenant_id', tenant.id)
+        .ilike('part_name', report.part_name)
+        .limit(1);
+      if (report.cabinet_unit_id) q = q.eq('cabinet_unit_id', report.cabinet_unit_id);
+      const { data: partRow } = await q.maybeSingle();
+      const part = partRow as { id: string; cabinet_unit_id: string; job_number: string | null; part_name: string } | null;
+      if (!part) return;
+
+      let destDept: string;
+      const update: Record<string, unknown> = { status: 'pending' };
+      if (source === 'production') {
+        destDept = 'production';
+        update.assigned_dept = 'production';
+        update.checked = false;
+        update.production_status = 'not_cut';
+      } else if (source === 'craftsman') {
+        destDept = 'craftsman';
+        update.assigned_dept = 'craftsman';
+      } else {
+        // Finishing or Assembly — supervisor picks the destination.
+        destDept = resReturnDept.toLowerCase();
+        update.assigned_dept = destDept;
+      }
+
+      await supabase.from('parts').update(update).eq('id', part.id).eq('tenant_id', tenant.id);
+
+      // Log the transition (best-effort).
+      try {
+        await supabase.from('part_dept_events').insert({
+          tenant_id: tenant.id, part_id: part.id, cabinet_unit_id: part.cabinet_unit_id,
+          job_number: part.job_number, from_dept: source || null, to_dept: destDept,
+          worker_name: resBy.trim() || 'Supervisor',
+        });
+      } catch { /* best-effort */ }
+
+      // Notify the destination dept's crew.
+      sendNotify({
+        tenant_id: tenant.id, target: 'crew', dept_target: deptDisplay(destDept),
+        title: `Replacement needed in ${deptDisplay(destDept)}`,
+        body: `${part.part_name}${part.job_number ? ` — Job ${part.job_number}` : ''}`,
+        url: '/app/crew',
+      });
+    } catch { /* best-effort */ }
   }
 
   async function handleResolutionConfirm() {
@@ -1863,19 +1966,23 @@ export default function SupervisorPage() {
     const id = resolvingId;
     setResSubmitting(true);
     const prev = damage.find((d) => d.id === id);
+    const isReplace = resType === 'Replaced part';
     setDamage((ds) => ds.map((d) => d.id === id ? { ...d, status: 'resolved' } : d));
     setResolvingId(null);
+    // Replace Part — route the replacement back into production before recording.
+    if (isReplace && prev) { await routeReplacementPart(prev as DamageReport); }
     try {
       const { error } = await supabase.from('damage_reports').update({
         status:           'resolved',
-        resolution_type:  resType,
+        resolution_type:  isReplace ? 'replace_part' : resType,
         resolution_notes: resNotes.trim(),
         resolved_by:      resBy.trim() || 'Supervisor',
         resolution_cost:  resCost ? parseFloat(resCost) : null,
         resolved_at:      new Date().toISOString(),
+        ...(isReplace && { return_dept: resReturnDept.toLowerCase() }),
       }).eq('id', id);
       if (error) throw error;
-      showToast('Damage report resolved');
+      showToast(isReplace ? `Replacement routed to ${resReturnDept}` : 'Damage report resolved');
       if (tenant && prev) {
         const createdAt = (prev as DamageReport).created_at;
         const daysOpen  = createdAt ? Math.round((Date.now() - new Date(createdAt).getTime()) / 86400000) : null;
@@ -2780,6 +2887,7 @@ export default function SupervisorPage() {
     { key: 'overview',      label: 'Overview' },
     { key: 'crew',          label: 'Crew' },
     { key: 'assembly',      label: 'Assembly' },
+    { key: 'qc',            label: 'QC',          count: qcCount > 0 ? qcCount : undefined },
     { key: 'craftsman',     label: 'Craftsman',   count: craftsmanCount > 0 ? craftsmanCount : undefined },
     { key: 'messages',      label: 'Messages',    count: unreadMessages > 0 ? unreadMessages : undefined },
     { key: 'needs',         label: 'Inventory',   count: activeNeeds.length },
@@ -4481,7 +4589,7 @@ export default function SupervisorPage() {
                 ] as { key: AiMode; label: string }[]).map(({ key, label }) => (
                   <button
                     key={key}
-                    onClick={() => setAiMode(key)}
+                    onClick={() => changeAiMode(key)}
                     style={{
                       padding: '8px 20px', fontSize: 13, fontWeight: 700, borderRadius: 8,
                       border: aiMode === key
@@ -4986,6 +5094,16 @@ export default function SupervisorPage() {
             />
           )}
 
+          {/* ── QC tab ───────────────────────────────────────────────────── */}
+          {tab === 'qc' && tenant && (
+            <QcTab
+              tenantId={tenant.id}
+              showToast={showToast}
+              jobs={jobs}
+              departments={departments}
+            />
+          )}
+
           {/* ── Integrations tab ─────────────────────────────────────────── */}
           {tab === 'integrations' && tenant && (
             <IntegrationsTab
@@ -5291,6 +5409,12 @@ export default function SupervisorPage() {
                       <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
                     </svg>
                   )},
+                  { key: 'qc' as Tab, label: 'QC', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M9 11l3 3L22 4"/>
+                      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                    </svg>
+                  )},
                   { key: 'plans' as Tab, label: 'Plans', icon: (
                     <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -5388,6 +5512,28 @@ export default function SupervisorPage() {
                 <option value="Other">Other</option>
               </select>
             </div>
+
+            {/* Replace Part routing */}
+            {resType === 'Replaced part' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '12px 14px', borderRadius: 10, background: 'rgba(94,234,212,0.06)', border: '1px solid rgba(94,234,212,0.2)' }}>
+                {resolvingSourceDept === 'production' ? (
+                  <div style={{ color: '#9CDDD3', fontSize: 13 }}>The part will be unchecked and reappear in the <b>Production</b> cut list. Production crew will be notified.</div>
+                ) : resolvingSourceDept === 'craftsman' ? (
+                  <div style={{ color: '#9CDDD3', fontSize: 13 }}>The part will return to the <b>Craftsman</b> queue. Craftsman crew will be notified.</div>
+                ) : (
+                  <>
+                    <label style={{ color: '#9CA3AF', fontSize: 13 }}>Send replacement to</label>
+                    <select
+                      value={resReturnDept}
+                      onChange={(e) => setResReturnDept(e.target.value)}
+                      style={{ background: '#111A1A', color: '#E2E8E8', border: '1px solid #2D3F3F', borderRadius: 8, padding: '8px 12px', fontSize: 14 }}
+                    >
+                      {departments.map((d) => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </>
+                )}
+              </div>
+            )}
 
             {/* Resolution notes */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
