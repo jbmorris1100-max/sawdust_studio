@@ -1,15 +1,20 @@
 'use client';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
+import { pushPart } from '@/lib/partActions';
 import PushPicker from '@/components/PushPicker';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 
 // ── Craftsman builds (crew view) ──────────────────────────────────────────────
 // Shows parts pushed to the Craftsman dept (parts.assigned_dept = 'craftsman'),
-// grouped by job → cabinet (folder accordion). A build timer for each part starts
-// when its cabinet is opened and stops when the craftsman pushes the part on. The
-// elapsed time is logged to time_clock so the Reports tab sees the hours. The Push
-// Picker sends each part to Finishing, Assembly or back to Production.
+// grouped by job → cabinet (folder accordion).
+//
+// THE TIMER IS ALWAYS MANUAL. Nothing starts a timer on mount, on job expand, or
+// on part render. A build timer only starts when the craftsman taps "Start Build"
+// on a specific cabinet, and only ONE build runs at a time per device. When ready,
+// the craftsman taps "Push To", the timer stops, and the PushPicker sends the
+// whole cabinet's parts to Finishing / Assembly / Production. The elapsed time is
+// logged once to time_clock so the Reports tab sees the hours.
 
 type CPart = {
   id: string;
@@ -27,6 +32,10 @@ type CPart = {
 
 type CabInfo = { label: string; key: string };
 
+// The single in-progress build for this device. stop is set the moment the
+// craftsman taps "Push To" (the timer freezes); until then the build is running.
+type ActiveBuild = { unitId: string; start: string; stop: string | null };
+
 interface Props {
   tenantId: string;
   crewName: string;
@@ -36,7 +45,10 @@ interface Props {
   onRequireClock?: () => void;
 }
 
-const STARTS_KEY = 'craftsman_part_starts';
+const BUILD_KEY = 'craftsman_active_build';
+// "No instant push": the Push To button stays disabled for the first couple of
+// seconds after Start so a build can't be pushed before it has really run.
+const MIN_PUSH_SECONDS = 2;
 
 function dimLabel(p: CPart): string {
   const parts: string[] = [];
@@ -52,8 +64,12 @@ function partLabel(p: CPart): string {
   if (p.material) bits.push(p.material);
   return bits.join(' — ');
 }
-function fmtElapsed(startISO: string): string {
-  const secs = Math.max(0, Math.floor((Date.now() - new Date(startISO).getTime()) / 1000));
+function elapsedSeconds(startISO: string, endISO?: string | null): number {
+  const end = endISO ? new Date(endISO).getTime() : Date.now();
+  return Math.max(0, Math.floor((end - new Date(startISO).getTime()) / 1000));
+}
+function fmtElapsed(startISO: string, endISO?: string | null): string {
+  const secs = elapsedSeconds(startISO, endISO);
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
   const s = secs % 60;
@@ -66,6 +82,11 @@ const IcoCraft = () => (
     <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
   </svg>
 );
+const IcoClock = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+  </svg>
+);
 
 export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showToast, isClockedIn = true, onRequireClock }: Props) {
   const [parts, setParts] = useState<CPart[]>([]);
@@ -73,10 +94,10 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   const [jobPaths, setJobPaths] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [selectedJob, setSelectedJob] = useState<string>('');
-  // Per-part build-start timestamps (persisted so timers survive a reload).
-  const [starts, setStarts] = useState<Record<string, string>>({});
+  // The one active build on this device (null = nothing running).
+  const [build, setBuild] = useState<ActiveBuild | null>(null);
+  const buildRef = useRef<ActiveBuild | null>(null);
   const [, setTick] = useState(0);
-  const startsRef = useRef<Record<string, string>>({});
 
   const load = useCallback(async () => {
     try {
@@ -131,59 +152,91 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     return () => { supabase.removeChannel(ch); };
   }, [tenantId, load]);
 
-  // Restore persisted build-start timestamps.
+  // Restore an in-progress build (e.g. after a reload). NOTE: this only restores a
+  // build the craftsman already started — it never starts one.
   useEffect(() => {
-    try { const r = localStorage.getItem(STARTS_KEY); if (r) { const v = JSON.parse(r); setStarts(v); startsRef.current = v; } } catch { /* ignore */ }
+    try {
+      const r = localStorage.getItem(BUILD_KEY);
+      if (r) { const v = JSON.parse(r) as ActiveBuild; setBuild(v); buildRef.current = v; }
+    } catch { /* ignore */ }
   }, []);
-  useEffect(() => { startsRef.current = starts; }, [starts]);
+  useEffect(() => { buildRef.current = build; }, [build]);
 
-  // Live tick while any timer is running.
+  // Live tick only while a build is actively running (not while frozen for push).
   useEffect(() => {
+    if (!build || build.stop) return;
     const iv = setInterval(() => setTick((n) => n + 1), 1000);
     return () => clearInterval(iv);
-  }, []);
+  }, [build]);
 
-  function persistStarts(next: Record<string, string>) {
-    setStarts(next);
-    startsRef.current = next;
-    try { localStorage.setItem(STARTS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+  function persistBuild(next: ActiveBuild | null) {
+    setBuild(next);
+    buildRef.current = next;
+    try {
+      if (next) localStorage.setItem(BUILD_KEY, JSON.stringify(next));
+      else localStorage.removeItem(BUILD_KEY);
+    } catch { /* ignore */ }
   }
 
-  // Start the build timer for every part on a cabinet when it's first opened.
-  function ensureStarted(partIds: string[]) {
-    const cur = startsRef.current;
-    const missing = partIds.filter((id) => !cur[id]);
-    if (missing.length === 0) return;
-    const now = new Date().toISOString();
-    const next = { ...cur };
-    missing.forEach((id) => { next[id] = now; });
-    persistStarts(next);
+  // Start a build for one cabinet. Manual only — fired by the Start Build button.
+  function startBuild(cabinetId: string) {
+    if (!isClockedIn) { onRequireClock?.(); return; }
+    if (build) return; // one active build at a time
+    persistBuild({ unitId: cabinetId, start: new Date().toISOString(), stop: null });
   }
 
-  // On push: log the elapsed build time to time_clock, then clear the timer.
-  function onPartPushed(part: CPart) {
-    const start = startsRef.current[part.id];
-    if (start) {
-      const durationMin = Math.round((Date.now() - new Date(start).getTime()) / 60000);
+  // "Push To": stop (freeze) the timer and reveal the PushPicker destinations.
+  function readyToPush(cabinetId: string) {
+    const b = buildRef.current;
+    if (!b || b.unitId !== cabinetId || b.stop) return;
+    persistBuild({ ...b, stop: new Date().toISOString() });
+  }
+
+  // Back out of the push step and resume the running build.
+  function resumeBuild(cabinetId: string) {
+    const b = buildRef.current;
+    if (!b || b.unitId !== cabinetId) return;
+    persistBuild({ ...b, start: new Date(Date.now() - elapsedSeconds(b.start, b.stop) * 1000).toISOString(), stop: null });
+  }
+
+  // Finalize a unit build: PushPicker has already pushed the representative part;
+  // push the rest of the unit's parts to the same dept, log the build time once,
+  // then reset the timer and drop the unit from view.
+  async function finishUnitBuild(cabinetId: string, allParts: CPart[], representativeId: string, toDept: string) {
+    const b = buildRef.current;
+    const jobNumber = allParts[0]?.job_number ?? null;
+    // Push every remaining part of the cabinet to the chosen destination.
+    for (const p of allParts) {
+      if (p.id === representativeId) continue;
+      try {
+        await pushPart({
+          tenantId, partId: p.id, partName: p.part_name, cabinetUnitId: p.cabinet_unit_id,
+          jobNumber: p.job_number, fromDept: 'craftsman', toDept, workerName: crewName, timeClockId,
+        });
+      } catch { /* best-effort — representative already moved */ }
+    }
+    // Log the build duration once for the whole cabinet.
+    if (b && b.unitId === cabinetId) {
+      const stop = b.stop ?? new Date().toISOString();
+      const durationMin = Math.round((new Date(stop).getTime() - new Date(b.start).getTime()) / 60000);
       if (durationMin > 0) {
-        const clockInISO = start;
-        const now = new Date().toISOString();
+        const cab = cabInfo[cabinetId];
         void supabase.from('time_clock').insert({
           tenant_id: tenantId,
           worker_name: crewName || 'Craftsman',
           dept: 'Craftsman',
-          clock_in: clockInISO,
-          clock_out: now,
-          date: now.split('T')[0],
+          clock_in: b.start,
+          clock_out: stop,
+          date: stop.split('T')[0],
           total_hours: durationMin / 60,
           status: 'craftsman_build',
-          notes: `Build: ${part.part_name}`,
-          job_number: part.job_number ?? null,
+          notes: `Build: ${cab?.label ?? 'Cabinet'}`,
+          job_number: jobNumber,
         }).then(() => {}, () => {});
       }
-      const next = { ...startsRef.current }; delete next[part.id]; persistStarts(next);
     }
-    setParts((prev) => prev.filter((p) => p.id !== part.id));
+    persistBuild(null);
+    setParts((prev) => prev.filter((p) => p.cabinet_unit_id !== cabinetId));
   }
 
   const jobLabel = (jobNumber: string | null) =>
@@ -201,13 +254,13 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     if (!jobOptions.some((j) => j.jobNumber === selectedJob)) setSelectedJob('');
   }, [jobOptions, selectedJob]);
 
-  // When a job opens, start timers for all of its parts.
+  // If the active build's cabinet no longer has any craftsman parts (e.g. pushed
+  // elsewhere on another device), clear it so it stops blocking new builds.
   useEffect(() => {
-    if (!selectedJob) return;
-    const ids = parts.filter((p) => (p.job_number ?? '__nojob__') === selectedJob).map((p) => p.id);
-    if (ids.length) ensureStarted(ids);
+    if (!build || loading) return;
+    if (!parts.some((p) => p.cabinet_unit_id === build.unitId)) persistBuild(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedJob, parts]);
+  }, [parts, build, loading]);
 
   const cabinetsForJob = (jobNumber: string) => {
     const groups: Record<string, CPart[]> = {};
@@ -249,39 +302,103 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '12px 14px 14px', borderTop: '1px solid var(--line)' }}>
                     {cabs.map((c) => {
                       const info = cabInfo[c.cabinetId] ?? { label: 'Cabinet', key: '' };
+                      const isBuilding = build?.unitId === c.cabinetId;
+                      const isPushing  = isBuilding && !!build?.stop;
+                      const anotherActive = !!build && build.unitId !== c.cabinetId;
+                      const elapsed = build && isBuilding ? elapsedSeconds(build.start, build.stop) : 0;
+                      const canPush = elapsed >= MIN_PUSH_SECONDS;
+                      const representative = c.parts[0];
                       return (
-                        <div key={c.cabinetId} style={{ padding: '16px 18px', borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)' }}>
+                        <div key={c.cabinetId} style={{ padding: '16px 18px', borderRadius: 14, background: 'var(--bg-1)', border: `1px solid ${isBuilding ? 'rgba(96,165,250,0.4)' : 'var(--line)'}` }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
                             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{info.label}</span>
                             <ViewDrawingsButton tenantId={tenantId} jobNumber={c.parts[0]?.job_number ?? null} cabinetKey={info.key} compact={false} />
                           </div>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                            {c.parts.map((p) => {
-                              const start = starts[p.id];
-                              return (
-                                <div key={p.id} style={{ padding: '12px 14px', borderRadius: 12, background: 'var(--bg-1)', border: '1px solid var(--line)' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-                                    <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: p.flag_type ? '#F87171' : 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partLabel(p)}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</span>
-                                    {start && (
-                                      <span style={{ fontSize: 13, fontWeight: 700, color: '#60A5FA', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{fmtElapsed(start)}</span>
-                                    )}
-                                  </div>
-                                  <PushPicker
-                                    tenantId={tenantId}
-                                    partId={p.id}
-                                    partName={p.part_name}
-                                    cabinetUnitId={p.cabinet_unit_id}
-                                    jobNumber={p.job_number}
-                                    currentDept="craftsman"
-                                    workerName={crewName}
-                                    timeClockId={timeClockId}
-                                    onPushed={() => onPartPushed(p)}
-                                    onToast={showToast}
-                                  />
-                                </div>
-                              );
-                            })}
+
+                          {/* Parts on this cabinet — no per-part timers, ever */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+                            {c.parts.map((p) => (
+                              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: p.flag_type ? '#F87171' : 'var(--ink-dim)' }}>
+                                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" style={{ flexShrink: 0, opacity: 0.6 }}><circle cx="12" cy="12" r="9"/></svg>
+                                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partLabel(p)}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</span>
+                              </div>
+                            ))}
                           </div>
+
+                          {/* Build controls — manual start, one at a time */}
+                          {!isBuilding ? (
+                            <button
+                              onClick={() => startBuild(c.cabinetId)}
+                              disabled={anotherActive}
+                              title={anotherActive ? 'Finish your current build first' : undefined}
+                              style={{
+                                width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8,
+                                padding: '12px', borderRadius: 10, fontSize: 14, fontWeight: 700, fontFamily: 'inherit',
+                                background: anotherActive ? 'var(--bg-1)' : 'rgba(96,165,250,0.14)',
+                                border: `1px solid ${anotherActive ? 'var(--line)' : 'rgba(96,165,250,0.4)'}`,
+                                color: anotherActive ? 'var(--ink-mute)' : '#60A5FA',
+                                cursor: anotherActive ? 'not-allowed' : 'pointer',
+                              }}
+                            >
+                              <IcoClock /> Start Build
+                            </button>
+                          ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                              {/* Live (or frozen) elapsed time */}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: isPushing ? 'var(--ink-mute)' : '#60A5FA' }}>
+                                  <IcoClock />
+                                </span>
+                                <span style={{ fontSize: 22, fontWeight: 700, color: isPushing ? 'var(--ink-mute)' : '#60A5FA', fontVariantNumeric: 'tabular-nums' }}>
+                                  {fmtElapsed(build!.start, build!.stop)}
+                                </span>
+                                <span style={{ fontSize: 12, color: 'var(--ink-mute)', marginLeft: 2 }}>{isPushing ? 'stopped' : 'building…'}</span>
+                              </div>
+
+                              {!isPushing ? (
+                                <button
+                                  onClick={() => readyToPush(c.cabinetId)}
+                                  disabled={!canPush}
+                                  title={!canPush ? 'Let the build run first' : undefined}
+                                  style={{
+                                    width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8,
+                                    padding: '12px', borderRadius: 10, fontSize: 14, fontWeight: 700, fontFamily: 'inherit',
+                                    background: canPush ? 'rgba(45,225,201,0.14)' : 'var(--bg-1)',
+                                    border: `1px solid ${canPush ? 'rgba(45,225,201,0.4)' : 'var(--line)'}`,
+                                    color: canPush ? 'var(--teal)' : 'var(--ink-mute)',
+                                    cursor: canPush ? 'pointer' : 'not-allowed',
+                                  }}
+                                >
+                                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                                  Push To
+                                </button>
+                              ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                  <div style={{ fontSize: 12.5, color: 'var(--ink-mute)' }}>Build stopped — choose where this cabinet goes next:</div>
+                                  {representative && (
+                                    <PushPicker
+                                      tenantId={tenantId}
+                                      partId={representative.id}
+                                      partName={representative.part_name}
+                                      cabinetUnitId={representative.cabinet_unit_id}
+                                      jobNumber={representative.job_number}
+                                      currentDept="craftsman"
+                                      workerName={crewName}
+                                      timeClockId={timeClockId}
+                                      onPushed={(toDept) => void finishUnitBuild(c.cabinetId, c.parts, representative.id, toDept)}
+                                      onToast={showToast}
+                                    />
+                                  )}
+                                  <button
+                                    onClick={() => resumeBuild(c.cabinetId)}
+                                    style={{ alignSelf: 'flex-start', background: 'none', border: 'none', color: 'var(--ink-mute)', fontSize: 12.5, fontFamily: 'inherit', cursor: 'pointer', padding: '2px 0', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
+                                  >
+                                    Keep building
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
