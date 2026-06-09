@@ -164,60 +164,62 @@ export async function pushPart(opts: {
     .eq('id', opts.partId).eq('tenant_id', opts.tenantId);
   if (error) throw error;
 
+  // Everything below is best-effort — none of it may block the UI waiting for the
+  // push to finish. Each step is fired and forgotten so a group push of N parts
+  // unblocks as soon as the N reassignments (step 1) land.
+
   // 2. Log the transition.
-  try {
-    await supabase.from('part_dept_events').insert({
-      tenant_id: opts.tenantId,
-      part_id: opts.partId,
-      cabinet_unit_id: opts.cabinetUnitId,
-      job_number: opts.jobNumber ?? null,
-      from_dept: fromDept || null,
-      to_dept: toDept,
-      worker_name: opts.workerName || null,
-    });
-  } catch { /* best-effort */ }
+  void supabase.from('part_dept_events').insert({
+    tenant_id: opts.tenantId,
+    part_id: opts.partId,
+    cabinet_unit_id: opts.cabinetUnitId,
+    job_number: opts.jobNumber ?? null,
+    from_dept: fromDept || null,
+    to_dept: toDept,
+    worker_name: opts.workerName || null,
+  }).then(() => {}, () => {});
 
   // 3. Recompute the cabinet's majority dept (+ completion rollup).
-  try { await recomputeCabinet(opts.tenantId, opts.cabinetUnitId); } catch { /* best-effort */ }
+  void recomputeCabinet(opts.tenantId, opts.cabinetUnitId).catch(() => {});
 
   // 4. Learn the push.
-  try { await learnRouting(opts.tenantId, opts.partName, fromDept, toDept); } catch { /* best-effort */ }
+  void learnRouting(opts.tenantId, opts.partName, fromDept, toDept).catch(() => {});
 
   // 5. (QC is triggered explicitly by the Assembly / Finishing QC buttons — a
   //    push alone never sends a cabinet to QC. See maybeNotifyJobQc.)
 
   // 6. Job completion rollup — when every cabinet in the job is complete.
   if (toDept === 'complete' && opts.jobNumber) {
-    try {
-      const { data } = await supabase.from('cabinet_units')
-        .select('status').eq('tenant_id', opts.tenantId).eq('job_number', opts.jobNumber);
-      const rows = (data as { status: string | null }[] | null) ?? [];
-      if (rows.length > 0 && rows.every((r) => r.status === 'complete')) {
-        try { await supabase.from('jobs').update({ status: 'complete' }).eq('tenant_id', opts.tenantId).eq('job_number', opts.jobNumber); } catch { /* best-effort */ }
-        try { await supabase.from('jobs').update({ completed_at: new Date().toISOString() }).eq('tenant_id', opts.tenantId).eq('job_number', opts.jobNumber); } catch { /* column optional */ }
-        sendNotify({ tenant_id: opts.tenantId, target: 'supervisor', title: 'Job complete', body: `Job ${opts.jobNumber} is complete`, url: '/app/supervisor' });
-      }
-    } catch { /* best-effort */ }
+    void (async () => {
+      try {
+        const { data } = await supabase.from('cabinet_units')
+          .select('status').eq('tenant_id', opts.tenantId).eq('job_number', opts.jobNumber);
+        const rows = (data as { status: string | null }[] | null) ?? [];
+        if (rows.length > 0 && rows.every((r) => r.status === 'complete')) {
+          try { await supabase.from('jobs').update({ status: 'complete' }).eq('tenant_id', opts.tenantId).eq('job_number', opts.jobNumber); } catch { /* best-effort */ }
+          try { await supabase.from('jobs').update({ completed_at: new Date().toISOString() }).eq('tenant_id', opts.tenantId).eq('job_number', opts.jobNumber); } catch { /* column optional */ }
+          sendNotify({ tenant_id: opts.tenantId, target: 'supervisor', title: 'Job complete', body: `Job ${opts.jobNumber} is complete`, url: '/app/supervisor' });
+        }
+      } catch { /* best-effort */ }
+    })();
   }
 
   // 7. Shift event log.
-  try {
-    await supabase.from('shift_events').insert({
-      tenant_id: opts.tenantId,
-      time_clock_id: opts.timeClockId ?? null,
-      worker_name: opts.workerName || 'Crew',
-      event_type: 'part_pushed',
-      dept: deptDisplay(toDept),
-      previous_dept: fromDept ? deptDisplay(fromDept) : null,
-      metadata: {
-        part_name: opts.partName,
-        from_dept: fromDept || null,
-        to_dept: toDept,
-        cabinet_unit_id: opts.cabinetUnitId,
-        job_number: opts.jobNumber ?? null,
-      },
-    });
-  } catch { /* best-effort */ }
+  void supabase.from('shift_events').insert({
+    tenant_id: opts.tenantId,
+    time_clock_id: opts.timeClockId ?? null,
+    worker_name: opts.workerName || 'Crew',
+    event_type: 'part_pushed',
+    dept: deptDisplay(toDept),
+    previous_dept: fromDept ? deptDisplay(fromDept) : null,
+    metadata: {
+      part_name: opts.partName,
+      from_dept: fromDept || null,
+      to_dept: toDept,
+      cabinet_unit_id: opts.cabinetUnitId,
+      job_number: opts.jobNumber ?? null,
+    },
+  }).then(() => {}, () => {});
 
   // 8. Notify the destination dept's crew.
   if (toDept !== 'complete') {

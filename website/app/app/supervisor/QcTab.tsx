@@ -62,7 +62,10 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
         .from('cabinet_units')
         .select('id, unit_label, cabinet_number, job_number, status, completed_by')
         .eq('tenant_id', tenantId)
-        .eq('status', 'ready_for_qc')
+        // pending_qc_check = assembly marked it done, awaiting the crew's QC tap;
+        // ready_for_qc = QC tapped, supervisor needs to act. Show both so cabinets
+        // appear the moment assembly completes them.
+        .in('status', ['ready_for_qc', 'pending_qc_check'])
         .order('completed_at', { ascending: true });
       const list = (cabRows as QcCabinet[] | null) ?? [];
       setCabs(list);
@@ -223,6 +226,14 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
                     <div key={cab.id} style={card}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
                         <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{cab.unit_label}</span>
+                        {(() => {
+                          const ready = (cab.status || '').toLowerCase() === 'ready_for_qc';
+                          return (
+                            <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '0.05em', textTransform: 'uppercase', padding: '2px 7px', borderRadius: 20, background: ready ? 'rgba(45,225,201,0.14)' : 'rgba(251,191,36,0.14)', color: ready ? 'var(--teal)' : '#FBBF24' }}>
+                              {ready ? 'Ready for QC' : 'Awaiting QC tap'}
+                            </span>
+                          );
+                        })()}
                         <ViewDrawingsButton tenantId={tenantId} jobNumber={cab.job_number} cabinetKey={cab.cabinet_number || cab.unit_label || ''} compact />
                         {cab.completed_by && <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>Completed by {cab.completed_by}</span>}
                       </div>

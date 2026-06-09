@@ -3036,13 +3036,15 @@ export default function SupervisorPage() {
             </div>
           )}
 
-          {/* Tabs — desktop only */}
-          <div className="hidden md:flex" style={{ gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 24 }}>
+          {/* Tabs — desktop only. Scrolls horizontally (scrollbar hidden) so every
+              tab stays reachable on narrower desktop windows instead of cutting off. */}
+          <style>{`.sup-tabbar::-webkit-scrollbar{display:none}`}</style>
+          <div className="hidden md:flex sup-tabbar" style={{ gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 24, overflowX: 'auto', scrollbarWidth: 'none' }}>
             {tabs.map(({ key, label, count }) => (
               <button
                 key={key}
                 onClick={() => { setTab(key); setOpenThread(null); setMsgBody(''); }}
-                style={{ padding: '10px 18px', fontSize: 13, fontWeight: 600, color: tab === key ? 'var(--teal)' : 'var(--ink-mute)', background: 'none', border: 'none', cursor: 'pointer', borderBottom: tab === key ? '2px solid var(--teal)' : '2px solid transparent', marginBottom: -1, display: 'flex', alignItems: 'center', gap: 7, transition: 'color 0.15s', fontFamily: 'inherit' }}
+                style={{ padding: '10px 18px', fontSize: 13, fontWeight: 600, color: tab === key ? 'var(--teal)' : 'var(--ink-mute)', background: 'none', border: 'none', cursor: 'pointer', borderBottom: tab === key ? '2px solid var(--teal)' : '2px solid transparent', marginBottom: -1, display: 'flex', alignItems: 'center', gap: 7, transition: 'color 0.15s', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0 }}
               >
                 {label}
                 {count !== undefined && count > 0 && (

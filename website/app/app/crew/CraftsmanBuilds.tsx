@@ -32,7 +32,9 @@ type CPart = {
 };
 
 type CabInfo = { label: string; key: string };
-type ActiveBuild = { unitId: string; start: string; stop: string | null };
+// timeClockId is the live time_clock row opened on START so the supervisor sees
+// the build running in real time; null until that insert lands.
+type ActiveBuild = { unitId: string; start: string; stop: string | null; timeClockId: string | null };
 
 interface Props {
   tenantId: string;
@@ -62,12 +64,6 @@ function flagLabel(flagType: string | null): string {
 function elapsedSeconds(startISO: string, endISO?: string | null): number {
   const end = endISO ? new Date(endISO).getTime() : Date.now();
   return Math.max(0, Math.floor((end - new Date(startISO).getTime()) / 1000));
-}
-// HH:MM:SS clock for the workbench.
-function fmtClock(startISO: string, endISO?: string | null): string {
-  const secs = elapsedSeconds(startISO, endISO);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(Math.floor(secs / 3600))}:${pad(Math.floor((secs % 3600) / 60))}:${pad(secs % 60)}`;
 }
 
 const IcoCraft = () => (
@@ -168,10 +164,27 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     } catch { /* ignore */ }
   }
 
-  function startBuild(cabinetId: string) {
+  async function startBuild(cabinetId: string) {
     if (!isClockedIn) { onRequireClock?.(); return; }
     if (build) return; // one active build at a time
-    persistBuild({ unitId: cabinetId, start: new Date().toISOString(), stop: null });
+    const start = new Date().toISOString();
+    // Start the build instantly in the UI, then open a live time_clock row (no
+    // clock_out) so the supervisor's Craftsman Build Activity panel shows it
+    // running in real time. The row id is stored on the build for the close.
+    persistBuild({ unitId: cabinetId, start, stop: null, timeClockId: null });
+    try {
+      const cab = cabInfo[cabinetId];
+      const jobNumber = parts.find((p) => p.cabinet_unit_id === cabinetId)?.job_number ?? null;
+      const { data, error } = await supabase.from('time_clock').insert({
+        tenant_id: tenantId, worker_name: crewName || 'Craftsman', dept: 'Craftsman',
+        clock_in: start, date: start.split('T')[0], status: 'craftsman_build',
+        notes: `Build: ${cab?.label ?? 'Cabinet'}`, job_number: jobNumber,
+      }).select('id').single();
+      if (error) throw error;
+      const id = (data as { id: string }).id;
+      const b = buildRef.current;
+      if (b && b.unitId === cabinetId) persistBuild({ ...b, timeClockId: id });
+    } catch { /* live row best-effort; finishUnitBuild still logs hours on push */ }
   }
   function readyToPush(cabinetId: string, cabParts: CPart[]) {
     const b = buildRef.current;
@@ -202,7 +215,13 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     if (b && b.unitId === cabinetId) {
       const stop = b.stop ?? new Date().toISOString();
       const durationMin = Math.round((new Date(stop).getTime() - new Date(b.start).getTime()) / 60000);
-      if (durationMin > 0) {
+      if (b.timeClockId) {
+        // Close the live row the supervisor has been watching — never insert a new one.
+        void supabase.from('time_clock')
+          .update({ clock_out: stop, total_hours: Math.max(0, durationMin) / 60 })
+          .eq('id', b.timeClockId).then(() => {}, () => {});
+      } else if (durationMin > 0) {
+        // No live row (the START insert failed) — log once now so Reports sees the hours.
         const cab = cabInfo[cabinetId];
         void supabase.from('time_clock').insert({
           tenant_id: tenantId, worker_name: crewName || 'Craftsman', dept: 'Craftsman',
@@ -328,7 +347,7 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         {/* Bottom controls */}
         <div style={{ borderTop: '1px solid var(--line)', padding: '14px 18px', background: '#070a0c' }}>
           {!isBuilding ? (
-            <button onClick={() => startBuild(openUnitId)} disabled={anotherActive}
+            <button onClick={() => void startBuild(openUnitId)} disabled={anotherActive}
               title={anotherActive ? 'Finish your current build first' : undefined}
               style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '16px', borderRadius: 12, fontSize: 16, fontWeight: 800, fontFamily: 'inherit', background: anotherActive ? 'var(--bg-1)' : '#60A5FA', border: 'none', color: anotherActive ? 'var(--ink-mute)' : '#041020', cursor: anotherActive ? 'not-allowed' : 'pointer' }}>
               <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
@@ -336,10 +355,11 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
             </button>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {/* Clock + progress bar */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <span style={{ fontSize: 30, fontWeight: 800, color: isPushing ? 'var(--ink-mute)' : '#60A5FA', fontVariantNumeric: 'tabular-nums' }}>{fmtClock(build!.start, build!.stop)}</span>
-                <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{isPushing ? 'stopped' : 'building…'}</span>
+              {/* Progress bar only — the crew never sees a clock; the timer runs
+                  silently and is visible only to the supervisor. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: isPushing ? 'var(--ink-mute)' : '#60A5FA', display: 'inline-block', animation: isPushing ? 'none' : 'craftPulse 1.4s ease-in-out infinite' }} />
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-mute)' }}>{isPushing ? 'Build paused' : 'Building…'}</span>
               </div>
               <div style={{ height: 8, borderRadius: 20, background: 'var(--bg-1)', overflow: 'hidden' }}>
                 <div style={{ height: '100%', width: `${fillPct}%`, background: isPushing ? 'var(--ink-mute)' : '#60A5FA', transition: 'width 1s linear' }} />
