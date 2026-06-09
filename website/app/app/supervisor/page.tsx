@@ -1025,10 +1025,10 @@ export default function SupervisorPage() {
     try {
       const { data: cabs } = await supabase
         .from('cabinet_units')
-        .select('job_number, status, production_status, is_split, assigned_dept')
+        .select('job_number, status, is_split, assigned_dept')
         .eq('tenant_id', tenant.id)
         .limit(5000);
-      const rows = (cabs as { job_number: string | null; status: string | null; production_status: string | null; is_split?: boolean | null; assigned_dept?: string | null }[]) ?? [];
+      const rows = (cabs as { job_number: string | null; status: string | null; is_split?: boolean | null; assigned_dept?: string | null }[]) ?? [];
       if (rows.length === 0) { setPipeline([]); return; }
 
       // Archived jobs never appear in the pipeline.
@@ -1049,7 +1049,8 @@ export default function SupervisorPage() {
         });
       } catch (_) {}
 
-      const cut = (s: string | null) => !!s && ['cut', 'qa_passed', 'in_assembly', 'complete'].includes(s);
+      // assigned_dept is the single source of truth for which dept a cabinet sits
+      // in. Terminal cabinet statuses (ready_for_qc / complete) take precedence.
       const byJob: Record<string, PipelineRow> = {};
       rows.forEach((c) => {
         const jn = c.job_number ?? 'unassigned';
@@ -1059,17 +1060,19 @@ export default function SupervisorPage() {
         const key = rawPath.toLowerCase();            // group by lowercased path → merges case duplicates
         const row = (byJob[key] ??= { jobNumber: jn, jobPath: titleCasePath(rawPath), dueDate: meta?.dueDate ?? null, cabinetsTotal: 0, production: 0, assembly: 0, finishing: 0, done: 0, cabinetsCut: 0, splitDepts: [] });
         row.cabinetsTotal++;
-        if (cut(c.production_status)) row.cabinetsCut++;
-        if (c.status === 'complete') row.done++;
-        else if (c.status === 'finishing') row.finishing++;
-        else if (c.status === 'in_assembly' || c.status === 'flagged' || c.status === 'ready_for_qc') row.assembly++;
-        else row.production++;
+        const dept = (c.assigned_dept ?? 'production').toLowerCase();
+        if (c.status === 'complete' || dept === 'complete') row.done++;
+        else if (c.status === 'ready_for_qc' || c.status === 'in_assembly' || c.status === 'flagged' || dept === 'assembly' || dept === 'qc') row.assembly++;
+        else if (dept === 'finishing' || c.status === 'finishing') row.finishing++;
+        else row.production++;   // production + craftsman (upstream work)
         // Track the depts a split touches so the row can badge them (e.g. [Craftsman] [Assembly]).
         if (c.is_split) {
           const label = deptLabel(c.assigned_dept);
           if (label && !row.splitDepts.includes(label)) row.splitDepts.push(label);
         }
       });
+      // "Cut" = cabinets that have left production for a downstream dept.
+      Object.values(byJob).forEach((r) => { r.cabinetsCut = r.assembly + r.finishing + r.done; });
       setPipeline(Object.values(byJob).sort((a, b) => {
         const ad = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
         const bd = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;

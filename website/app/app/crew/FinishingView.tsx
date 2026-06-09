@@ -5,6 +5,7 @@ import { colorToHex, recomputeCabinet } from '@/lib/partActions';
 import { sendNotify } from '@/lib/notify';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
+import PushPicker from '@/components/PushPicker';
 
 // The Finishing department's home view. Shows the finish specs the supervisor set
 // for active jobs, then a structured "parts to finish" flow: pick a job → check the
@@ -468,32 +469,36 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
                     <span style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--ink-mute)' }}>{g.parts.length} part{g.parts.length === 1 ? '' : 's'}</span>
                   </div>
 
-                  {/* Finishing work — parts list with drawings + CO/Damage */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                  {/* Finishing work — each part is finished, then pushed on */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                     {g.parts.map((p) => (
-                      <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '6px 0' }}>{partDisplay(p)}</span>
-                        <ViewDrawingsButton tenantId={tenantId} jobNumber={p.job_number} cabinetKey={p.cabinetKey} compact />
-                        <button
-                          onClick={() => openCoDamage(p)}
-                          title="Report a change order or damage and send back for rework"
-                          style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5, padding: '7px 10px', borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.28)', color: '#F87171', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
-                        >
-                          <IcoAlert /> CO/Damage
-                        </button>
+                      <div key={p.id} style={{ padding: '12px 14px', borderRadius: 12, background: 'var(--bg-1)', border: '1px solid var(--line)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                          <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partDisplay(p)}</span>
+                          <ViewDrawingsButton tenantId={tenantId} jobNumber={p.job_number} cabinetKey={p.cabinetKey} compact />
+                          <button
+                            onClick={() => openCoDamage(p)}
+                            title="Report a change order or damage and send back for rework"
+                            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5, padding: '7px 10px', borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.28)', color: '#F87171', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                          >
+                            <IcoAlert /> CO/Damage
+                          </button>
+                        </div>
+                        <PushPicker
+                          tenantId={tenantId}
+                          partId={p.id}
+                          partName={p.part_name}
+                          cabinetUnitId={p.cabinet_unit_id}
+                          jobNumber={p.job_number}
+                          currentDept="finishing"
+                          workerName={crewName}
+                          timeClockId={null}
+                          onPushed={() => setParts((prev) => prev.filter((x) => x.id !== p.id))}
+                          onToast={showToast}
+                        />
                       </div>
                     ))}
                   </div>
-
-                  {/* Complete the unit */}
-                  <button
-                    onClick={() => void markUnitComplete(g.cabinetId, ids, jobNumber, g.label)}
-                    disabled={busy}
-                    style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '12px', borderRadius: 10, fontSize: 14, fontWeight: 700, fontFamily: 'inherit', background: busy ? 'var(--bg-1)' : 'rgba(45,225,201,0.14)', border: `1px solid ${busy ? 'var(--line)' : 'rgba(45,225,201,0.4)'}`, color: busy ? 'var(--ink-mute)' : 'var(--teal)', cursor: busy ? 'wait' : 'pointer' }}
-                  >
-                    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                    {busy ? 'Saving…' : 'Mark Finishing Complete'}
-                  </button>
                 </div>
               );
             })}

@@ -11,6 +11,8 @@ import PushPrompt from '@/components/PushPrompt';
 import OfflineBanner from '@/components/OfflineBanner';
 import CraftsmanBuilds from './CraftsmanBuilds';
 import FinishingView from './FinishingView';
+import AssemblyCrewView from './AssemblyCrewView';
+import PushPicker from '@/components/PushPicker';
 import PartPushButton from '@/components/PartPushButton';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 import MessageThread from '@/components/MessageThread';
@@ -745,9 +747,6 @@ export default function CrewPage() {
   const [prodUnits,    setProdUnits]    = useState<ProdUnit[]>([]);
   const [prodLoading,  setProdLoading]  = useState(false);
 
-  // ── Active job card (prominent, above quick actions) ───────────────────────
-  const [activeJob, setActiveJob] = useState<ActiveJobCard | null>(null);
-  const [activeJobLoading, setActiveJobLoading] = useState(true);
   // Production job folder — the currently selected job in the cut list.
   const [prodSelectedJob, setProdSelectedJob] = useState<string>('');
   const [cutUnit,        setCutUnit]        = useState<ProdUnit | null>(null);
@@ -756,9 +755,6 @@ export default function CrewPage() {
   const [cutPartExpanded,setCutPartExpanded]= useState<Record<string, boolean>>({});
   const [cutActioning,   setCutActioning]   = useState<Record<string, boolean>>({});
   const [cutBulkBusy,    setCutBulkBusy]    = useState(false);
-  // Inline "Complete" confirmation: null = hidden; number = count of parts on
-  // this cabinet still not marked cut (drives the prompt above the action bar).
-  const [cutCompletePrompt, setCutCompletePrompt] = useState<number | null>(null);
 
   // Camera (shared between damage + parts modals — only one open at a time)
   const videoRef         = useRef<HTMLVideoElement>(null);
@@ -1071,26 +1067,29 @@ export default function CrewPage() {
         .from('cabinet_units')
         .select('id, unit_label, job_number, cabinet_number, room_number, status, production_status')
         .eq('tenant_id', tenant.id)
-        .neq('production_status', 'complete')
         .neq('status', 'complete')
         .order('job_number', { ascending: true });
-      const unitList = (units as Omit<ProdUnit, 'partsTotal' | 'partsCut' | 'jobPath' | 'dueDate'>[]) ?? [];
+      let unitList = (units as Omit<ProdUnit, 'partsTotal' | 'partsCut' | 'jobPath' | 'dueDate'>[]) ?? [];
 
-      // Production-owned part counts per unit. Only parts assigned to production
-      // (or unassigned → defaults to production) count toward the cut list.
+      // Completed jobs disappear from every crew view.
+      try {
+        const { data: jrows } = await supabase.from('jobs').select('job_number').eq('tenant_id', tenant.id).eq('status', 'active');
+        const activeSet = new Set(((jrows as { job_number: string }[] | null) ?? []).map((j) => j.job_number));
+        unitList = unitList.filter((u) => !u.job_number || activeSet.has(u.job_number));
+      } catch { /* jobs table optional */ }
+
+      // assigned_dept is the single source of truth: a cabinet is in the cut list
+      // when it still has at least one part assigned to production.
       const ids = unitList.map((u) => u.id);
       const counts: Record<string, { total: number; cut: number; remaining: number }> = {};
       if (ids.length > 0) {
         const { data: parts } = await supabase
-          .from('parts').select('cabinet_unit_id, production_status, assigned_dept').in('cabinet_unit_id', ids);
-        ((parts as { cabinet_unit_id: string; production_status: string | null; assigned_dept: string | null }[]) ?? []).forEach((p) => {
-          if (!(p.assigned_dept === 'production' || p.assigned_dept == null)) return;
+          .from('parts').select('cabinet_unit_id, assigned_dept').in('cabinet_unit_id', ids);
+        ((parts as { cabinet_unit_id: string; assigned_dept: string | null }[]) ?? []).forEach((p) => {
+          if (p.assigned_dept !== 'production') return;
           const e = (counts[p.cabinet_unit_id] ??= { total: 0, cut: 0, remaining: 0 });
           e.total++;
-          // Remaining = production-owned and not yet cut/complete. Anything 'cut'
-          // (including parts pushed to other depts, now auto-marked cut) is done.
-          if (p.production_status !== 'cut' && p.production_status !== 'complete') e.remaining++;
-          else e.cut++;
+          e.remaining++;
         });
       }
 
@@ -1146,76 +1145,6 @@ export default function CrewPage() {
     const paths = new Set(prodUnits.map((u) => u.jobPath));
     if (!paths.has(prodSelectedJob)) setProdSelectedJob('');
   }, [prodUnits, prodSelectedJob]);
-
-  // ── Active job loader (current job card) ───────────────────────────────────
-  // Production: the most recent job with a cabinet still to cut.
-  // Everyone else (Assembly etc.): the most recent job with a cabinet that's
-  // cut and pending assembly.
-  const loadActiveJob = useCallback(async () => {
-    if (!tenant) return;
-    setActiveJobLoading(true);
-    try {
-      const { data } = await supabase
-        .from('cabinet_units')
-        .select('id, unit_label, job_number, status, production_status')
-        .eq('tenant_id', tenant.id)
-        .order('job_number', { ascending: false });
-      const list = (data as { id: string; unit_label: string; job_number: string | null; status: string; production_status: string | null }[]) ?? [];
-      const isProd = crewDept === 'Production';
-
-      const byJob: Record<string, typeof list> = {};
-      list.forEach((u) => { if (u.job_number) (byJob[u.job_number] ??= []).push(u); });
-
-      // Most recent job_number (DESC order preserved) that has a "next" cabinet.
-      let chosen: { jobNumber: string; units: typeof list; next: (typeof list)[number] } | null = null;
-      for (const jobNumber of Object.keys(byJob)) {
-        const units = byJob[jobNumber];
-        const next = isProd
-          ? units.find((u) => !isPartCut(u.production_status))
-          : units.find((u) => isPartCut(u.production_status) && u.status === 'pending');
-        if (next) { chosen = { jobNumber, units, next }; break; }
-      }
-      if (!chosen) { setActiveJob(null); return; }
-
-      let jobPath = `Job ${chosen.jobNumber}`;
-      try {
-        const { data: j } = await supabase
-          .from('jobs').select('job_path')
-          .eq('tenant_id', tenant.id).eq('job_number', chosen.jobNumber).maybeSingle();
-        const p = (j as { job_path: string | null } | null)?.job_path;
-        if (p) jobPath = p;
-      } catch (_) {}
-
-      const total = chosen.units.length;
-      const done = isProd
-        ? chosen.units.filter((u) => isPartCut(u.production_status)).length
-        : chosen.units.filter((u) => u.status === 'complete').length;
-
-      setActiveJob({
-        mode: isProd ? 'production' : 'assembly',
-        jobNumber: chosen.jobNumber,
-        jobPath,
-        total,
-        done,
-        nextUnit: { id: chosen.next.id, label: chosen.next.unit_label },
-      });
-    } catch (_) {
-      setActiveJob(null);
-    } finally {
-      setActiveJobLoading(false);
-    }
-  }, [tenant, crewDept]);
-
-  // Load the active job on mount / dept change, and refresh it as cabinets change.
-  useEffect(() => {
-    if (!tenant) return;
-    void loadActiveJob();
-    const ch = supabase
-      .channel('rt-crew-active-job')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenant.id}` }, () => { void loadActiveJob(); })
-      .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [tenant, loadActiveJob]);
 
   function saveIdentity(name: string, dept: string) {
     localStorage.setItem('crew_name', name);
@@ -1746,7 +1675,7 @@ export default function CrewPage() {
         const res = await fetch('/app/api/match-label', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ tenantId: tenant.id, rawLabel: input, jobPath: activeJob?.jobPath ?? null }),
+          body: JSON.stringify({ tenantId: tenant.id, rawLabel: input, jobPath: null }),
         });
         if (res.ok) {
           const ai = (await res.json()) as ScanAiResult;
@@ -1944,139 +1873,13 @@ export default function CrewPage() {
         .eq('cabinet_unit_id', unit.id)
         .order('part_name');
       const rows = (data as (ProdPart & { assigned_dept: string | null })[]) ?? [];
-      const visible = rows.filter((p) =>
-        (p.assigned_dept === 'production' || p.assigned_dept == null) &&
-        p.production_status !== 'cut' &&
-        p.production_status !== 'complete',
-      );
+      // assigned_dept is the source of truth: show only parts still in production.
+      const visible = rows.filter((p) => p.assigned_dept === 'production');
       setCutParts(visible);
     } catch (_) {}
     setCutLoading(false);
   }
   function closeCutView() { setCutUnit(null); setCutParts([]); setCutPartExpanded({}); }
-
-  // ── Production auto-complete ────────────────────────────────────────────────
-  // After any part status change or push, check whether a job still has any
-  // production-owned parts left to cut. When none remain (all cut OR pushed to
-  // another dept) the job is done in Production: roll its cabinets to 'cut', log
-  // the milestone, notify the supervisor, and let it drop out of the cut list.
-  async function checkProductionComplete(jobNumber: string | null) {
-    if (!jobNumber || !tenant) return;
-    try {
-      // Production owns parts assigned to it (or unassigned → defaults to production).
-      const { data } = await supabase
-        .from('parts')
-        .select('production_status')
-        .eq('tenant_id', tenant.id)
-        .eq('job_number', jobNumber)
-        .or('assigned_dept.eq.production,assigned_dept.is.null');
-      const rows = (data as { production_status: string | null }[] | null) ?? [];
-      const remaining = rows.filter((p) => !isPartCut(p.production_status)).length;
-      if (remaining > 0) return;
-
-      // Roll any not-yet-cut cabinets for this job up to 'cut'.
-      try {
-        await supabase
-          .from('cabinet_units')
-          .update({ production_status: 'cut' })
-          .eq('tenant_id', tenant.id)
-          .eq('job_number', jobNumber)
-          .or('production_status.is.null,production_status.eq.not_cut,production_status.eq.cutting');
-      } catch (_) { /* best-effort */ }
-
-      const jobPath = prodUnits.find((u) => u.job_number === jobNumber)?.jobPath || `Job ${jobNumber}`;
-      void logShiftEvent({
-        tenantId: tenant.id, timeClockId: activeTimeClockId,
-        workerName: crewName || 'Production', eventType: 'production_complete',
-        dept: 'Production', metadata: { job_number: jobNumber, job_path: jobPath },
-      });
-      const body = `Production complete — ${jobPath.split('/').join(' / ')} ready for assembly`;
-      sendNotify({ tenant_id: tenant.id, target: 'supervisor', title: 'Production complete', body, url: '/app/supervisor' });
-      try {
-        await supabase.from('notifications').insert({ tenant_id: tenant.id, target_type: 'supervisor', title: 'Production complete', body, url: '/app/supervisor' });
-      } catch (_) { /* bell log best-effort */ }
-      showToast('Job complete in Production — moving to Assembly');
-      void loadProduction();
-    } catch (_) { /* best-effort */ }
-  }
-
-  async function markPartStatus(partId: string, status: 'cutting' | 'cut') {
-    if (!requireClockIn()) return;
-    if (cutActioning[partId]) return;
-    setCutActioning((a) => ({ ...a, [partId]: true }));
-    const now = new Date().toISOString();
-    const patch: Record<string, unknown> = { production_status: status };
-    if (status === 'cut') { patch.cut_by = crewName || null; patch.cut_at = now; patch.cut_confirmed = true; }
-    setCutParts((ps) => ps.map((p) => p.id === partId
-      ? { ...p, production_status: status, cut_by: status === 'cut' ? (crewName || null) : p.cut_by, cut_at: status === 'cut' ? now : p.cut_at }
-      : p));
-    try {
-      const { error } = await supabase.from('parts').update(patch).eq('id', partId);
-      if (error) throw error;
-      if (status === 'cut' && cutUnit) void checkProductionComplete(cutUnit.job_number);
-    } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : 'Update failed', true);
-    } finally {
-      setCutActioning((a) => ({ ...a, [partId]: false }));
-    }
-  }
-
-  // ── Production: "Complete" this cabinet ────────────────────────────────────
-  // cutParts only ever holds this cabinet's production-owned, not-yet-cut parts
-  // (parts pushed to other depts are filtered out at load; cut taps update them
-  // in place). "Complete" leaves all of that exactly as-is and moves on — unless
-  // some parts were never marked cut, in which case we prompt first.
-
-  // Shared completion path (runs after either the no-prompt or "mark all" route).
-  // Never touches parts that were pushed to other depts — they stay put.
-  async function finishCabinetComplete() {
-    if (!cutUnit) return;
-    const unit = cutUnit;
-    setCutCompletePrompt(null);
-    void logShiftEvent({
-      tenantId: tenant!.id, timeClockId: activeTimeClockId,
-      workerName: crewName || 'Production', eventType: 'production_cabinet_complete', dept: 'Production',
-      metadata: { unit_id: unit.id, unit_label: unit.unit_label, job_number: unit.job_number },
-    });
-    void checkProductionComplete(unit.job_number);
-    closeCutView();
-    void loadProduction();
-  }
-
-  // Complete button: if every part is cut/pushed, complete straight away;
-  // otherwise surface the inline confirmation prompt with the unmarked count.
-  function completeCabinet() {
-    if (!cutUnit) return;
-    const unmarked = cutParts.filter((p) => !isPartCut(p.production_status)).length;
-    if (unmarked > 0) { setCutCompletePrompt(unmarked); return; }
-    void finishCabinetComplete();
-  }
-
-  // "Mark All Cut & Complete": flag every remaining production-owned uncut part
-  // as cut, then run the shared completion path.
-  async function markAllCutAndComplete() {
-    if (!requireClockIn()) return;
-    if (!cutUnit || cutBulkBusy || !tenant) return;
-    setCutBulkBusy(true);
-    const now = new Date().toISOString();
-    try {
-      const ids = cutParts.filter((p) => !isPartCut(p.production_status)).map((p) => p.id);
-      if (ids.length > 0) {
-        const { error } = await supabase.from('parts')
-          .update({ production_status: 'cut', cut_by: crewName || null, cut_at: now, cut_confirmed: true })
-          .in('id', ids);
-        if (error) throw error;
-        setCutParts((ps) => ps.map((p) => ids.includes(p.id)
-          ? { ...p, production_status: 'cut', cut_by: crewName || null, cut_at: now }
-          : p));
-      }
-      await finishCabinetComplete();
-    } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : 'Update failed', true);
-    } finally {
-      setCutBulkBusy(false);
-    }
-  }
 
   async function handlePartPhoto(partId: string, file: File) {
     try {
@@ -3083,68 +2886,17 @@ export default function CrewPage() {
             </div>
           </div>
 
-          {/* ── Current job (prominent) ─────────────────────────────────────── */}
-          {/* Craftsman dept gets a build-centric view instead of the generic job card. */}
+          {/* ── Department work view ────────────────────────────────────────────
+              Each department renders its own queue of parts driven entirely by
+              parts.assigned_dept. Production uses the Cut List accordion below;
+              Craftsman, Finishing and Assembly each get their own folder view. */}
           {crewDept === 'Craftsman' && tenant ? (
             <CraftsmanBuilds tenantId={tenant.id} crewName={crewName} timeClockId={activeTimeClockId} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} />
           ) : crewDept === 'Finishing' && tenant ? (
             <FinishingView tenantId={tenant.id} showToast={showToast} crewName={crewName} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} />
-          ) : !activeJobLoading && (
-            activeJob ? (
-              <div style={{ marginBottom: 32, padding: '18px 20px', borderRadius: 16, background: 'var(--bg-1)', border: '1px solid var(--line)', borderLeft: '3px solid var(--teal)' }}>
-                <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 8 }}>Current Job</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--ink)', lineHeight: 1.15 }}>{activeJob.jobPath.split('/').join(' / ')}</div>
-                {(() => {
-                  const isProd = activeJob.mode === 'production';
-                  const pct = activeJob.total ? Math.round((activeJob.done / activeJob.total) * 100) : 0;
-                  const leftToCut = activeJob.total - activeJob.done;
-                  return (
-                    <>
-                      <div style={{ fontSize: 13.5, color: 'var(--ink-dim)', marginTop: 8 }}>
-                        {isProd
-                          ? `${leftToCut} cabinet${leftToCut === 1 ? '' : 's'} left to cut`
-                          : `${activeJob.done} of ${activeJob.total} cabinet${activeJob.total === 1 ? '' : 's'} complete`}
-                      </div>
-                      <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.07)', overflow: 'hidden', marginTop: 10 }}>
-                        <div style={{ width: `${pct}%`, height: '100%', background: 'var(--teal)', transition: 'width .3s' }} />
-                      </div>
-                      {activeJob.nextUnit && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(45,225,201,0.06)' }}>
-                          <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                            <path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/>
-                          </svg>
-                          <span style={{ fontSize: 13, color: 'var(--ink)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            <b>{activeJob.nextUnit.label}</b> {isProd ? 'is ready to cut' : 'is ready to assemble'}
-                          </span>
-                        </div>
-                      )}
-                      <button
-                        onClick={() => {
-                          if (!activeJob.nextUnit) return;
-                          if (isProd) {
-                            const existing = prodUnits.find((u) => u.id === activeJob.nextUnit!.id);
-                            if (existing) { void openCutView(existing); }
-                            else { void openCutView({ id: activeJob.nextUnit.id, unit_label: activeJob.nextUnit.label, job_number: activeJob.jobNumber, cabinet_number: null, room_number: null, status: '', production_status: null, partsTotal: 0, partsCut: 0, jobPath: activeJob.jobPath, dueDate: null }); }
-                          } else {
-                            void openScanForUnit(activeJob.nextUnit.id);
-                          }
-                        }}
-                        className="btn btn-primary"
-                        style={{ width: '100%', justifyContent: 'center', marginTop: 14 }}
-                      >
-                        {isProd ? 'Start cutting' : 'Scan to start'}
-                      </button>
-                    </>
-                  );
-                })()}
-              </div>
-            ) : (
-              <div style={{ marginBottom: 32, padding: '18px 20px', borderRadius: 16, background: 'var(--bg-1)', border: '1px solid var(--line)' }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink-dim)' }}>No active job assigned</div>
-                <button onClick={openPlans} style={{ marginTop: 8, fontSize: 13, color: 'var(--teal)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit', textDecoration: 'underline' }}>View all jobs</button>
-              </div>
-            )
-          )}
+          ) : crewDept === 'Assembly' && tenant ? (
+            <AssemblyCrewView tenantId={tenant.id} crewName={crewName} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} />
+          ) : null}
 
           {/* Quick actions */}
           <div style={{ marginBottom: 40 }}>
@@ -3241,9 +2993,9 @@ export default function CrewPage() {
                                   style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--line)', cursor: 'pointer', padding: '13px 18px', display: 'flex', alignItems: 'center', gap: 12, fontFamily: 'inherit', minHeight: 44 }}>
                                   <div style={{ flex: 1, minWidth: 0 }}>
                                     <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.unit_label}</div>
-                                    <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{u.partsCut}/{u.partsTotal} part{u.partsTotal === 1 ? '' : 's'} cut</div>
+                                    <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{u.partsTotal} part{u.partsTotal === 1 ? '' : 's'} to cut</div>
                                   </div>
-                                  <CutStatusBadge status={u.production_status} />
+                                  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="9 6 15 12 9 18"/></svg>
                                 </button>
                               ))}
                             </div>
@@ -4684,22 +4436,20 @@ export default function CrewPage() {
             <ViewDrawingsButton tenantId={tenant!.id} jobNumber={cutUnit.job_number} cabinetKey={cutUnit.cabinet_number || cutUnit.unit_label} compact />
           </div>
 
-          {/* parts list */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: 16, paddingBottom: 110 }}>
+          {/* parts list — each part is cut, then pushed to its next dept */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: 16, paddingBottom: 'calc(24px + env(safe-area-inset-bottom))' }}>
             {cutLoading ? (
               <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32 }}>Loading parts…</div>
             ) : cutParts.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32 }}>All parts cut or pushed to other depts</div>
+              <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32 }}>All parts pushed — nothing left in production for this cabinet.</div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 640, margin: '0 auto' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 640, margin: '0 auto' }}>
                 {cutParts.map((p) => {
-                  const expanded = cutPartExpanded[p.id] ?? false;
                   const dims = [p.width, p.height, p.depth].filter((d) => d != null).join(' × ');
                   const flag = getFinishingFlag(p.part_name, p.material);
                   return (
-                    <div key={p.id} style={{ border: '1px solid var(--line)', borderRadius: 12, overflow: 'hidden', background: 'var(--bg-1)' }}>
-                      <button onClick={() => setCutPartExpanded((e) => ({ ...e, [p.id]: !expanded }))}
-                        style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', padding: '13px 14px', display: 'flex', alignItems: 'center', gap: 12, fontFamily: 'inherit', minHeight: 44 }}>
+                    <div key={p.id} style={{ border: '1px solid var(--line)', borderRadius: 12, background: 'var(--bg-1)', padding: '13px 14px' }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', display: 'flex', alignItems: 'center', gap: 8 }}>
                             <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.part_name}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</span>
@@ -4708,75 +4458,32 @@ export default function CrewPage() {
                           <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{dims}{p.material ? `${dims ? ' — ' : ''}${p.material}` : ''}</div>
                           {flag && <div style={{ fontSize: 11, color: '#FBBF24', marginTop: 2 }}>Needs finishing before assembly</div>}
                         </div>
-                        <CutStatusBadge status={p.production_status} />
-                      </button>
-                      {expanded && (
-                        <div style={{ padding: '0 14px 14px', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                          <button onClick={() => void markPartStatus(p.id, 'cutting')} disabled={cutActioning[p.id]}
-                            style={{ flex: '1 1 0', minHeight: 44, padding: '0 14px', borderRadius: 10, border: '1px solid rgba(251,191,36,0.4)', background: 'rgba(251,191,36,0.1)', color: '#FBBF24', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Mark Cutting</button>
-                          <button onClick={() => void markPartStatus(p.id, 'cut')} disabled={cutActioning[p.id]}
-                            style={{ flex: '1 1 0', minHeight: 44, padding: '0 14px', borderRadius: 10, border: '1px solid var(--teal-dim)', background: 'rgba(45,225,201,0.12)', color: '#2DE1C9', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Mark Cut</button>
-                          <label title="Photo proof" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, borderRadius: 10, border: '1px solid var(--line)', background: p.cut_photo_url ? 'rgba(45,225,201,0.12)' : 'var(--bg-2)', color: p.cut_photo_url ? '#2DE1C9' : 'var(--ink-mute)', cursor: 'pointer', flexShrink: 0 }}>
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-                            <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
-                              onChange={(e) => { const f = e.target.files?.[0]; if (f) void handlePartPhoto(p.id, f); e.target.value = ''; }} />
-                          </label>
-                          <PartPushButton
-                            tenantId={tenant!.id}
-                            part={{ id: p.id, part_name: p.part_name, cabinet_unit_id: cutUnit.id, job_number: cutUnit.job_number }}
-                            currentDept="Production"
-                            unitLabel={cutUnit.unit_label}
-                            jobPath={cutUnit.jobPath}
-                            timeClockId={activeTimeClockId}
-                            workerName={crewName}
-                            onPushed={(toDept) => {
-                              setCutParts((ps) => ps.filter((x) => x.id !== p.id));
-                              // Log where the parts went (Part 2) and re-check whether
-                              // Production is now empty for this job.
-                              if ((toDept || '').toLowerCase() === 'craftsman') {
-                                void logShiftEvent({
-                                  tenantId: tenant!.id, timeClockId: activeTimeClockId,
-                                  workerName: crewName || 'Production', eventType: 'parts_pushed_to_craftsman',
-                                  dept: 'Production', metadata: { part_ids: [p.id], job_number: cutUnit.job_number, dest_dept: 'craftsman' },
-                                });
-                              }
-                              void checkProductionComplete(cutUnit.job_number);
-                            }}
-                            onToast={showToast}
-                          />
-                        </div>
-                      )}
+                        <label title="Photo proof" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, borderRadius: 10, border: '1px solid var(--line)', background: p.cut_photo_url ? 'rgba(45,225,201,0.12)' : 'var(--bg-2)', color: p.cut_photo_url ? '#2DE1C9' : 'var(--ink-mute)', cursor: 'pointer', flexShrink: 0 }}>
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                          <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
+                            onChange={(e) => { const f = e.target.files?.[0]; if (f) void handlePartPhoto(p.id, f); e.target.value = ''; }} />
+                        </label>
+                      </div>
+                      <PushPicker
+                        tenantId={tenant!.id}
+                        partId={p.id}
+                        partName={p.part_name}
+                        cabinetUnitId={cutUnit.id}
+                        jobNumber={cutUnit.job_number}
+                        currentDept="production"
+                        workerName={crewName}
+                        timeClockId={activeTimeClockId}
+                        onPushed={() => {
+                          setCutParts((ps) => ps.filter((x) => x.id !== p.id));
+                          void loadProduction();
+                        }}
+                        onToast={showToast}
+                      />
                     </div>
                   );
                 })}
               </div>
             )}
-          </div>
-
-          {/* Inline "unmarked parts" confirmation — sits just above the action bar */}
-          {cutCompletePrompt != null && (
-            <div style={{ position: 'absolute', left: 0, right: 0, bottom: 'calc(74px + env(safe-area-inset-bottom))', padding: '14px 16px', borderTop: '1px solid var(--line)', background: 'rgba(5,6,8,0.97)', backdropFilter: 'blur(10px)' }}>
-              <div style={{ maxWidth: 640, margin: '0 auto' }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 12 }}>
-                  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                  <span style={{ fontSize: 13.5, color: 'var(--ink-dim)', fontWeight: 600 }}>{cutCompletePrompt} part{cutCompletePrompt === 1 ? '' : 's'} {cutCompletePrompt === 1 ? 'is' : 'are'} not yet marked cut. What would you like to do?</span>
-                </div>
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <button onClick={() => setCutCompletePrompt(null)} disabled={cutBulkBusy}
-                    style={{ flex: 1, minHeight: 48, borderRadius: 12, border: '1px solid var(--line)', background: 'var(--bg-1)', color: 'var(--ink-dim)', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy ? 0.5 : 1 }}>Cancel</button>
-                  <button onClick={() => void markAllCutAndComplete()} disabled={cutBulkBusy}
-                    style={{ flex: 1, minHeight: 48, borderRadius: 12, border: 'none', background: '#2DE1C9', color: '#051A12', fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy ? 0.5 : 1 }}>{cutBulkBusy ? 'Saving…' : 'Mark All Cut & Complete'}</button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* bottom action bar */}
-          <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, display: 'flex', gap: 10, padding: '12px 16px', paddingBottom: 'calc(12px + env(safe-area-inset-bottom))', borderTop: '1px solid var(--line)', background: 'rgba(5,6,8,0.92)', backdropFilter: 'blur(10px)' }}>
-            <button onClick={() => completeCabinet()} disabled={cutBulkBusy}
-              style={{ flex: 1, minHeight: 50, borderRadius: 12, border: 'none', background: '#2DE1C9', color: '#051A12', fontSize: 15, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit', opacity: cutBulkBusy ? 0.5 : 1 }}>
-              {cutBulkBusy ? 'Saving…' : 'Complete'}
-            </button>
           </div>
         </div>
       )}

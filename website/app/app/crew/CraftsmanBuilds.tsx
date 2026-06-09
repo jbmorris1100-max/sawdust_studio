@@ -1,28 +1,15 @@
 'use client';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import { sendNotify } from '@/lib/notify';
-import PartPushButton from '@/components/PartPushButton';
+import PushPicker from '@/components/PushPicker';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 
 // ── Craftsman builds (crew view) ──────────────────────────────────────────────
-// Shows cabinet_units assigned to the Craftsman dept, grouped by job. A craftsman
-// can: select which parts are in their scope (pushing the remainder to another dept
-// as a split ticket), run a build timer, and walk a unit through
-// Build → Finishing → Complete. Every split trains craftsman_classifications.
-
-type CUnit = {
-  id: string;
-  job_number: string | null;
-  room_number: string | null;
-  job_id: string | null;
-  unit_label: string;
-  status: string;
-  assigned_dept: string | null;
-  is_split: boolean | null;
-  split_from_id: string | null;
-  parent_unit_id: string | null;
-};
+// Shows parts pushed to the Craftsman dept (parts.assigned_dept = 'craftsman'),
+// grouped by job → cabinet (folder accordion). A build timer for each part starts
+// when its cabinet is opened and stops when the craftsman pushes the part on. The
+// elapsed time is logged to time_clock so the Reports tab sees the hours. The Push
+// Picker sends each part to Finishing, Assembly or back to Production.
 
 type CPart = {
   id: string;
@@ -38,34 +25,18 @@ type CPart = {
   flag_type: string | null;
 };
 
+type CabInfo = { label: string; key: string };
+
 interface Props {
   tenantId: string;
   crewName: string;
   timeClockId: string | null;
   showToast: (msg: string, error?: boolean) => void;
-  // Clock-in gate: crew can't start a build without an open shift.
   isClockedIn?: boolean;
   onRequireClock?: () => void;
 }
 
-const PUSH_DEPTS = ['Production', 'Assembly', 'Finishing'] as const;
-type PushDept = (typeof PUSH_DEPTS)[number];
-
-// Keywords for deriving a reusable learned pattern from a unit label (mirrors the
-// classify-units route so crew-side learning uses the same vocabulary).
-const CRAFTSMAN_KEYWORDS = [
-  'countertop', 'counter top', 'butcher block', 'slab', 'floating shelf', 'float shelf',
-  'vent hood', 'range hood', 'hood', 'wine rack', 'mantle', 'mantel', 'fireplace',
-  'surround', 'bench seat', 'window seat', 'bench', 'corbel', 'waterfall', 'display',
-  'custom', 'trim', 'panel slab',
-];
-
-function patternFromLabel(label: string): string {
-  const lower = label.toLowerCase();
-  for (const kw of CRAFTSMAN_KEYWORDS) if (lower.includes(kw)) return kw;
-  const words = lower.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter((w) => w.length > 3);
-  return words.sort((a, b) => b.length - a.length)[0] ?? lower.trim().slice(0, 40);
-}
+const STARTS_KEY = 'craftsman_part_starts';
 
 function dimLabel(p: CPart): string {
   const parts: string[] = [];
@@ -74,25 +45,13 @@ function dimLabel(p: CPart): string {
   if (p.depth)  parts.push(`${p.depth}"`);
   return parts.join('x');
 }
-
 function partLabel(p: CPart): string {
-  const dims = dimLabel(p);
   const bits = [p.part_name];
-  if (dims) bits.push(dims);
+  const d = dimLabel(p);
+  if (d) bits.push(d);
   if (p.material) bits.push(p.material);
   return bits.join(' — ');
 }
-
-function statusMeta(status: string): { label: string; color: string } {
-  switch (status) {
-    case 'building':  return { label: 'Building',  color: '#60A5FA' };
-    case 'finishing': return { label: 'Finishing', color: '#FBBF24' };
-    case 'complete':  return { label: 'Complete',  color: '#34D399' };
-    case 'flagged':   return { label: 'Flagged',   color: '#F87171' };
-    default:          return { label: 'Pending',   color: '#8BA5A0' };
-  }
-}
-
 function fmtElapsed(startISO: string): string {
   const secs = Math.max(0, Math.floor((Date.now() - new Date(startISO).getTime()) / 1000));
   const h = Math.floor(secs / 3600);
@@ -102,407 +61,161 @@ function fmtElapsed(startISO: string): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
-const BUILDS_KEY = 'craftsman_unit_builds';
-
-// Thin-stroke icons (no emoji).
 const IcoCraft = () => (
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
     <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-  </svg>
-);
-const IcoSplit = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/>
-  </svg>
-);
-const IcoPush = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>
   </svg>
 );
 
 export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showToast, isClockedIn = true, onRequireClock }: Props) {
-  const [units,   setUnits]   = useState<CUnit[]>([]);
-  const [parts,   setParts]   = useState<CPart[]>([]);
+  const [parts, setParts] = useState<CPart[]>([]);
+  const [cabInfo, setCabInfo] = useState<Record<string, CabInfo>>({});
   const [jobPaths, setJobPaths] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
-  const [busyUnit, setBusyUnit] = useState<string | null>(null);
-
-  // Per-unit build timer start times (persisted so the timer survives reloads).
-  const [buildStarts, setBuildStarts] = useState<Record<string, string>>({});
-  const [, setTick] = useState(0);
-
-  // Part-selection overlay state
-  const [selUnit, setSelUnit] = useState<CUnit | null>(null);
-  const [selPartIds, setSelPartIds] = useState<Set<string>>(new Set());
-  const [overlayStep, setOverlayStep] = useState<'select' | 'push'>('select');
-  const [pushDept, setPushDept] = useState<PushDept>('Production');
-  const [splitting, setSplitting] = useState(false);
-
-  // Success confirmation (auto-dismiss)
-  const [success, setSuccess] = useState<{ kept: number; pushed: number; dept: string } | null>(null);
-  const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Job folder accordion — the currently expanded job ('' = all collapsed).
-  // Only one job is open at a time.
   const [selectedJob, setSelectedJob] = useState<string>('');
+  // Per-part build-start timestamps (persisted so timers survive a reload).
+  const [starts, setStarts] = useState<Record<string, string>>({});
+  const [, setTick] = useState(0);
+  const startsRef = useRef<Record<string, string>>({});
 
-  // ── Load ────────────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
-    if (!tenantId) return;
     try {
-      const UNIT_COLS = 'id, job_number, room_number, job_id, unit_label, status, assigned_dept, is_split, split_from_id, parent_unit_id';
-      // Cabinets belong to craftsman when the unit is assigned to craftsman OR any
-      // of its parts has been pushed to craftsman (which leaves the cabinet as a
-      // 'split'). Resolve the part-owned cabinet ids first, then a single query.
-      let cabIdsWithCraftPart: string[] = [];
+      let activeJobNums: Set<string> | null = null;
       try {
-        const { data: cp } = await supabase
-          .from('parts')
-          .select('cabinet_unit_id')
-          .eq('tenant_id', tenantId)
-          .eq('assigned_dept', 'craftsman');
-        cabIdsWithCraftPart = Array.from(new Set(((cp as { cabinet_unit_id: string | null }[] | null) ?? [])
-          .map((r) => r.cabinet_unit_id).filter(Boolean))) as string[];
-      } catch { /* best-effort */ }
+        const { data: jrows } = await supabase.from('jobs').select('job_number').eq('tenant_id', tenantId).eq('status', 'active');
+        activeJobNums = new Set(((jrows as { job_number: string }[] | null) ?? []).map((j) => j.job_number));
+      } catch { /* jobs table optional */ }
 
-      const baseQuery = supabase
-        .from('cabinet_units')
-        .select(UNIT_COLS)
+      const { data: partRows } = await supabase
+        .from('parts')
+        .select('id, cabinet_unit_id, job_number, part_name, material, width, height, depth, quantity, assigned_dept, flag_type')
         .eq('tenant_id', tenantId)
+        .eq('assigned_dept', 'craftsman')
         .neq('status', 'complete')
-        .order('job_number', { ascending: false });
-      const { data: unitData } = cabIdsWithCraftPart.length > 0
-        ? await baseQuery.or(`assigned_dept.eq.craftsman,id.in.(${cabIdsWithCraftPart.join(',')})`)
-        : await baseQuery.eq('assigned_dept', 'craftsman');
-      // The .or() above can return the same cabinet twice (assigned to craftsman
-      // AND owning a craftsman part) — dedupe by id.
-      const list = Array.from(new Map(((unitData as CUnit[] | null) ?? []).map((u) => [u.id, u])).values());
-      setUnits(list);
+        .limit(600);
+      let cps = (partRows as CPart[] | null) ?? [];
+      if (activeJobNums) cps = cps.filter((p) => !p.job_number || activeJobNums!.has(p.job_number));
+      setParts(cps);
 
-      if (list.length > 0) {
-        const ids = list.map((u) => u.id);
-        const { data: partData } = await supabase
-          .from('parts')
-          .select('id, cabinet_unit_id, job_number, part_name, material, width, height, depth, quantity, assigned_dept, flag_type')
-          .in('cabinet_unit_id', ids);
-        setParts((partData as CPart[] | null) ?? []);
-
-        const jobNums = Array.from(new Set(list.map((u) => u.job_number).filter(Boolean))) as string[];
-        if (jobNums.length > 0) {
-          const { data: jobsData } = await supabase
-            .from('jobs').select('job_number, job_path').eq('tenant_id', tenantId).in('job_number', jobNums);
-          const map: Record<string, string> = {};
-          ((jobsData as { job_number: string; job_path: string | null }[] | null) ?? []).forEach((j) => {
-            if (j.job_path) map[j.job_number] = j.job_path;
-          });
-          setJobPaths(map);
-        }
-      } else {
-        setParts([]);
+      const cabIds = Array.from(new Set(cps.map((p) => p.cabinet_unit_id).filter(Boolean)));
+      const info: Record<string, CabInfo> = {};
+      if (cabIds.length > 0) {
+        const { data: cabs } = await supabase.from('cabinet_units').select('id, unit_label, cabinet_number').in('id', cabIds);
+        ((cabs as { id: string; unit_label: string | null; cabinet_number: string | null }[] | null) ?? []).forEach((c) => {
+          info[c.id] = { label: c.unit_label || c.cabinet_number || 'Cabinet', key: c.cabinet_number || c.unit_label || '' };
+        });
       }
-    } catch {
-      /* leave existing state */
-    } finally {
-      setLoading(false);
-    }
+      setCabInfo(info);
+
+      const jobNums = Array.from(new Set(cps.map((p) => p.job_number).filter(Boolean))) as string[];
+      if (jobNums.length > 0) {
+        try {
+          const { data: jrows } = await supabase.from('jobs').select('job_number, job_path').eq('tenant_id', tenantId).in('job_number', jobNums);
+          const map: Record<string, string> = {};
+          ((jrows as { job_number: string; job_path: string | null }[] | null) ?? []).forEach((j) => { map[j.job_number] = j.job_path || `Job ${j.job_number}`; });
+          setJobPaths(map);
+        } catch { /* best-effort */ }
+      }
+    } catch { /* leave existing state */ }
+    setLoading(false);
   }, [tenantId]);
 
   useEffect(() => { void load(); }, [load]);
 
-  // Realtime — reload on any cabinet_units / parts change for this tenant.
   useEffect(() => {
-    if (!tenantId) return;
     const ch = supabase
       .channel('rt-craftsman-builds')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'parts', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenantId, load]);
 
   // Restore persisted build-start timestamps.
   useEffect(() => {
-    try { const r = localStorage.getItem(BUILDS_KEY); if (r) setBuildStarts(JSON.parse(r)); } catch { /* ignore */ }
+    try { const r = localStorage.getItem(STARTS_KEY); if (r) { const v = JSON.parse(r); setStarts(v); startsRef.current = v; } } catch { /* ignore */ }
+  }, []);
+  useEffect(() => { startsRef.current = starts; }, [starts]);
+
+  // Live tick while any timer is running.
+  useEffect(() => {
+    const iv = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(iv);
   }, []);
 
-  // Tick the live timer once a second while any unit is building.
-  useEffect(() => {
-    const anyBuilding = units.some((u) => u.status === 'building');
-    if (!anyBuilding) return;
-    const t = setInterval(() => setTick((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, [units]);
-
-  useEffect(() => () => { if (successTimer.current) clearTimeout(successTimer.current); }, []);
-
-  // Collapse a job that no longer exists. Default is all-collapsed (no auto-open).
-  useEffect(() => {
-    if (!selectedJob) return;
-    const keys = new Set(units.map((u) => u.job_number || '__nojob__'));
-    if (!keys.has(selectedJob)) setSelectedJob('');
-  }, [units, selectedJob]);
-
   function persistStarts(next: Record<string, string>) {
-    setBuildStarts(next);
-    try { localStorage.setItem(BUILDS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+    setStarts(next);
+    startsRef.current = next;
+    try { localStorage.setItem(STARTS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
   }
 
-  const unitParts = (unitId: string) => parts.filter((p) => p.cabinet_unit_id === unitId);
+  // Start the build timer for every part on a cabinet when it's first opened.
+  function ensureStarted(partIds: string[]) {
+    const cur = startsRef.current;
+    const missing = partIds.filter((id) => !cur[id]);
+    if (missing.length === 0) return;
+    const now = new Date().toISOString();
+    const next = { ...cur };
+    missing.forEach((id) => { next[id] = now; });
+    persistStarts(next);
+  }
+
+  // On push: log the elapsed build time to time_clock, then clear the timer.
+  function onPartPushed(part: CPart) {
+    const start = startsRef.current[part.id];
+    if (start) {
+      const durationMin = Math.round((Date.now() - new Date(start).getTime()) / 60000);
+      if (durationMin > 0) {
+        const clockInISO = start;
+        const now = new Date().toISOString();
+        void supabase.from('time_clock').insert({
+          tenant_id: tenantId,
+          worker_name: crewName || 'Craftsman',
+          dept: 'Craftsman',
+          clock_in: clockInISO,
+          clock_out: now,
+          date: now.split('T')[0],
+          total_hours: durationMin / 60,
+          status: 'craftsman_build',
+          notes: `Build: ${part.part_name}`,
+          job_number: part.job_number ?? null,
+        }).then(() => {}, () => {});
+      }
+      const next = { ...startsRef.current }; delete next[part.id]; persistStarts(next);
+    }
+    setParts((prev) => prev.filter((p) => p.id !== part.id));
+  }
+
   const jobLabel = (jobNumber: string | null) =>
     jobNumber ? (jobPaths[jobNumber] ? jobPaths[jobNumber].split('/').map((s) => s.trim()).join(' / ') : `Job ${jobNumber}`) : 'No Job';
 
-  // ── Build flow ──────────────────────────────────────────────────────────────
-  async function startBuild(unit: CUnit) {
-    if (!isClockedIn) { onRequireClock?.(); return; }
-    if (busyUnit) return;
-    setBusyUnit(unit.id);
-    try {
-      const { error } = await supabase.from('cabinet_units').update({ status: 'building' }).eq('id', unit.id);
-      if (error) throw error;
-      persistStarts({ ...buildStarts, [unit.id]: new Date().toISOString() });
-      setUnits((prev) => prev.map((u) => u.id === unit.id ? { ...u, status: 'building' } : u));
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Could not start build', true);
-    } finally {
-      setBusyUnit(null);
-    }
-  }
+  const jobOptions = useMemo(() => {
+    const set = new Map<string, string>();
+    parts.forEach((p) => { const jn = p.job_number ?? '__nojob__'; if (!set.has(jn)) set.set(jn, jobLabel(p.job_number)); });
+    return Array.from(set.entries()).map(([jobNumber, label]) => ({ jobNumber, label })).sort((a, b) => a.label.localeCompare(b.label));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parts, jobPaths]);
 
-  // "Mark Build Complete" — the craftsman is done building. The unit and all of
-  // its parts hand off automatically to Finishing (no manual push). Craftsman
-  // never marks finishing complete; that lives in the Finishing dept now.
-  async function markBuildComplete(unit: CUnit) {
-    if (!isClockedIn) { onRequireClock?.(); return; }
-    if (busyUnit) return;
-    setBusyUnit(unit.id);
-    const start = buildStarts[unit.id];
-    const durationMin = start ? Math.round((Date.now() - new Date(start).getTime()) / 60000) : null;
-    try {
-      // 1. Unit → Finishing.
-      const { error } = await supabase.from('cabinet_units')
-        .update({ status: 'finishing', assigned_dept: 'finishing' })
-        .eq('id', unit.id);
-      if (error) throw error;
+  useEffect(() => {
+    if (!selectedJob) return;
+    if (!jobOptions.some((j) => j.jobNumber === selectedJob)) setSelectedJob('');
+  }, [jobOptions, selectedJob]);
 
-      // 1b. Log the build duration as a time_clock row so the Reports tab
-      // (which sums time_clock WHERE status='craftsman_build') sees the hours.
-      const clockInISO = start ?? new Date(Date.now() - (durationMin ?? 0) * 60000).toISOString();
-      const now = new Date().toISOString();
-      if (durationMin && durationMin > 0) {
-        try {
-          await supabase.from('time_clock').insert({
-            tenant_id: tenantId,
-            worker_name: crewName || 'Craftsman',
-            dept: 'Craftsman',
-            clock_in: clockInISO,
-            clock_out: now,
-            date: now.split('T')[0],
-            total_hours: durationMin / 60,
-            status: 'craftsman_build',
-            notes: `Build: ${unit.unit_label}`,
-            job_number: unit.job_number ?? null,
-          });
-        } catch { /* best-effort */ }
-      }
+  // When a job opens, start timers for all of its parts.
+  useEffect(() => {
+    if (!selectedJob) return;
+    const ids = parts.filter((p) => (p.job_number ?? '__nojob__') === selectedJob).map((p) => p.id);
+    if (ids.length) ensureStarted(ids);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedJob, parts]);
 
-      // 2. All of this unit's parts → Finishing, marked cut (they're built).
-      try {
-        await supabase.from('parts')
-          .update({ assigned_dept: 'finishing', production_status: 'cut' })
-          .eq('cabinet_unit_id', unit.id).eq('tenant_id', tenantId);
-      } catch { /* best-effort — unit hand-off already succeeded */ }
-
-      // 3. Log the build completion to shift_events.
-      if (timeClockId) {
-        try {
-          await supabase.from('shift_events').insert({
-            tenant_id: tenantId, time_clock_id: timeClockId, worker_name: crewName || 'Craftsman',
-            event_type: 'craftsman_build_complete', dept: 'Craftsman',
-            metadata: { unit_id: unit.id, unit_label: unit.unit_label, job_number: unit.job_number, worker_name: crewName || 'Craftsman', duration_min: durationMin },
-          });
-        } catch { /* best effort */ }
-      }
-
-      const jl = jobLabel(unit.job_number);
-      // 4. Push the Finishing crew.
-      sendNotify({
-        tenant_id: tenantId, target: 'crew', dept_target: 'Finishing',
-        title: 'Ready for finishing',
-        body: `${unit.unit_label} — ${jl} is ready for finishing`,
-        url: '/app/crew',
-      });
-      // 5. Supervisor bell.
-      sendNotify({
-        tenant_id: tenantId, target: 'supervisor',
-        title: 'Craftsman complete',
-        body: `${unit.unit_label} sent to Finishing — ${jl}`,
-        url: '/app/supervisor',
-      });
-
-      const next = { ...buildStarts }; delete next[unit.id]; persistStarts(next);
-      setUnits((prev) => prev.filter((u) => u.id !== unit.id)); // drops off the craftsman list
-      showToast('Build complete — sent to Finishing');
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Could not update build', true);
-    } finally {
-      setBusyUnit(null);
-    }
-  }
-
-  // ── Part selection overlay ──────────────────────────────────────────────────
-  function openSelection(unit: CUnit) {
-    const ps = unitParts(unit.id);
-    setSelUnit(unit);
-    setSelPartIds(new Set(ps.map((p) => p.id))); // all checked by default
-    setOverlayStep('select');
-    setPushDept('Production');
-  }
-  function closeSelection() {
-    setSelUnit(null);
-    setSelPartIds(new Set());
-    setOverlayStep('select');
-    setSplitting(false);
-  }
-  function togglePart(id: string) {
-    setSelPartIds((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
-  }
-
-  // Shop learning — upsert one (label-pattern, part-pattern, dept) confirmation.
-  async function learnPattern(labelPattern: string, partName: string, dept: string) {
-    const part_name_pattern = partName.trim().toLowerCase();
-    try {
-      const { data: existing } = await supabase
-        .from('craftsman_classifications')
-        .select('id, times_confirmed')
-        .eq('tenant_id', tenantId)
-        .eq('unit_label_pattern', labelPattern)
-        .eq('part_name_pattern', part_name_pattern)
-        .eq('assigned_dept', dept)
-        .maybeSingle();
-      if (existing) {
-        await supabase.from('craftsman_classifications')
-          .update({ times_confirmed: ((existing as { times_confirmed: number }).times_confirmed ?? 0) + 1, confirmed_by: crewName || 'Craftsman', updated_at: new Date().toISOString() })
-          .eq('id', (existing as { id: string }).id);
-      } else {
-        await supabase.from('craftsman_classifications').insert({
-          tenant_id: tenantId, unit_label_pattern: labelPattern, part_name_pattern,
-          assigned_dept: dept, confirmed_by: crewName || 'Craftsman', times_confirmed: 1,
-        });
-      }
-    } catch { /* learning is best-effort */ }
-  }
-
-  // Confirm selection. If parts are unchecked, the caller has already chosen to
-  // push them (pushDept) or keep all. `doPush=false` keeps everything in craftsman.
-  async function confirmSelection(doPush: boolean) {
-    if (!selUnit || splitting) return;
-    setSplitting(true);
-    const all = unitParts(selUnit.id);
-    const kept = all.filter((p) => selPartIds.has(p.id));
-    const pushed = all.filter((p) => !selPartIds.has(p.id));
-    const labelPattern = patternFromLabel(selUnit.unit_label);
-
-    try {
-      if (pushed.length === 0 || !doPush) {
-        // No split — assign all parts to craftsman.
-        const ids = (doPush ? kept : all).map((p) => p.id);
-        if (ids.length > 0) {
-          const { error } = await supabase.from('parts').update({ assigned_dept: 'craftsman' }).in('id', ids);
-          if (error) throw error;
-        }
-        // If keeping all, also fold any previously-pushed parts back in.
-        if (!doPush && pushed.length > 0) {
-          await supabase.from('parts').update({ assigned_dept: 'craftsman' }).in('id', pushed.map((p) => p.id));
-        }
-        for (const p of (doPush ? kept : all)) void learnPattern(labelPattern, p.part_name, 'craftsman');
-        showToast('Selection confirmed');
-        closeSelection();
-        void load();
-        return;
-      }
-
-      // ── Split: kept stay in craftsman, pushed move to a new dept ticket ───────
-      const newDept = pushDept.toLowerCase();
-      // 1. checked parts → craftsman
-      if (kept.length > 0) {
-        const { error } = await supabase.from('parts').update({ assigned_dept: 'craftsman' }).in('id', kept.map((p) => p.id));
-        if (error) throw error;
-      }
-      // 2. create the box ticket for the remainder
-      const { data: newUnitData, error: unitErr } = await supabase.from('cabinet_units').insert({
-        tenant_id: tenantId,
-        job_id: selUnit.job_id,
-        job_number: selUnit.job_number,
-        room_number: selUnit.room_number,
-        unit_label: `${selUnit.unit_label} (Box)`,
-        status: 'pending',
-        assigned_dept: newDept,
-        is_split: true,
-        split_from_id: selUnit.id,
-        parent_unit_id: selUnit.id,
-      }).select('id').single();
-      if (unitErr) throw unitErr;
-      const newUnitId = (newUnitData as { id: string }).id;
-
-      // 3. move unchecked parts to the new unit (compensate on later failure)
-      try {
-        const { error: moveErr } = await supabase.from('parts')
-          .update({ cabinet_unit_id: newUnitId, assigned_dept: newDept })
-          .in('id', pushed.map((p) => p.id));
-        if (moveErr) throw moveErr;
-
-        // 4. update original unit → craftsman ticket
-        const { error: origErr } = await supabase.from('cabinet_units')
-          .update({ is_split: true, unit_label: `${selUnit.unit_label} (Craftsman)` })
-          .eq('id', selUnit.id);
-        if (origErr) throw origErr;
-      } catch (inner) {
-        // Roll back: move parts back to the original, then delete the new unit.
-        try { await supabase.from('parts').update({ cabinet_unit_id: selUnit.id }).in('id', pushed.map((p) => p.id)); } catch { /* ignore */ }
-        try { await supabase.from('cabinet_units').delete().eq('id', newUnitId); } catch { /* ignore */ }
-        throw inner;
-      }
-
-      // 5. shop learning + shift event
-      for (const p of kept)   void learnPattern(labelPattern, p.part_name, 'craftsman');
-      for (const p of pushed) void learnPattern(labelPattern, p.part_name, newDept);
-      if (timeClockId) {
-        try {
-          await supabase.from('shift_events').insert({
-            tenant_id: tenantId, time_clock_id: timeClockId, worker_name: crewName || 'Craftsman',
-            event_type: 'craftsman_classification', dept: 'Craftsman',
-            metadata: {
-              unit_id: selUnit.id, original_dept: 'craftsman', new_dept: newDept,
-              parts_kept: kept.length, parts_pushed: pushed.length,
-            },
-          });
-        } catch { /* best effort */ }
-      }
-
-      // Notify supervisor of the split.
-      sendNotify({
-        tenant_id: tenantId, target: 'supervisor',
-        title: 'Ticket split',
-        body: `Craftsman split ${selUnit.unit_label} — ${pushed.length} part${pushed.length === 1 ? '' : 's'} sent to ${pushDept}`,
-        url: '/app/supervisor',
-      });
-
-      setSuccess({ kept: kept.length, pushed: pushed.length, dept: pushDept });
-      if (successTimer.current) clearTimeout(successTimer.current);
-      successTimer.current = setTimeout(() => setSuccess(null), 2000);
-      closeSelection();
-      void load();
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Split failed — no changes saved', true);
-      setSplitting(false);
-    }
-  }
-
-  // ── Render ──────────────────────────────────────────────────────────────────
-  const byJob: Record<string, CUnit[]> = {};
-  units.forEach((u) => { const k = u.job_number || '__nojob__'; (byJob[k] ??= []).push(u); });
-  const jobKeys = Object.keys(byJob);
+  const cabinetsForJob = (jobNumber: string) => {
+    const groups: Record<string, CPart[]> = {};
+    parts.filter((p) => (p.job_number ?? '__nojob__') === jobNumber).forEach((p) => {
+      (groups[p.cabinet_unit_id] ??= []).push(p);
+    });
+    return Object.entries(groups).map(([cabinetId, cp]) => ({ cabinetId, parts: cp }));
+  };
 
   return (
     <div style={{ marginBottom: 32 }}>
@@ -513,191 +226,70 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: '28px 0', color: 'var(--ink-mute)', fontSize: 13 }}>Loading builds…</div>
-      ) : jobKeys.length === 0 ? (
+      ) : jobOptions.length === 0 ? (
         <div style={{ padding: '20px', borderRadius: 16, background: 'var(--bg-1)', border: '1px solid var(--line)', textAlign: 'center' }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink-dim)' }}>No active work assigned</div>
-          <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 6 }}>Ask your supervisor to upload a cutlist.</div>
+          <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 6 }}>Custom parts routed to Craftsman will appear here.</div>
         </div>
       ) : (
-        /* Job folder accordion — jobs collapsed by default; tap a job to expand
-           its pieces. Only one job open at a time. Rush jobs in any order. */
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {jobKeys.map((jk) => {
-            const open = selectedJob === jk;
-            const ju = byJob[jk];
+          {jobOptions.map((j) => {
+            const open = selectedJob === j.jobNumber;
+            const cabs = open ? cabinetsForJob(j.jobNumber) : [];
+            const count = parts.filter((p) => (p.job_number ?? '__nojob__') === j.jobNumber).length;
             return (
-              <div key={jk} style={{ borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)', overflow: 'hidden' }}>
-                <button
-                  onClick={() => setSelectedJob(open ? '' : jk)}
-                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
-                >
+              <div key={j.jobNumber} style={{ borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)', overflow: 'hidden' }}>
+                <button onClick={() => setSelectedJob(open ? '' : j.jobNumber)}
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
                   <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transition: 'transform 0.2s ease', transform: open ? 'rotate(90deg)' : 'none' }}><polyline points="9 6 15 12 9 18"/></svg>
-                  <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{jobLabel(jk === '__nojob__' ? null : jk)}</span>
-                  <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{ju.length} piece{ju.length === 1 ? '' : 's'}</span>
+                  <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{j.label}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{count} part{count === 1 ? '' : 's'}</span>
                 </button>
                 {open && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '12px 14px 14px', borderTop: '1px solid var(--line)' }}>
-                {ju.map((unit) => {
-                  const ps = unitParts(unit.id);
-                  const sm = statusMeta(unit.status);
-                  const start = buildStarts[unit.id];
-                  const busy = busyUnit === unit.id;
-                  return (
-                    <div key={unit.id} style={{ borderRadius: 16, background: 'var(--bg-1)', border: '1px solid var(--line)', padding: '16px 18px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
-                        <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>{unit.unit_label}</span>
-                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: sm.color, background: `${sm.color}22` }}>{sm.label}</span>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-                        <span style={{ fontSize: 12.5, color: 'var(--ink-mute)' }}>{jobLabel(unit.job_number)}</span>
-                        <ViewDrawingsButton tenantId={tenantId} jobNumber={unit.job_number} cabinetKey={unit.unit_label} compact={false} />
-                      </div>
-
-                      {/* Parts list with material notes */}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
-                        {ps.length === 0 ? (
-                          <div style={{ fontSize: 12.5, color: 'var(--ink-mute)' }}>No parts loaded.</div>
-                        ) : ps.map((p) => (
-                          <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: p.flag_type ? '#F87171' : 'var(--ink-dim)' }}>
-                            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" style={{ flexShrink: 0, opacity: 0.6 }}><circle cx="12" cy="12" r="9"/></svg>
-                            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partLabel(p)}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</span>
-                            <PartPushButton
-                              tenantId={tenantId}
-                              part={{ id: p.id, part_name: p.part_name, cabinet_unit_id: p.cabinet_unit_id, job_number: p.job_number }}
-                              currentDept="Craftsman"
-                              unitLabel={unit.unit_label}
-                              jobPath={jobLabel(unit.job_number)}
-                              timeClockId={timeClockId}
-                              workerName={crewName}
-                              onPushed={() => setParts((prev) => prev.filter((x) => x.id !== p.id))}
-                              onToast={showToast}
-                              compact
-                            />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '12px 14px 14px', borderTop: '1px solid var(--line)' }}>
+                    {cabs.map((c) => {
+                      const info = cabInfo[c.cabinetId] ?? { label: 'Cabinet', key: '' };
+                      return (
+                        <div key={c.cabinetId} style={{ padding: '16px 18px', borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                            <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{info.label}</span>
+                            <ViewDrawingsButton tenantId={tenantId} jobNumber={c.parts[0]?.job_number ?? null} cabinetKey={info.key} compact={false} />
                           </div>
-                        ))}
-                      </div>
-
-                      {/* Live build timer */}
-                      {unit.status === 'building' && start && (
-                        <div style={{ fontSize: 20, fontWeight: 700, color: '#60A5FA', fontVariantNumeric: 'tabular-nums', marginBottom: 12 }}>{fmtElapsed(start)}</div>
-                      )}
-
-                      {/* Action buttons by status */}
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        {unit.status !== 'building' && unit.status !== 'finishing' && (
-                          <>
-                            <button className="btn btn-primary" disabled={busy} onClick={() => startBuild(unit)} style={{ flex: '1 1 auto', justifyContent: 'center', minWidth: 130, opacity: busy ? 0.6 : 1 }}>Start Build</button>
-                            <button disabled={busy} onClick={() => openSelection(unit)}
-                              style={{ flex: '1 1 auto', minWidth: 130, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderRadius: 10, background: 'rgba(94,234,212,0.08)', border: '1px solid rgba(94,234,212,0.25)', color: 'var(--teal)', fontSize: 13, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }}>
-                              <IcoSplit /> Select my parts
-                            </button>
-                          </>
-                        )}
-                        {unit.status === 'building' && (
-                          <button className="btn btn-primary" disabled={busy} onClick={() => markBuildComplete(unit)} style={{ flex: 1, justifyContent: 'center', opacity: busy ? 0.6 : 1 }}>Mark Build Complete</button>
-                        )}
-                        {unit.status === 'finishing' && (
-                          /* Legacy units left in 'finishing' status under craftsman — hand them off. */
-                          <button className="btn btn-primary" disabled={busy} onClick={() => markBuildComplete(unit)} style={{ flex: 1, justifyContent: 'center', opacity: busy ? 0.6 : 1 }}>Send to Finishing</button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                            {c.parts.map((p) => {
+                              const start = starts[p.id];
+                              return (
+                                <div key={p.id} style={{ padding: '12px 14px', borderRadius: 12, background: 'var(--bg-1)', border: '1px solid var(--line)' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                                    <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: p.flag_type ? '#F87171' : 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partLabel(p)}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</span>
+                                    {start && (
+                                      <span style={{ fontSize: 13, fontWeight: 700, color: '#60A5FA', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{fmtElapsed(start)}</span>
+                                    )}
+                                  </div>
+                                  <PushPicker
+                                    tenantId={tenantId}
+                                    partId={p.id}
+                                    partName={p.part_name}
+                                    cabinetUnitId={p.cabinet_unit_id}
+                                    jobNumber={p.job_number}
+                                    currentDept="craftsman"
+                                    workerName={crewName}
+                                    timeClockId={timeClockId}
+                                    onPushed={() => onPartPushed(p)}
+                                    onToast={showToast}
+                                  />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
             );
           })}
-        </div>
-      )}
-
-      {/* ── Part-selection / push overlay ───────────────────────────────────── */}
-      {selUnit && (() => {
-        const all = unitParts(selUnit.id);
-        const uncheckedCount = all.filter((p) => !selPartIds.has(p.id)).length;
-        return (
-          <div style={{ position: 'fixed', inset: 0, zIndex: 300, background: 'var(--bg-0, #07090b)', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ padding: '18px 20px', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 12 }}>
-              <button onClick={closeSelection} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }}>
-                <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>{selUnit.unit_label}</div>
-            </div>
-
-            <div style={{ flex: 1, overflowY: 'auto', padding: '20px' }}>
-              {overlayStep === 'select' ? (
-                <>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)', marginBottom: 14 }}>Select the parts YOU are building:</div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {all.map((p) => {
-                      const checked = selPartIds.has(p.id);
-                      return (
-                        <button key={p.id} onClick={() => togglePart(p.id)}
-                          style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', borderRadius: 12, background: checked ? 'rgba(94,234,212,0.08)' : 'var(--bg-1)', border: `1px solid ${checked ? 'rgba(94,234,212,0.3)' : 'var(--line)'}`, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', width: '100%' }}>
-                          <div style={{ width: 24, height: 24, borderRadius: 6, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${checked ? 'var(--teal)' : 'var(--ink-mute)'}`, background: checked ? 'var(--teal)' : 'transparent' }}>
-                            {checked && <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#04201c" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
-                          </div>
-                          <span style={{ fontSize: 14, color: p.flag_type ? '#F87171' : 'var(--ink)', minWidth: 0 }}>{partLabel(p)}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)', marginBottom: 6 }}>Push {uncheckedCount} remaining part{uncheckedCount === 1 ? '' : 's'} to another dept?</div>
-                  <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginBottom: 18 }}>The parts you unchecked will become a separate ticket for the chosen department.</div>
-                  <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--ink-mute)', marginBottom: 10 }}>Send to</div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {PUSH_DEPTS.map((d) => (
-                      <button key={d} onClick={() => setPushDept(d)}
-                        style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', borderRadius: 12, background: pushDept === d ? 'rgba(94,234,212,0.08)' : 'var(--bg-1)', border: `1px solid ${pushDept === d ? 'rgba(94,234,212,0.3)' : 'var(--line)'}`, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', width: '100%' }}>
-                        <span style={{ color: pushDept === d ? 'var(--teal)' : 'var(--ink-mute)', display: 'flex' }}><IcoPush /></span>
-                        <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--ink)' }}>{d}</span>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Footer actions */}
-            <div style={{ padding: '16px 20px', borderTop: '1px solid var(--line)', display: 'flex', gap: 10 }}>
-              {overlayStep === 'select' ? (
-                <button className="btn btn-primary" disabled={splitting} onClick={() => {
-                  if (uncheckedCount > 0) setOverlayStep('push');
-                  else void confirmSelection(false); // everything kept
-                }} style={{ flex: 1, justifyContent: 'center', opacity: splitting ? 0.6 : 1 }}>
-                  Confirm selection
-                </button>
-              ) : (
-                <>
-                  <button disabled={splitting} onClick={() => void confirmSelection(false)}
-                    style={{ flex: 1, justifyContent: 'center', display: 'flex', alignItems: 'center', padding: '12px', borderRadius: 10, background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink-dim)', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
-                    Keep all in Craftsman
-                  </button>
-                  <button className="btn btn-primary" disabled={splitting} onClick={() => void confirmSelection(true)} style={{ flex: 1, justifyContent: 'center', opacity: splitting ? 0.6 : 1 }}>
-                    {splitting ? 'Pushing…' : 'Push parts'}
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* ── Split success confirmation (auto-dismiss) ───────────────────────── */}
-      {success && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 320, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-          <div style={{ background: '#0a0d10', border: '1px solid var(--line-strong)', borderRadius: 20, padding: 32, textAlign: 'center', maxWidth: 360 }}>
-            <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(52,211,153,0.12)', color: '#34D399', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-              <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            </div>
-            <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--ink)', marginBottom: 8 }}>Parts split successfully</div>
-            <div style={{ fontSize: 14, color: 'var(--ink-dim)' }}>{success.kept} part{success.kept === 1 ? '' : 's'} staying in Craftsman</div>
-            <div style={{ fontSize: 14, color: 'var(--ink-dim)' }}>{success.pushed} part{success.pushed === 1 ? '' : 's'} sent to {success.dept}</div>
-          </div>
         </div>
       )}
     </div>

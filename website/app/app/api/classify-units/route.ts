@@ -298,12 +298,20 @@ Return ONLY a valid JSON array:
   }
 
   // ── STEP 3 — apply assignments ──────────────────────────────────────────────
+  // Every cabinet_unit gets assigned_dept = 'craftsman' OR 'production'. Nothing
+  // else. Every part inherits its cabinet's dept on upload. production_status is
+  // never written here.
   let classified = 0;
   for (const [unitId, c] of decided) {
+    const dept = c.dept === 'craftsman' ? 'craftsman' : 'production';
     try {
-      await db.from('cabinet_units').update({ assigned_dept: c.dept }).eq('id', unitId).eq('tenant_id', tenantId);
+      await db.from('cabinet_units').update({ assigned_dept: dept }).eq('id', unitId).eq('tenant_id', tenantId);
       classified++;
     } catch { /* skip this unit */ }
+    // Parts inherit the cabinet's dept on upload.
+    try {
+      await db.from('parts').update({ assigned_dept: dept }).eq('cabinet_unit_id', unitId).eq('tenant_id', tenantId);
+    } catch { /* best-effort */ }
   }
 
   // ── STEP 4 — upsert learned patterns ────────────────────────────────────────

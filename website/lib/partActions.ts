@@ -1,13 +1,19 @@
-// Shared logic for reassigning ("pushing") a single part to another department,
-// keeping the owning cabinet's split/completion state correct, and looking up the
-// drawings that belong to a cabinet. Used by every part surface (production cut
-// view, assembly checklist, craftsman builds, supervisor assembly tab).
+// Single source of truth for moving a part between departments.
+//
+// THE MODEL — a part lives in exactly one place at a time:
+//   parts.assigned_dept = 'production' | 'craftsman' | 'finishing' | 'assembly' | 'qc' | 'complete'
+//   parts.status        = 'pending' | 'complete'
+// A cabinet's assigned_dept is the majority dept of its parts (recomputed on
+// every push). production_status is never read or written here.
+//
+// pushPart() is the one function that performs a dept transition. PushPicker (and
+// the legacy pushPartToDept wrapper) call it.
 
 import { supabase } from './supabase';
 import { sendNotify } from './notify';
 import type { ViewerFile } from '@/components/FileViewer';
 
-export const PART_DEPTS = ['Production', 'Assembly', 'Craftsman', 'Finishing'] as const;
+export const PART_DEPTS = ['Production', 'Craftsman', 'Finishing', 'Assembly'] as const;
 export type PartDept = (typeof PART_DEPTS)[number];
 
 // Title-case a stored dept value ('craftsman' → 'Craftsman').
@@ -17,46 +23,90 @@ export function deptDisplay(dept: string | null | undefined): string {
   return dept.charAt(0).toUpperCase() + dept.slice(1);
 }
 
-const CRAFTSMAN_KEYWORDS = [
-  'countertop', 'counter top', 'butcher block', 'slab', 'floating shelf', 'float shelf',
-  'vent hood', 'range hood', 'hood', 'wine rack', 'mantle', 'mantel', 'fireplace',
-  'surround', 'bench seat', 'window seat', 'bench', 'corbel', 'waterfall', 'display',
-  'custom', 'trim', 'panel slab',
-];
-function patternFromLabel(label: string): string {
-  const lower = (label || '').toLowerCase();
-  for (const kw of CRAFTSMAN_KEYWORDS) if (lower.includes(kw)) return kw;
-  const words = lower.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter((w) => w.length > 3);
-  return words.sort((a, b) => b.length - a.length)[0] ?? lower.trim().slice(0, 40);
+// ── Routing pattern learning ──────────────────────────────────────────────────
+// Derive a reusable pattern from a part name: lowercase, drop dimensions and
+// punctuation, keep the meaningful words. "Base 24 Door 23.5x30" → "base door".
+const STOP_WORDS = new Set(['the', 'and', 'for', 'with', 'qty', 'pcs', 'pc', 'x']);
+export function patternFromPartName(name: string): string {
+  const cleaned = (name || '')
+    .toLowerCase()
+    .replace(/[0-9]+(\.[0-9]+)?/g, ' ')   // strip dimension numbers
+    .replace(/["'#x×]/g, ' ')             // strip quote/× separators
+    .replace(/[^a-z\s]/g, ' ');           // strip remaining punctuation
+  const words = cleaned.split(/\s+/).filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+  const pattern = words.slice(0, 4).join(' ').trim();
+  return pattern || (name || '').trim().toLowerCase().slice(0, 40);
 }
 
-// Upsert one (label-pattern, part-pattern, dept) confirmation into the learning table.
-async function learnPattern(tenantId: string, labelPattern: string, partName: string, dept: string, confirmedBy: string) {
-  const part_name_pattern = (partName || '').trim().toLowerCase();
+// Upsert one confirmed push into part_routing_patterns and recompute the
+// confidence for every destination sharing this (pattern, from_dept).
+async function learnRouting(tenantId: string, partName: string, fromDept: string, toDept: string): Promise<void> {
+  const pattern = patternFromPartName(partName);
+  if (!pattern) return;
   try {
     const { data: existing } = await supabase
-      .from('craftsman_classifications')
+      .from('part_routing_patterns')
       .select('id, times_confirmed')
       .eq('tenant_id', tenantId)
-      .eq('unit_label_pattern', labelPattern)
-      .eq('part_name_pattern', part_name_pattern)
-      .eq('assigned_dept', dept)
+      .eq('part_name_pattern', pattern)
+      .eq('from_dept', fromDept)
+      .eq('to_dept', toDept)
       .maybeSingle();
     if (existing) {
-      await supabase.from('craftsman_classifications')
-        .update({ times_confirmed: ((existing as { times_confirmed: number }).times_confirmed ?? 0) + 1, confirmed_by: confirmedBy, updated_at: new Date().toISOString() })
+      await supabase.from('part_routing_patterns')
+        .update({ times_confirmed: ((existing as { times_confirmed: number }).times_confirmed ?? 0) + 1, updated_at: new Date().toISOString() })
         .eq('id', (existing as { id: string }).id);
     } else {
-      await supabase.from('craftsman_classifications').insert({
-        tenant_id: tenantId, unit_label_pattern: labelPattern, part_name_pattern,
-        assigned_dept: dept, confirmed_by: confirmedBy, times_confirmed: 1,
+      await supabase.from('part_routing_patterns').insert({
+        tenant_id: tenantId, part_name_pattern: pattern,
+        from_dept: fromDept, to_dept: toDept, times_confirmed: 1, confidence_score: 1,
       });
+    }
+
+    // Recompute confidence = times_confirmed / total pushes for this (pattern, from_dept).
+    const { data: siblings } = await supabase
+      .from('part_routing_patterns')
+      .select('id, times_confirmed')
+      .eq('tenant_id', tenantId)
+      .eq('part_name_pattern', pattern)
+      .eq('from_dept', fromDept);
+    const rows = (siblings as { id: string; times_confirmed: number }[] | null) ?? [];
+    const total = rows.reduce((s, r) => s + (r.times_confirmed ?? 0), 0);
+    if (total > 0) {
+      await Promise.all(rows.map((r) =>
+        supabase.from('part_routing_patterns')
+          .update({ confidence_score: Math.round(((r.times_confirmed ?? 0) / total) * 1000) / 1000 })
+          .eq('id', r.id),
+      ));
     }
   } catch { /* learning is best-effort */ }
 }
 
-// Recompute a cabinet's split state + assigned_dept from its parts, and roll the
-// cabinet up to 'complete' when every part is complete (regardless of dept).
+// The Push Picker's suggested destination for a part: highest-confidence learned
+// route for this (part name pattern, from dept). null = no suggestion yet.
+export async function suggestedDestination(tenantId: string, partName: string, fromDept: string): Promise<string | null> {
+  const pattern = patternFromPartName(partName);
+  if (!pattern) return null;
+  try {
+    const { data } = await supabase
+      .from('part_routing_patterns')
+      .select('to_dept, confidence_score, times_confirmed')
+      .eq('tenant_id', tenantId)
+      .eq('part_name_pattern', pattern)
+      .eq('from_dept', fromDept)
+      .order('confidence_score', { ascending: false })
+      .order('times_confirmed', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return (data as { to_dept: string } | null)?.to_dept ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Cabinet recompute ─────────────────────────────────────────────────────────
+// Recompute a cabinet's assigned_dept as the majority dept of its parts, and roll
+// the cabinet up to 'complete' once every part is complete.
 export async function recomputeCabinet(tenantId: string, cabinetUnitId: string): Promise<void> {
   try {
     const [{ data: cab }, { data: partRows }] = await Promise.all([
@@ -67,17 +117,17 @@ export async function recomputeCabinet(tenantId: string, cabinetUnitId: string):
     const parts = (partRows as { assigned_dept: string | null; status: string | null }[] | null) ?? [];
     if (parts.length === 0) return;
 
-    const baseDept = cabRow?.assigned_dept && cabRow.assigned_dept !== 'split' ? cabRow.assigned_dept : 'production';
-    const effective = new Set(parts.map((p) => (p.assigned_dept || baseDept)));
-    const update: Record<string, unknown> = {};
-    if (effective.size > 1) {
-      update.is_split = true;
-      update.assigned_dept = 'split';
-    } else {
-      update.is_split = false;
-      update.assigned_dept = Array.from(effective)[0] ?? baseDept;
+    // Majority dept among parts (ties broken by first-seen).
+    const counts = new Map<string, number>();
+    for (const p of parts) {
+      const d = p.assigned_dept || 'production';
+      counts.set(d, (counts.get(d) ?? 0) + 1);
     }
-    // Completion: all parts complete → cabinet complete (never downgrade a complete cabinet).
+    let majority = 'production';
+    let best = -1;
+    for (const [dept, n] of counts) { if (n > best) { best = n; majority = dept; } }
+
+    const update: Record<string, unknown> = { assigned_dept: majority };
     const allComplete = parts.every((p) => p.status === 'complete');
     if (allComplete && cabRow?.status !== 'complete') {
       update.status = 'complete';
@@ -87,7 +137,112 @@ export async function recomputeCabinet(tenantId: string, cabinetUnitId: string):
   } catch { /* best-effort */ }
 }
 
-// Push a single part to another department.
+// ── pushPart — THE single dept-transition function ───────────────────────────
+// Step 1 (reassign the part) must succeed or throw. Every later step is
+// best-effort and isolated so a failure in one never blocks the others.
+export async function pushPart(opts: {
+  tenantId: string;
+  partId: string;
+  partName: string;
+  cabinetUnitId: string;
+  jobNumber: string | null;
+  fromDept: string;
+  toDept: string;
+  workerName: string;
+  timeClockId: string | null;
+}): Promise<void> {
+  const fromDept = (opts.fromDept || '').toLowerCase();
+  const toDept = (opts.toDept || '').toLowerCase();
+
+  // 1. Reassign the part — must succeed.
+  const { error } = await supabase.from('parts')
+    .update({ assigned_dept: toDept, status: toDept === 'complete' ? 'complete' : 'pending' })
+    .eq('id', opts.partId).eq('tenant_id', opts.tenantId);
+  if (error) throw error;
+
+  // 2. Log the transition.
+  try {
+    await supabase.from('part_dept_events').insert({
+      tenant_id: opts.tenantId,
+      part_id: opts.partId,
+      cabinet_unit_id: opts.cabinetUnitId,
+      job_number: opts.jobNumber ?? null,
+      from_dept: fromDept || null,
+      to_dept: toDept,
+      worker_name: opts.workerName || null,
+    });
+  } catch { /* best-effort */ }
+
+  // 3. Recompute the cabinet's majority dept (+ completion rollup).
+  try { await recomputeCabinet(opts.tenantId, opts.cabinetUnitId); } catch { /* best-effort */ }
+
+  // 4. Learn the push.
+  try { await learnRouting(opts.tenantId, opts.partName, fromDept, toDept); } catch { /* best-effort */ }
+
+  // 5. Assembly rollup — when every part is in assembly/complete, the cabinet is
+  //    ready for the supervisor's QC gate.
+  if (toDept === 'assembly') {
+    try {
+      const { data } = await supabase.from('parts')
+        .select('assigned_dept, status').eq('cabinet_unit_id', opts.cabinetUnitId).eq('tenant_id', opts.tenantId);
+      const rows = (data as { assigned_dept: string | null; status: string | null }[] | null) ?? [];
+      const ready = rows.length > 0 && rows.every((p) => p.assigned_dept === 'assembly' || p.assigned_dept === 'complete' || p.status === 'complete');
+      if (ready) {
+        await supabase.from('cabinet_units').update({ status: 'ready_for_qc', assigned_dept: 'qc' }).eq('id', opts.cabinetUnitId);
+        const body = `${opts.partName ? 'Cabinet' : 'A cabinet'}${opts.jobNumber ? ` — Job ${opts.jobNumber}` : ''} is ready for QC`;
+        sendNotify({ tenant_id: opts.tenantId, target: 'supervisor', title: 'Ready for QC', body, url: '/app/supervisor' });
+      }
+    } catch { /* best-effort */ }
+  }
+
+  // 6. Job completion rollup — when every cabinet in the job is complete.
+  if (toDept === 'complete' && opts.jobNumber) {
+    try {
+      const { data } = await supabase.from('cabinet_units')
+        .select('status').eq('tenant_id', opts.tenantId).eq('job_number', opts.jobNumber);
+      const rows = (data as { status: string | null }[] | null) ?? [];
+      if (rows.length > 0 && rows.every((r) => r.status === 'complete')) {
+        try { await supabase.from('jobs').update({ status: 'complete' }).eq('tenant_id', opts.tenantId).eq('job_number', opts.jobNumber); } catch { /* best-effort */ }
+        try { await supabase.from('jobs').update({ completed_at: new Date().toISOString() }).eq('tenant_id', opts.tenantId).eq('job_number', opts.jobNumber); } catch { /* column optional */ }
+        sendNotify({ tenant_id: opts.tenantId, target: 'supervisor', title: 'Job complete', body: `Job ${opts.jobNumber} is complete`, url: '/app/supervisor' });
+      }
+    } catch { /* best-effort */ }
+  }
+
+  // 7. Shift event log.
+  try {
+    await supabase.from('shift_events').insert({
+      tenant_id: opts.tenantId,
+      time_clock_id: opts.timeClockId ?? null,
+      worker_name: opts.workerName || 'Crew',
+      event_type: 'part_pushed',
+      dept: deptDisplay(toDept),
+      previous_dept: fromDept ? deptDisplay(fromDept) : null,
+      metadata: {
+        part_name: opts.partName,
+        from_dept: fromDept || null,
+        to_dept: toDept,
+        cabinet_unit_id: opts.cabinetUnitId,
+        job_number: opts.jobNumber ?? null,
+      },
+    });
+  } catch { /* best-effort */ }
+
+  // 8. Notify the destination dept's crew.
+  if (toDept !== 'complete') {
+    sendNotify({
+      tenant_id: opts.tenantId,
+      target: 'crew',
+      dept_target: deptDisplay(toDept),
+      title: `New work in ${deptDisplay(toDept)}`,
+      body: `${opts.partName}${opts.jobNumber ? ` — Job ${opts.jobNumber}` : ''}`,
+      url: '/app/crew',
+    });
+  }
+}
+
+// Legacy wrapper kept so existing PartPushButton callers keep compiling. Delegates
+// to pushPart (lowercasing depts, ignoring production_status).
 export async function pushPartToDept(opts: {
   tenantId: string;
   part: { id: string; part_name: string; cabinet_unit_id: string; job_number?: string | null };
@@ -98,61 +253,16 @@ export async function pushPartToDept(opts: {
   timeClockId?: string | null;
   workerName?: string;
 }): Promise<void> {
-  const toLower = opts.toDept.toLowerCase();
-  // 1. Reassign the part (this must succeed). Leaving Production means Production
-  // is done with this part, so always mark it cut — this keeps the production cut
-  // queue unambiguous (a part is either still to-cut in Production, or it's gone).
-  const update: Record<string, unknown> = { assigned_dept: toLower, production_status: 'cut' };
-  const { error } = await supabase.from('parts').update(update).eq('id', opts.part.id).eq('tenant_id', opts.tenantId);
-  if (error) throw error;
-
-  // 1b. part_dept_events — a timestamped log of every dept transition, the
-  // foundation for time-in-dept tracking and bottleneck detection.
-  try {
-    await supabase.from('part_dept_events').insert({
-      tenant_id: opts.tenantId,
-      part_id: opts.part.id,
-      cabinet_unit_id: opts.part.cabinet_unit_id,
-      job_number: opts.part.job_number ?? null,
-      from_dept: opts.fromDept || null,
-      to_dept: toLower,
-      worker_name: opts.workerName || null,
-    });
-  } catch { /* best-effort */ }
-
-  // 2. shift_event (time_clock_id may be null for supervisor-initiated pushes).
-  try {
-    await supabase.from('shift_events').insert({
-      tenant_id: opts.tenantId,
-      time_clock_id: opts.timeClockId ?? null,
-      worker_name: opts.workerName || 'Supervisor',
-      event_type: 'part_reassigned',
-      dept: opts.toDept,
-      previous_dept: opts.fromDept || null,
-      metadata: {
-        part_name: opts.part.part_name,
-        from_dept: opts.fromDept || null,
-        to_dept: opts.toDept,
-        cabinet_unit_id: opts.part.cabinet_unit_id,
-        job_number: opts.part.job_number ?? null,
-      },
-    });
-  } catch { /* best-effort */ }
-
-  // 3. Shop learning.
-  void learnPattern(opts.tenantId, patternFromLabel(opts.unitLabel || ''), opts.part.part_name, toLower, opts.workerName || 'Supervisor');
-
-  // 4. Recompute the cabinet's split + completion state.
-  await recomputeCabinet(opts.tenantId, opts.part.cabinet_unit_id);
-
-  // 5. Notify the supervisor.
-  const jobLabel = opts.jobPath ? opts.jobPath.split('/').map((s) => s.trim()).join(' / ') : (opts.part.job_number ?? 'job');
-  sendNotify({
-    tenant_id: opts.tenantId,
-    target: 'supervisor',
-    title: 'Part reassigned',
-    body: `${opts.part.part_name} pushed from ${opts.fromDept || 'a dept'} to ${opts.toDept} on ${jobLabel}`,
-    url: '/app/supervisor',
+  await pushPart({
+    tenantId: opts.tenantId,
+    partId: opts.part.id,
+    partName: opts.part.part_name,
+    cabinetUnitId: opts.part.cabinet_unit_id,
+    jobNumber: opts.part.job_number ?? null,
+    fromDept: opts.fromDept,
+    toDept: opts.toDept,
+    workerName: opts.workerName || 'Supervisor',
+    timeClockId: opts.timeClockId ?? null,
   });
 }
 

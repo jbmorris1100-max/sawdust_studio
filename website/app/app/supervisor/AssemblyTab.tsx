@@ -213,7 +213,18 @@ type PushCtx = {
   onToast: (msg: string, error?: boolean) => void;
   onPushed: (partId: string) => void;
 };
-function PartsList({ parts, pushCtx }: { parts: AssemblyPart[]; pushCtx?: PushCtx }) {
+// "in 3h 12m" style label for how long a part has sat in its current dept.
+function timeInDept(enteredAt: string | undefined): string | null {
+  if (!enteredAt) return null;
+  const mins = Math.floor((Date.now() - new Date(enteredAt).getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+function PartsList({ parts, pushCtx, enteredAt }: { parts: AssemblyPart[]; pushCtx?: PushCtx; enteredAt?: Record<string, string> }) {
   if (parts.length === 0) {
     return <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', padding: '8px 0' }}>No parts loaded for this unit.</div>;
   }
@@ -232,7 +243,12 @@ function PartsList({ parts, pushCtx }: { parts: AssemblyPart[]; pushCtx?: PushCt
                 {dimLabel(part)}{part.material ? (dimLabel(part) ? ` · ${part.material}` : part.material) : ''}
               </div>
             )}
-            {part.assigned_dept && <div style={{ fontSize: 10.5, color: 'var(--ink-mute)', marginTop: 1 }}>{deptDisplay(part.assigned_dept)}</div>}
+            {part.assigned_dept && (
+              <div style={{ fontSize: 10.5, color: 'var(--ink-mute)', marginTop: 1 }}>
+                {deptDisplay(part.assigned_dept)}
+                {timeInDept(enteredAt?.[part.id]) ? <span style={{ color: '#8BA5A0' }}>{` · ${timeInDept(enteredAt?.[part.id])} in dept`}</span> : null}
+              </div>
+            )}
             {part.flag_type && (
               <div style={{ fontSize: 11, color: '#F87171', marginTop: 2 }}>
                 {part.flag_type.replace('_', ' ')}{part.flag_notes ? ` — ${part.flag_notes}` : ''}
@@ -273,6 +289,8 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
   const deptOptions = departments && departments.length ? departments : DEFAULT_DEPARTMENTS;
   const [units,       setUnits]       = useState<CabinetUnit[]>([]);
   const [allParts,    setAllParts]    = useState<AssemblyPart[]>([]);
+  // partId → ISO timestamp the part entered its current dept (latest dept event).
+  const [enteredAt,   setEnteredAt]   = useState<Record<string, string>>({});
   const [loading,     setLoading]     = useState(true);
   // Drill-down expansion — only one branch open per level (Job → Room → Cabinet → Parts).
   const [expandedJob,  setExpandedJob]  = useState<string | null>(null);
@@ -315,6 +333,21 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
       }
       if (unitsRes.data) setUnits(unitsRes.data as CabinetUnit[]);
       if (partsRes.data) setAllParts(partsRes.data as AssemblyPart[]);
+
+      // Latest dept transition per part → time-in-current-dept in the drill-down.
+      try {
+        const { data: evs } = await supabase
+          .from('part_dept_events')
+          .select('part_id, created_at')
+          .eq('tenant_id', tenantId)
+          .order('created_at', { ascending: false })
+          .limit(4000);
+        const map: Record<string, string> = {};
+        ((evs as { part_id: string; created_at: string }[] | null) ?? []).forEach((e) => {
+          if (!map[e.part_id]) map[e.part_id] = e.created_at;  // first seen = latest
+        });
+        setEnteredAt(map);
+      } catch { /* part_dept_events optional pre-migration */ }
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Load failed', true);
     }
@@ -694,7 +727,7 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                                             <div style={{ marginBottom: 6 }}>
                                               <ViewDrawingsButton tenantId={tenantId} jobNumber={m.job_number} cabinetKey={m.cabinet_number || m.unit_label} compact={false} />
                                             </div>
-                                            <PartsList parts={mParts} pushCtx={{ tenantId, jobNumber: m.job_number, unitLabel: m.unit_label, jobPath: jobLabelFor(jobKey), onToast: showToast, onPushed: () => {} }} />
+                                            <PartsList parts={mParts} enteredAt={enteredAt} pushCtx={{ tenantId, jobNumber: m.job_number, unitLabel: m.unit_label, jobPath: jobLabelFor(jobKey), onToast: showToast, onPushed: () => {} }} />
                                           </div>
                                         )}
                                       </div>
@@ -768,12 +801,12 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                                         <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-dim)', margin: '8px 0 2px' }}>
                                           <span style={{ color: '#A78BFA' }}>{d}</span>: {done}/{dParts.length} part{dParts.length !== 1 ? 's' : ''} complete{inProg && done < dParts.length ? ' — In Progress' : ''}
                                         </div>
-                                        <PartsList parts={dParts} pushCtx={pushCtx} />
+                                        <PartsList parts={dParts} enteredAt={enteredAt} pushCtx={pushCtx} />
                                       </div>
                                     );
                                   })
                                 ) : (
-                                  <PartsList parts={parts} pushCtx={pushCtx} />
+                                  <PartsList parts={parts} enteredAt={enteredAt} pushCtx={pushCtx} />
                                 )}
 
                                 {/* QC gate — supervisor passes or fails an assembled cabinet */}
