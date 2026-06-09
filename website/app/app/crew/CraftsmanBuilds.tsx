@@ -28,6 +28,7 @@ type CPart = {
   quantity: number;
   assigned_dept: string | null;
   flag_type: string | null;
+  flag_notes: string | null;
 };
 
 type CabInfo = { label: string; key: string };
@@ -50,19 +51,19 @@ const BUILD_KEY = 'craftsman_active_build';
 // seconds after Start so a build can't be pushed before it has really run.
 const MIN_PUSH_SECONDS = 2;
 
+// Full dimensions, e.g. 96" x 25.5" x 1.5" — never abbreviated, never hidden.
 function dimLabel(p: CPart): string {
   const parts: string[] = [];
-  if (p.width)  parts.push(`${p.width}"`);
-  if (p.height) parts.push(`${p.height}"`);
-  if (p.depth)  parts.push(`${p.depth}"`);
-  return parts.join('x');
+  if (p.width != null)  parts.push(`${p.width}"`);
+  if (p.height != null) parts.push(`${p.height}"`);
+  if (p.depth != null)  parts.push(`${p.depth}"`);
+  return parts.join(' x ');
 }
-function partLabel(p: CPart): string {
-  const bits = [p.part_name];
-  const d = dimLabel(p);
-  if (d) bits.push(d);
-  if (p.material) bits.push(p.material);
-  return bits.join(' — ');
+// Human label for a flag type ('wrong_part' → 'Wrong part').
+function flagLabel(flagType: string | null): string {
+  if (!flagType) return '';
+  const s = flagType.replace(/_/g, ' ');
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 function elapsedSeconds(startISO: string, endISO?: string | null): number {
   const end = endISO ? new Date(endISO).getTime() : Date.now();
@@ -109,7 +110,7 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
 
       const { data: partRows } = await supabase
         .from('parts')
-        .select('id, cabinet_unit_id, job_number, part_name, material, width, height, depth, quantity, assigned_dept, flag_type')
+        .select('id, cabinet_unit_id, job_number, part_name, material, width, height, depth, quantity, assigned_dept, flag_type, flag_notes')
         .eq('tenant_id', tenantId)
         .eq('assigned_dept', 'craftsman')
         .neq('status', 'complete')
@@ -315,14 +316,44 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
                             <ViewDrawingsButton tenantId={tenantId} jobNumber={c.parts[0]?.job_number ?? null} cabinetKey={info.key} compact={false} />
                           </div>
 
-                          {/* Parts on this cabinet — no per-part timers, ever */}
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
-                            {c.parts.map((p) => (
-                              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: p.flag_type ? '#F87171' : 'var(--ink-dim)' }}>
-                                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" style={{ flexShrink: 0, opacity: 0.6 }}><circle cx="12" cy="12" r="9"/></svg>
-                                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partLabel(p)}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</span>
-                              </div>
-                            ))}
+                          {/* Work order — every part's full spec, always expanded.
+                              Dimensions are critical and are never truncated or hidden. */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+                            {c.parts.map((p) => {
+                              const dims = dimLabel(p);
+                              const flagged = !!p.flag_type || !!p.flag_notes;
+                              return (
+                                <div key={p.id} style={{ padding: '11px 13px', borderRadius: 10, background: 'var(--bg-2, #0f1316)', border: `1px solid ${flagged ? 'rgba(248,113,113,0.35)' : 'var(--line)'}` }}>
+                                  {/* Part name + quantity */}
+                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                                    <span style={{ fontSize: 14, fontWeight: 700, color: flagged ? '#F87171' : 'var(--ink)' }}>{p.part_name}</span>
+                                    {p.quantity > 1 && (
+                                      <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(94,234,212,0.12)', color: 'var(--teal)' }}>Qty {p.quantity}</span>
+                                    )}
+                                  </div>
+                                  {/* Dimensions — W x H x D, prominent and full */}
+                                  {dims && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
+                                      <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="M21 3 3 21"/><path d="M3 8V3h5"/><path d="M21 16v5h-5"/></svg>
+                                      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink-dim)', fontVariantNumeric: 'tabular-nums', letterSpacing: '0.01em' }}>{dims}</span>
+                                    </div>
+                                  )}
+                                  {/* Material */}
+                                  {p.material && (
+                                    <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginTop: 4 }}>
+                                      <span style={{ fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: 10.5 }}>Material</span>{' · '}{p.material}
+                                    </div>
+                                  )}
+                                  {/* Flag notes */}
+                                  {flagged && (
+                                    <div style={{ fontSize: 12, color: '#F87171', marginTop: 5, display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                      <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                                      <span>{[flagLabel(p.flag_type), p.flag_notes].filter(Boolean).join(' — ')}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
 
                           {/* Build controls — manual start, one at a time */}
