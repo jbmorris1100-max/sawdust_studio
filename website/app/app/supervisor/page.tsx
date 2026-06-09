@@ -172,6 +172,18 @@ const PLAN_IMPORT_FIELDS: { key: string; label: string; required?: boolean }[] =
   { key: 'depth',     label: 'Depth' },
 ];
 
+// One entry in the bulk-upload queue. Files are processed sequentially through the
+// existing parse-file → map-columns → classify-units pipeline; status drives the UI.
+type MultiFileStatus = 'pending' | 'processing' | 'done' | 'error';
+type MultiFile = { id: string; file: File; status: MultiFileStatus; error?: string; units?: number };
+
+// Human-readable file size for the bulk-upload queue rows.
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
 const IcoPdf = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -696,6 +708,13 @@ export default function SupervisorPage() {
   const [planAiMapped,        setPlanAiMapped]        = useState(false);   // show "AI mapped…" banner
   const [planAiMissing,       setPlanAiMissing]       = useState<string[]>([]); // required keys AI couldn't map
   const [planCountdown,       setPlanCountdown]       = useState<number | null>(null); // auto-submit countdown
+
+  // Bulk (multi-file) upload — sequential queue, processed non-interactively.
+  const [multiQueue,      setMultiQueue]      = useState<MultiFile[]>([]);
+  const [multiProcessing, setMultiProcessing] = useState(false);
+  const [multiCurrentIdx, setMultiCurrentIdx] = useState(0);            // 1-based index shown in "Processing N of M"
+  const [multiDropHover,  setMultiDropHover]  = useState(false);
+  const [multiSummary,    setMultiSummary]    = useState<{ files: number; units: number; jobs: number; failed: number } | null>(null);
 
   // SOPs upload
   const [sopFile,       setSopFile]       = useState<File | null>(null);
@@ -1956,53 +1975,57 @@ export default function SupervisorPage() {
     ) ?? null;
   }
 
+  // Resolve the Job/Project selector into a concrete { jobNumber, jobPath },
+  // creating a new job record when "Create new job" is chosen. Returns null (and
+  // toasts the reason) when the selection is incomplete. Shared by the single
+  // upload and the bulk (multi-file) upload so both resolve the job identically.
+  async function resolvePlanJobContext(): Promise<{ jobNumber: string; jobPath: string | null } | null> {
+    if (!tenant) return null;
+    if (planJobId === '__new__') {
+      // Create a new job record first, then attach the file(s) to it.
+      const client = toTitleCase(planNewClient.trim());
+      const room   = toTitleCase(planNewRoom.trim());
+      if (!client) { showToast('Client name is required for a new job', true); return null; }
+      const jobPath = room ? `${client}/${room}` : client;
+      try {
+        const insert: Record<string, unknown> = {
+          job_number:  jobPath,
+          job_name:    room ? `${client} — ${room}` : client,
+          client_name: client,
+          job_path:    jobPath,
+          status:      'active',
+          tenant_id:   tenant.id,
+        };
+        if (room) insert.room_name = room;
+        const { data, error } = await supabase
+          .from('jobs')
+          .insert(insert)
+          .select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, install_date')
+          .single();
+        if (error) throw error;
+        const created = data as Job;
+        setJobs((prev) => [created, ...prev]);
+        return { jobNumber: created.job_number, jobPath: created.job_path ?? jobPath };
+      } catch (err: unknown) {
+        showToast(err instanceof Error ? err.message : 'Could not create job', true);
+        return null;
+      }
+    } else if (planJobId) {
+      const job = jobs.find((j) => j.id === planJobId);
+      if (!job) { showToast('Select a job or create a new one', true); return null; }
+      return { jobNumber: job.job_number, jobPath: job.job_path ?? job.job_name ?? null };
+    }
+    showToast('Select a job or create a new one', true);
+    return null;
+  }
+
   // Resolve the job context (existing or freshly-created) then upload.
   async function handlePlanUpload() {
     if (!planFile || planUploading || !tenant) return;
     try {
-      let jobNumber = '';
-      let jobPath: string | null = null;
-
-      if (planJobId === '__new__') {
-        // Create a new job record first, then attach the file to it.
-        const client = toTitleCase(planNewClient.trim());
-        const room   = toTitleCase(planNewRoom.trim());
-        if (!client) { showToast('Client name is required for a new job', true); return; }
-        jobPath   = room ? `${client}/${room}` : client;
-        jobNumber = jobPath;
-        try {
-          const insert: Record<string, unknown> = {
-            job_number:  jobNumber,
-            job_name:    room ? `${client} — ${room}` : client,
-            client_name: client,
-            job_path:    jobPath,
-            status:      'active',
-            tenant_id:   tenant.id,
-          };
-          if (room) insert.room_name = room;
-          const { data, error } = await supabase
-            .from('jobs')
-            .insert(insert)
-            .select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, install_date')
-            .single();
-          if (error) throw error;
-          const created = data as Job;
-          setJobs((prev) => [created, ...prev]);
-          jobNumber = created.job_number;
-          jobPath   = created.job_path ?? jobPath;
-        } catch (err: unknown) {
-          showToast(err instanceof Error ? err.message : 'Could not create job', true);
-          return;
-        }
-      } else if (planJobId) {
-        const job = jobs.find((j) => j.id === planJobId);
-        if (!job) { showToast('Select a job or create a new one', true); return; }
-        jobNumber = job.job_number;
-        jobPath   = job.job_path ?? job.job_name ?? null;
-      } else {
-        showToast('Select a job or create a new one', true);
-        return;
-      }
+      const ctx = await resolvePlanJobContext();
+      if (!ctx) return;
+      const { jobNumber, jobPath } = ctx;
 
       // A current plan with the same job + name already exists → ask how to proceed.
       const dup = findDuplicatePlan(jobNumber);
@@ -2300,6 +2323,198 @@ export default function SupervisorPage() {
     } finally {
       setPlanParsing(false);
     }
+  }
+
+  // ── Bulk (multi-file) upload ──────────────────────────────────────────────
+  // Each file runs through the same parse-file → map-columns → classify-units
+  // pipeline as the single upload, but non-interactively: the AI column mapping
+  // is auto-applied, and a file whose required columns can't be detected is
+  // surfaced as an error rather than blocking the queue.
+
+  // Create cabinet_units + parts from parsed CSV rows using a resolved column map.
+  // Returns the number of units created. Mirrors the unit/part build in
+  // handlePlanParse but takes an explicit map so it can run without the UI mapper.
+  async function importCsvUnits(
+    rows: CsvRow[],
+    map: { unit_id: string; part_name: string; room: string; material: string; width: string; height: string; depth: string },
+    jobNumber: string,
+  ): Promise<number> {
+    const job = jobs.find((j) => j.job_number === jobNumber); // optional link to jobs row
+    const unitGroups: Record<string, CsvRow[]> = {};
+    rows.forEach((row) => {
+      const v = row[map.unit_id]?.trim();
+      if (!v) return;
+      (unitGroups[v] ??= []).push(row);
+    });
+
+    let unitsInserted = 0;
+    for (const [unitVal, groupRows] of Object.entries(unitGroups)) {
+      const segments = unitVal.split('/').map((s) => s.trim());
+      let room_number: string | null = null;
+      let cabinet_number: string | null = null;
+      if (segments.length >= 3) {
+        room_number    = segments[1] || null;
+        cabinet_number = segments[2] || null;
+      } else if (map.room && groupRows[0]?.[map.room]) {
+        room_number = groupRows[0][map.room]?.trim() || null;
+      }
+
+      const { data: unitData, error: unitErr } = await supabase
+        .from('cabinet_units')
+        .insert({
+          tenant_id:      tenant!.id,
+          job_id:         job?.id ?? null,
+          job_number:     jobNumber,
+          room_number,
+          cabinet_number,
+          unit_label:     unitVal,
+          status:         'pending',
+        })
+        .select('id')
+        .single();
+      if (unitErr) throw unitErr;
+      unitsInserted++;
+
+      const partRows = groupRows.map((row) => ({
+        tenant_id:       tenant!.id,
+        cabinet_unit_id: unitData.id,
+        job_number:      jobNumber,
+        part_name:       row[map.part_name]?.trim() || 'Unknown part',
+        material:        map.material ? (row[map.material]?.trim() || null) : null,
+        width:           map.width  ? (parseFloat(row[map.width]  ?? '') || null) : null,
+        height:          map.height ? (parseFloat(row[map.height] ?? '') || null) : null,
+        depth:           map.depth  ? (parseFloat(row[map.depth]  ?? '') || null) : null,
+        quantity:        1,
+        status:          'pending',
+      }));
+      const { error: partsErr } = await supabase.from('parts').insert(partRows);
+      if (partsErr) throw partsErr;
+    }
+    return unitsInserted;
+  }
+
+  // Upload + record one file, then (for CSVs) auto-map and build the cut list.
+  // Throws on any failure so the batch driver can mark the row as an error.
+  async function processBatchFile(file: File, jobNumber: string, jobPath: string | null): Promise<number> {
+    const ext      = (file.name.split('.').pop() ?? 'bin').toLowerCase();
+    const fileType = detectPlanFileType(ext);
+    const path     = `${tenant!.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+    const { error: uploadErr } = await supabase.storage.from('job-plans').upload(path, file, { upsert: true });
+    if (uploadErr) throw uploadErr;
+    const { data: { publicUrl } } = supabase.storage.from('job-plans').getPublicUrl(path);
+
+    const insert: Record<string, unknown> = {
+      tenant_id:   tenant!.id,
+      job_id:      jobNumber.trim(),          // job_id is NOT NULL — mirror the job/project value
+      job_number:  jobNumber.trim(),
+      label:       file.name,                 // label is NOT NULL — bulk uploads use the file name
+      file_url:    publicUrl,
+      file_name:   file.name,
+      file_type:   fileType,
+      departments: planDepts.length ? planDepts : ['all'],
+      uploaded_by: 'Supervisor',
+      version:     1,
+      is_current:  true,
+    };
+    if (jobPath) insert.job_path = jobPath;
+    const { data: inserted, error: dbErr } = await supabase.from('job_drawings').insert(insert).select(JOB_DRAWING_COLS).single();
+    if (dbErr) throw dbErr;
+    const drawing = inserted as JobDrawing;
+    setPlans((prev) => [drawing, ...prev]);
+
+    // Non-CSV files are just stored — no cut list to build.
+    if (fileType !== 'csv') return 0;
+
+    const text = await file.text();
+    const { headers, rows } = parsePlanCSV(text);
+    if (headers.length === 0) throw new Error('CSV looks empty — nothing to map');
+
+    // Auto-detect the column mapping via the AI mapper (map-columns endpoint).
+    let ai: Record<string, string | null> = {};
+    try {
+      const res = await fetch('/app/api/map-columns', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ headers, sampleRows: rows.slice(0, 3) }),
+      });
+      if (res.ok) ai = await res.json() as Record<string, string | null>;
+    } catch { /* fall through — validated below */ }
+
+    const pick = (v: string | null | undefined) => (typeof v === 'string' && headers.includes(v)) ? v : '';
+    const map = {
+      unit_id:   pick(ai.cabinet_unit_id),
+      part_name: pick(ai.part_name),
+      room:      pick(ai.room),
+      material:  pick(ai.material),
+      width:     pick(ai.width),
+      height:    pick(ai.height),
+      depth:     pick(ai.depth),
+    };
+    if (!map.unit_id || !map.part_name) {
+      throw new Error('Couldn’t auto-detect Cabinet ID / Part Name columns — upload this file on its own to map manually');
+    }
+
+    const units = await importCsvUnits(rows, map, jobNumber);
+
+    try {
+      await supabase.from('job_drawings').update({ parsed: true }).eq('id', drawing.id);
+      setPlans((prev) => prev.map((p) => p.id === drawing.id ? { ...p, parsed: true } : p));
+    } catch { /* parsed flag is best-effort */ }
+
+    // Fire-and-forget AI classification — assigns each new unit to craftsman vs
+    // standard production. Never awaited, never blocks the queue.
+    try {
+      void fetch('/app/api/classify-units', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tenantId: tenant!.id, jobNumber }),
+      }).catch(() => {});
+    } catch { /* classification unavailable — ignore */ }
+
+    return units;
+  }
+
+  // Drive the bulk upload: resolve the job once, then process files sequentially
+  // so the API isn't hammered. Each file's outcome updates its queue row; the run
+  // ends with a summary and one failure never stops the rest.
+  async function runMultiUpload(files: File[]) {
+    if (!tenant || multiProcessing || files.length === 0) return;
+    const ctx = await resolvePlanJobContext();
+    if (!ctx) return;
+    const { jobNumber, jobPath } = ctx;
+
+    const queue: MultiFile[] = files.map((f, i) => ({ id: `${Date.now()}-${i}-${f.name}`, file: f, status: 'pending' as const }));
+    setMultiSummary(null);
+    setMultiQueue(queue);
+    setMultiProcessing(true);
+
+    let totalUnits = 0;
+    let okCount    = 0;
+    let failCount  = 0;
+    const jobsTouched = new Set<string>();
+
+    for (let i = 0; i < queue.length; i++) {
+      setMultiCurrentIdx(i + 1);
+      setMultiQueue((prev) => prev.map((q, idx) => idx === i ? { ...q, status: 'processing' } : q));
+      try {
+        const units = await processBatchFile(queue[i].file, jobNumber, jobPath);
+        totalUnits += units;
+        okCount++;
+        jobsTouched.add(jobNumber);
+        setMultiQueue((prev) => prev.map((q, idx) => idx === i ? { ...q, status: 'done', units } : q));
+      } catch (err: unknown) {
+        failCount++;
+        const msg = err instanceof Error ? err.message : 'Upload failed';
+        setMultiQueue((prev) => prev.map((q, idx) => idx === i ? { ...q, status: 'error', error: msg } : q));
+      }
+    }
+
+    setMultiProcessing(false);
+    setMultiCurrentIdx(0);
+    setMultiSummary({ files: okCount, units: totalUnits, jobs: jobsTouched.size, failed: failCount });
+    resetPlanJobSelector();
+    setPlanDepts(['all']);
   }
 
   async function handlePlanDelete(id: string) {
@@ -3902,6 +4117,107 @@ export default function SupervisorPage() {
                 >
                   {planUploading ? 'Uploading…' : 'Upload Plan'}
                 </button>
+              </div>
+
+              {/* ── Bulk upload — multiple files, processed sequentially ───────── */}
+              <div className="portal-card">
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 4 }}>Bulk Upload</div>
+                <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6 }}>
+                  Drop or select multiple files at once. Each file is uploaded to the <strong style={{ color: 'var(--ink-dim)' }}>Job / Project selected above</strong> and processed one at a time — CSV cut lists have their columns mapped automatically.
+                </p>
+
+                <div
+                  onDragOver={(e) => { e.preventDefault(); if (!multiProcessing) setMultiDropHover(true); }}
+                  onDragLeave={() => setMultiDropHover(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setMultiDropHover(false);
+                    if (multiProcessing) return;
+                    const fs = Array.from(e.dataTransfer.files ?? []);
+                    if (fs.length) void runMultiUpload(fs);
+                  }}
+                  style={{
+                    position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    gap: 8, width: '100%', padding: 28, borderRadius: 12,
+                    cursor: multiProcessing ? 'default' : 'pointer',
+                    border: `1.5px dashed ${multiDropHover ? '#5EEAD4' : '#2DE1C9'}`,
+                    background: multiDropHover ? '#13302d' : '#0f1f1e',
+                    opacity: multiProcessing ? 0.6 : 1,
+                    transition: 'border-color 120ms ease, background 120ms ease',
+                  }}
+                >
+                  <input
+                    type="file"
+                    multiple
+                    accept=".csv,.xlsx,.xls,.pdf,.svg,.png,.jpg,.jpeg,.html"
+                    disabled={multiProcessing}
+                    onChange={(e) => {
+                      const fs = Array.from(e.target.files ?? []);
+                      e.target.value = '';
+                      if (fs.length) void runMultiUpload(fs);
+                    }}
+                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: multiProcessing ? 'default' : 'pointer' }}
+                  />
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#2DE1C9" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
+                  <span style={{ fontSize: 14, color: '#2DE1C9' }}>Drop files here or tap to browse</span>
+                  <span style={{ fontSize: 11, color: '#8BA5A0', textAlign: 'center' }}>CSV, PDF, SVG, HTML, images, spreadsheets — multiple at once</span>
+                </div>
+
+                {/* Progress indicator while the queue runs */}
+                {multiProcessing && multiQueue.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginTop: 12, fontSize: 12.5, fontWeight: 600, color: '#5EEAD4' }}>
+                    <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#5EEAD4" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, animation: 'spin 0.9s linear infinite' }}>
+                      <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                    </svg>
+                    Processing {multiCurrentIdx} of {multiQueue.length} files…
+                  </div>
+                )}
+
+                {/* Completion summary */}
+                {!multiProcessing && multiSummary && (
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9, marginTop: 12, padding: '10px 12px', borderRadius: 8, background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.3)' }}>
+                    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}>
+                      <path d="M20 6L9 17l-5-5"/>
+                    </svg>
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: '#34D399' }}>
+                      {multiSummary.files} file{multiSummary.files !== 1 ? 's' : ''} uploaded — {multiSummary.units} cabinet unit{multiSummary.units !== 1 ? 's' : ''} created across {multiSummary.jobs} job{multiSummary.jobs !== 1 ? 's' : ''}
+                      {multiSummary.failed > 0 ? ` · ${multiSummary.failed} failed` : ''}
+                    </span>
+                  </div>
+                )}
+
+                {/* File queue */}
+                {multiQueue.length > 0 && (
+                  <div style={{ marginTop: 12, border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
+                    {multiQueue.map((q) => {
+                      const tone =
+                        q.status === 'done'       ? { color: '#34D399', label: 'Done' } :
+                        q.status === 'error'      ? { color: '#F87171', label: 'Error' } :
+                        q.status === 'processing' ? { color: '#2DE1C9', label: 'Processing' } :
+                                                    { color: '#8BA5A0', label: 'Pending' };
+                      return (
+                        <div key={q.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', borderBottom: '1px solid var(--line)' }}>
+                          <span style={{ width: 8, height: 8, borderRadius: '50%', background: tone.color, flexShrink: 0 }} />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.file.name}</div>
+                            <div style={{ fontSize: 11, color: q.status === 'error' ? '#F87171' : 'var(--ink-mute)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {q.status === 'error'
+                                ? q.error
+                                : q.status === 'done'
+                                  ? `${formatBytes(q.file.size)}${typeof q.units === 'number' && q.units > 0 ? ` · ${q.units} unit${q.units !== 1 ? 's' : ''}` : ''}`
+                                  : formatBytes(q.file.size)}
+                            </div>
+                          </div>
+                          <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: tone.color, flexShrink: 0 }}>{tone.label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* CSV column mapper — appears after a CSV upload */}
