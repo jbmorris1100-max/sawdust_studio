@@ -298,19 +298,19 @@ Return ONLY a valid JSON array:
   }
 
   // ── STEP 3 — apply assignments ──────────────────────────────────────────────
-  // Every cabinet_unit gets assigned_dept = 'craftsman' OR 'production'. Nothing
-  // else. Every part inherits its cabinet's dept on upload. production_status is
-  // never written here.
+  // EVERY cabinet and EVERY part starts in production on upload — never craftsman,
+  // never assembly. The classifier's craftsman/production determination is stored
+  // only as a SUGGESTION on cabinet_units.suggested_dept, which the supervisor
+  // reviews in the Craftsman tab. production_status is never written here.
   let classified = 0;
   for (const [unitId, c] of decided) {
-    const dept = c.dept === 'craftsman' ? 'craftsman' : 'production';
     try {
-      await db.from('cabinet_units').update({ assigned_dept: dept }).eq('id', unitId).eq('tenant_id', tenantId);
+      await db.from('cabinet_units').update({ assigned_dept: 'production', suggested_dept: c.dept }).eq('id', unitId).eq('tenant_id', tenantId);
       classified++;
     } catch { /* skip this unit */ }
-    // Parts inherit the cabinet's dept on upload.
+    // Parts always start in production; the classifier's call is a suggestion only.
     try {
-      await db.from('parts').update({ assigned_dept: dept }).eq('cabinet_unit_id', unitId).eq('tenant_id', tenantId);
+      await db.from('parts').update({ assigned_dept: 'production' }).eq('cabinet_unit_id', unitId).eq('tenant_id', tenantId);
     } catch { /* best-effort */ }
   }
 

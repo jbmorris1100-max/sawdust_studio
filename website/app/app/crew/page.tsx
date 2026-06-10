@@ -802,6 +802,10 @@ export default function CrewPage() {
   const [groupSel,       setGroupSel]       = useState<Record<string, boolean>>({});
   const [longPressPart,  setLongPressPart]  = useState<{ part: CutJobPart; cabinetId: string } | null>(null);
   const [cutJobBusy,     setCutJobBusy]     = useState(false);
+  // Cutlist multi-select: tap selects parts (instead of checking them as cut) so
+  // a batch can be pushed to one dept at once.
+  const [selectMode,     setSelectMode]     = useState(false);
+  const [selectedParts,  setSelectedParts]  = useState<Record<string, { part: CutJobPart; cabinetId: string }>>({});
   const longPressTimerCut = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressFired = useRef(false);
 
@@ -1992,6 +1996,7 @@ export default function CrewPage() {
   function closeCutJob() {
     setCutJob(null); setCutJobCabs([]); setCutCabExpanded({}); setHeldCabs({});
     setFullyCutCab(null); setDestForCabs(null); setPushGroupOpen(false); setLongPressPart(null);
+    setSelectMode(false); setSelectedParts({});
     void loadProduction();
   }
 
@@ -2052,6 +2057,29 @@ export default function CrewPage() {
       void loadProduction();
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Push failed', true);
+    }
+  }
+
+  // Push every selected part (multi-select mode) to one dept, then exit select mode.
+  async function pushSelectedParts(toDept: string) {
+    if (cutJobBusy) return;
+    const items = Object.values(selectedParts);
+    if (items.length === 0) return;
+    setCutJobBusy(true);
+    try {
+      for (const { part, cabinetId } of items) {
+        try {
+          await pushPart({ tenantId: tenant!.id, partId: part.id, partName: part.part_name, cabinetUnitId: cabinetId, jobNumber: cutJob?.jobNumber ?? null, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId });
+        } catch { /* best-effort per part */ }
+      }
+      const pushedIds = new Set(items.map((it) => it.part.id));
+      setCutJobCabs((cabs) => cabs.map((c) => ({ ...c, parts: c.parts.filter((p) => !pushedIds.has(p.id)) })).filter((c) => c.parts.length > 0));
+      showToast(`Pushed ${items.length} part${items.length === 1 ? '' : 's'} to ${deptDisplay(toDept)}`);
+      setSelectedParts({});
+      setSelectMode(false);
+      void loadProduction();
+    } finally {
+      setCutJobBusy(false);
     }
   }
 
@@ -4744,10 +4772,15 @@ export default function CrewPage() {
                 <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{cutCount}/{totalParts} parts cut</div>
               </div>
               <ViewDrawingsButton tenantId={tenant!.id} jobNumber={cutJob.jobNumber} cabinetKey="" compact />
+              <button
+                onClick={() => { if (selectMode) { setSelectMode(false); setSelectedParts({}); } else { setSelectMode(true); } }}
+                style={{ flexShrink: 0, padding: '9px 14px', borderRadius: 10, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', background: selectMode ? 'rgba(45,225,201,0.14)' : 'rgba(255,255,255,0.06)', border: `1px solid ${selectMode ? 'rgba(45,225,201,0.4)' : 'var(--line)'}`, color: selectMode ? 'var(--teal)' : 'var(--ink-dim)', cursor: 'pointer' }}>
+                {selectMode ? 'Cancel' : 'Select'}
+              </button>
             </div>
 
             {/* cabinets */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: 16, paddingBottom: heldIds.length > 0 ? 'calc(96px + env(safe-area-inset-bottom))' : 'calc(24px + env(safe-area-inset-bottom))' }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: 16, paddingBottom: (selectMode && Object.keys(selectedParts).length > 0) ? 'calc(132px + env(safe-area-inset-bottom))' : heldIds.length > 0 ? 'calc(96px + env(safe-area-inset-bottom))' : 'calc(24px + env(safe-area-inset-bottom))' }}>
               {cutJobLoading ? (
                 <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32 }}>Loading cut list…</div>
               ) : cutJobCabs.length === 0 ? (
@@ -4769,23 +4802,35 @@ export default function CrewPage() {
                         </button>
                         {open && (
                           <div style={{ borderTop: '1px solid var(--line)', display: 'flex', flexDirection: 'column' }}>
-                            {c.parts.map((p) => (
+                            {c.parts.map((p) => {
+                              const selected = !!selectedParts[p.id];
+                              // In select mode the checkbox reflects selection; otherwise the cut state.
+                              const boxOn = selectMode ? selected : p.checked;
+                              return (
                               <div key={p.id}
                                 onPointerDown={() => { longPressFired.current = false; longPressTimerCut.current = setTimeout(() => { longPressFired.current = true; setLongPressPart({ part: p, cabinetId: c.cabinetId }); }, 500); }}
                                 onPointerUp={() => { if (longPressTimerCut.current) clearTimeout(longPressTimerCut.current); }}
                                 onPointerLeave={() => { if (longPressTimerCut.current) clearTimeout(longPressTimerCut.current); }}
                                 onPointerCancel={() => { if (longPressTimerCut.current) clearTimeout(longPressTimerCut.current); }}
-                                onClick={() => { if (longPressFired.current) { longPressFired.current = false; return; } void toggleCutPart(c.cabinetId, p.id); }}
+                                onClick={() => {
+                                  if (longPressFired.current) { longPressFired.current = false; return; }
+                                  if (selectMode) {
+                                    setSelectedParts((s) => { const n = { ...s }; if (n[p.id]) delete n[p.id]; else n[p.id] = { part: p, cabinetId: c.cabinetId }; return n; });
+                                  } else {
+                                    void toggleCutPart(c.cabinetId, p.id);
+                                  }
+                                }}
                                 style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderTop: '1px solid var(--line)', cursor: 'pointer', userSelect: 'none', touchAction: 'manipulation' }}>
-                                <span style={{ width: 24, height: 24, flexShrink: 0, borderRadius: 6, border: `1px solid ${p.checked ? 'var(--teal)' : 'var(--line-strong)'}`, background: p.checked ? 'var(--teal)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                  {p.checked && <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#04201c" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                                <span style={{ width: 24, height: 24, flexShrink: 0, borderRadius: 6, border: `1px solid ${boxOn ? 'var(--teal)' : 'var(--line-strong)'}`, background: boxOn ? 'var(--teal)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                  {boxOn && <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#04201c" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
                                 </span>
                                 <div style={{ minWidth: 0, flex: 1 }}>
                                   <div style={{ fontSize: 14, fontWeight: 600, color: p.checked ? 'var(--ink-mute)' : 'var(--ink)', textDecoration: p.checked ? 'line-through' : 'none' }}>{p.part_name}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</div>
                                   <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>{[dims(p), p.material].filter(Boolean).join(' · ')}</div>
                                 </div>
                               </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         )}
                       </div>
@@ -4796,7 +4841,7 @@ export default function CrewPage() {
             </div>
 
             {/* Push Group bottom bar */}
-            {heldIds.length > 0 && (
+            {heldIds.length > 0 && !selectMode && (
               <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 1500, padding: '14px 16px calc(14px + env(safe-area-inset-bottom))', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
                 <button onClick={() => { const sel: Record<string, boolean> = {}; heldIds.forEach((id) => { sel[id] = true; }); setGroupSel(sel); setPushGroupOpen(true); }}
                   style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '14px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', background: '#FBBF24', border: 'none', color: '#1a1206', cursor: 'pointer' }}>
@@ -4805,6 +4850,24 @@ export default function CrewPage() {
                 </button>
               </div>
             )}
+
+            {/* Multi-select push bar */}
+            {selectMode && Object.keys(selectedParts).length > 0 && (() => {
+              const n = Object.keys(selectedParts).length;
+              return (
+                <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 1500, padding: '14px 16px calc(14px + env(safe-area-inset-bottom))', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-dim)', marginBottom: 10 }}>Push {n} part{n === 1 ? '' : 's'} to:</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {pushDeptKeys.map((d) => (
+                      <button key={d} onClick={() => void pushSelectedParts(d)} disabled={cutJobBusy}
+                        style={{ flex: 1, minWidth: 0, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 6, padding: '13px 12px', borderRadius: 12, fontSize: 14, fontWeight: 800, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: cutJobBusy ? 'wait' : 'pointer' }}>
+                        {deptDisplay(d)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         );
       })()}

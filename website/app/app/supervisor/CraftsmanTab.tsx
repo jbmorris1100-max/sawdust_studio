@@ -17,6 +17,7 @@ type CabinetUnit = {
   unit_label: string;
   status: string;
   assigned_dept: string | null;
+  suggested_dept: string | null;
   is_split: boolean | null;
   production_status: string | null;
   created_at: string;
@@ -153,7 +154,7 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
 
   const load = useCallback(async () => {
     try {
-      const UNIT_COLS = 'id, tenant_id, job_id, job_number, room_number, cabinet_number, unit_label, status, assigned_dept, is_split, production_status, created_at';
+      const UNIT_COLS = 'id, tenant_id, job_id, job_number, room_number, cabinet_number, unit_label, status, assigned_dept, suggested_dept, is_split, production_status, created_at';
       const [unitRes, partRes] = await Promise.all([
         supabase
           .from('cabinet_units')
@@ -238,12 +239,13 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
       .sort((a, b) => jobLabelFor(a.job).localeCompare(jobLabelFor(b.job)));
   }, [craftsmanUnits, jobLabelFor]);
 
-  // Section 2 — production units whose label suggests craftsman work (and which
-  // don't already own a craftsman part).
+  // Section 2 — production units the classifier flagged as craftsman work (and
+  // which don't already own a craftsman part). The suggestion comes from
+  // cabinet_units.suggested_dept, written at upload by the AI classifier.
   const suggestedUnits = useMemo(() =>
     units.filter((u) => u.assigned_dept === 'production'
       && !craftPartCabIds.has(u.id)
-      && SUGGEST_KEYWORDS.some((kw) => u.unit_label.toLowerCase().includes(kw))),
+      && u.suggested_dept === 'craftsman'),
   [units, craftPartCabIds]);
 
   // ── Actions ────────────────────────────────────────────────────────────────

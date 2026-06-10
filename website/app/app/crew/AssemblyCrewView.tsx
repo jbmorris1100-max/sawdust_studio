@@ -7,6 +7,7 @@ import {
   clearProject, fmtAccumulated, type ActiveProject,
 } from '@/lib/activeProject';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
+import { pushPart, deptDisplay, PART_DEPTS } from '@/lib/partActions';
 
 // The Assembly department's home view. Parts pushed to assembly, grouped by
 // job -> cabinet (folder accordion). Each cabinet has START and MARK COMPLETE.
@@ -36,6 +37,10 @@ type AsmPart = {
 type CabInfo = { label: string; key: string; status: string | null; completedBy: string | null };
 // One running assembly build on this device, keyed by cabinet id.
 type ActiveBuild = { timeClockId: string; start: string };
+// A part long-pressed in the assembly view, queued for a push to another dept.
+type LongPressedAsmPart = { part: AsmPart; cabinetId: string; label: string } | null;
+// Depts a part can be pushed to from assembly — everything except assembly itself.
+const ASM_PUSH_DEPTS = PART_DEPTS.filter((d) => d.toLowerCase() !== 'assembly');
 
 interface Props {
   tenantId: string;
@@ -70,6 +75,10 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
   const [loading, setLoading] = useState(true);
   const [selectedJob, setSelectedJob] = useState<string>('');
   const [busyCab, setBusyCab] = useState<string | null>(null);
+  // Per-part long-press push sheet.
+  const [longPressedAsmPart, setLongPressedAsmPart] = useState<LongPressedAsmPart>(null);
+  const asmLongPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const asmLongPressFired = useRef(false);
   // Running builds on this device (cabinet id -> build). Persisted so a reload
   // does not lose the timer.
   const [builds, setBuilds] = useState<Record<string, ActiveBuild>>({});
@@ -314,6 +323,22 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
     }
   }
 
+  // Push a single part out of assembly to another dept (from the long-press sheet).
+  async function pushAsmPart(part: AsmPart, toDept: string) {
+    setLongPressedAsmPart(null);
+    try {
+      await pushPart({
+        tenantId, partId: part.id, partName: part.part_name, cabinetUnitId: part.cabinet_unit_id,
+        jobNumber: part.job_number, fromDept: 'assembly', toDept, workerName: crewName, timeClockId: null,
+      });
+      setParts((prev) => prev.filter((p) => p.id !== part.id));
+      showToast(`Sent to ${deptDisplay(toDept)}`);
+      void load();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Push failed', true);
+    }
+  }
+
   const btnBase: React.CSSProperties = {
     flex: 1, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 7,
     padding: '11px', borderRadius: 10, fontSize: 13.5, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
@@ -371,7 +396,12 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
                             {c.parts.map((p) => (
-                              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                              <div key={p.id}
+                                onPointerDown={() => { asmLongPressFired.current = false; asmLongPressTimer.current = setTimeout(() => { asmLongPressFired.current = true; setLongPressedAsmPart({ part: p, cabinetId: c.cabinetId, label: info.label }); }, 500); }}
+                                onPointerUp={() => { if (asmLongPressTimer.current) clearTimeout(asmLongPressTimer.current); }}
+                                onPointerLeave={() => { if (asmLongPressTimer.current) clearTimeout(asmLongPressTimer.current); }}
+                                onPointerCancel={() => { if (asmLongPressTimer.current) clearTimeout(asmLongPressTimer.current); }}
+                                style={{ display: 'flex', alignItems: 'center', gap: 10, userSelect: 'none', touchAction: 'manipulation' }}>
                                 <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partDisplay(p)}</span>
                                 <ViewDrawingsButton tenantId={tenantId} jobNumber={p.job_number} cabinetKey={info.key} compact />
                               </div>
@@ -402,12 +432,12 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                               </button>
                             </>
                           ) : (
-                            <div style={{ display: 'flex', gap: 8 }}>
+                            <div style={{ display: 'flex', gap: 8, width: '100%' }}>
                               <button
                                 onClick={() => void startBuild(c.cabinetId, jobNumber, info.label)}
                                 disabled={!!build || blockedByPaused}
                                 title={blockedByPaused ? 'Resume your paused project first' : undefined}
-                                style={{ ...btnBase,
+                                style={{ ...btnBase, flex: 1, minWidth: 0,
                                   background: (build || blockedByPaused) ? 'var(--bg-1)' : 'rgba(96,165,250,0.14)',
                                   border: `1px solid ${(build || blockedByPaused) ? 'var(--line)' : 'rgba(96,165,250,0.4)'}`,
                                   color: (build || blockedByPaused) ? 'var(--ink-mute)' : '#60A5FA',
@@ -421,17 +451,18 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                                 <button
                                   onClick={() => void pauseBuild(c.cabinetId, info.label)}
                                   title="Pause this build"
-                                  style={{ ...btnBase, flex: '0 0 auto', padding: '11px 16px',
+                                  aria-label="Pause this build"
+                                  style={{ ...btnBase, flex: '0 0 auto', width: 48, gap: 0, padding: '11px 12px',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
                                     background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.4)', color: '#FBBF24', cursor: 'pointer' }}
                                 >
                                   <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="9" y1="4" x2="9" y2="20"/><line x1="15" y1="4" x2="15" y2="20"/></svg>
-                                  Pause
                                 </button>
                               )}
                               <button
                                 onClick={() => void markComplete(c.cabinetId, jobNumber, info.label)}
                                 disabled={busy}
-                                style={{ ...btnBase,
+                                style={{ ...btnBase, flex: 1, minWidth: 0,
                                   background: 'rgba(45,225,201,0.14)',
                                   border: '1px solid rgba(45,225,201,0.4)',
                                   color: 'var(--teal)',
@@ -439,7 +470,7 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                                 }}
                               >
                                 <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                                {busy ? 'Saving…' : 'Mark Complete'}
+                                {busy ? 'Sending…' : 'QC'}
                               </button>
                             </div>
                           )}
@@ -451,6 +482,23 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
               </div>
             );
           })}
+        </div>
+      )}
+      {/* Long-press part push sheet */}
+      {longPressedAsmPart && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 1700, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget) setLongPressedAsmPart(null); }}>
+          <div style={{ width: '100%', maxWidth: 480, background: '#0a0d10', borderTopLeftRadius: 20, borderTopRightRadius: 20, border: '1px solid var(--line-strong)', padding: '22px 20px calc(22px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{longPressedAsmPart.part.part_name}</div>
+            <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginBottom: 2 }}>{longPressedAsmPart.label}</div>
+            {ASM_PUSH_DEPTS.map((d) => (
+              <button key={d} onClick={() => void pushAsmPart(longPressedAsmPart.part, d)}
+                style={{ width: '100%', justifyContent: 'space-between', display: 'flex', alignItems: 'center', padding: '14px 16px', borderRadius: 12, fontSize: 15, fontWeight: 700, fontFamily: 'inherit', background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', cursor: 'pointer' }}>
+                Push to {deptDisplay(d)}
+                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+              </button>
+            ))}
+          </div>
         </div>
       )}
       <style>{`@keyframes asmPulse{0%,100%{opacity:1}50%{opacity:0.25}}`}</style>
