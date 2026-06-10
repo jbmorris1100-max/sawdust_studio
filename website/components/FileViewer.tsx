@@ -499,6 +499,21 @@ function DxfView({ url }: { url: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    let settled = false;
+    // Safety net: if nothing resolves within 8s (iOS Safari can hang on a slow
+    // fetch or a parser that never returns), surface an error so the spinner
+    // never shows forever.
+    const timer = setTimeout(() => {
+      if (!cancelled && !settled) setErr('Could not parse DXF on this device — use the download button');
+    }, 8000);
+    // Mark resolved and stop the timeout. Success paths also clear any error a
+    // late-firing timeout may already have set, so a slow-but-valid parse wins.
+    const finish = (fn: () => void) => {
+      if (cancelled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
     (async () => {
       try {
         const res = await fetch(url);
@@ -507,19 +522,22 @@ function DxfView({ url }: { url: string }) {
         if (cancelled) return;
         // Binary DXF starts with a fixed sentinel; null bytes are another giveaway.
         if (text.startsWith('AutoCAD Binary DXF') || /[\u0000\uFFFD]/.test(text.slice(0, 512))) {
-          setBinary(true);
+          finish(() => { setErr(null); setBinary(true); });
           return;
         }
         const parser = new DxfParser();
         const dxf = parser.parseSync(text);
         if (!dxf) throw new Error('parser returned no data');
         const markup = dxfToSvg(dxf);
-        if (!cancelled) setSvg(markup);
+        finish(() => { setErr(null); setSvg(markup); });
       } catch (e) {
-        if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error
+          ? e.message
+          : (typeof e === 'string' && e.trim() ? e : 'Parse failed');
+        finish(() => setErr(msg));
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [url]);
 
   if (binary) {
@@ -643,11 +661,17 @@ function JsonNode({ k, v, depth }: { k: string | null; v: unknown; depth: number
 }
 function StructuredView({ url, kind }: { url: string; kind: 'json' | 'xml' }) {
   const [data, setData] = useState<unknown>(undefined);
+  // Microvellum cut-list exports get a purpose-built renderer; everything else
+  // (including all other XML) falls through to the generic JsonNode tree.
+  const [mvDoc, setMvDoc] = useState<Document | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
+    let cancelled = false;
     fetch(url).then((r) => r.text()).then((t) => {
+      if (cancelled) return;
       if (kind === 'json') { setData(JSON.parse(t)); return; }
       const doc = new DOMParser().parseFromString(t, 'application/xml');
+      if (doc.documentElement.tagName === 'MicrovellumExport') { setMvDoc(doc); return; }
       const toObj = (node: Element): unknown => {
         const children = Array.from(node.children);
         if (children.length === 0) return node.textContent;
@@ -660,11 +684,136 @@ function StructuredView({ url, kind }: { url: string; kind: 'json' | 'xml' }) {
         return o;
       };
       setData({ [doc.documentElement.tagName]: toObj(doc.documentElement) });
-    }).catch((e) => setErr(String(e)));
+    }).catch((e) => { if (!cancelled) setErr(String(e)); });
+    return () => { cancelled = true; };
   }, [url, kind]);
   if (err) return <div style={{ padding: 40, color: 'var(--ink-mute)' }}>Could not parse {kind.toUpperCase()}: {err}</div>;
+  if (mvDoc) return <MicrovellumView doc={mvDoc} />;
   if (data === undefined) return <div style={{ padding: 40, color: 'var(--ink-mute)' }}>Loading…</div>;
   return <div style={{ padding: 16, overflow: 'auto', height: '100%' }}><JsonNode k={null} v={data} depth={0} /></div>;
+}
+
+/* ========================================================================== *
+ *  MICROVELLUM CUT-LIST VIEWER  (<MicrovellumExport> XML → grouped cut list)
+ *  Same card / accordion / table styling as CsvView grouped mode.
+ * ========================================================================== */
+function MvBadge({ color, label }: { color: string; label: string }) {
+  return (
+    <span style={{ display: 'inline-block', fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '1px 6px', borderRadius: 5, background: `${color}22`, color, marginRight: 6 }}>{label}</span>
+  );
+}
+
+function MicrovellumView({ doc }: { doc: Document }) {
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const toggle = (id: string) => setExpanded((e) => ({ ...e, [id]: !e[id] }));
+
+  // Immediate-child text by tag name (avoids matching a descendant's tag).
+  const directChildText = (el: Element, ...names: string[]): string => {
+    for (const n of names) {
+      for (const c of Array.from(el.children)) {
+        if (c.tagName === n && c.textContent && c.textContent.trim()) return c.textContent.trim();
+      }
+    }
+    return '';
+  };
+  // Descendant text by tag name (parts may live a level or two down).
+  const descText = (el: Element, ...names: string[]): string => {
+    for (const n of names) {
+      const c = el.querySelector(n);
+      if (c && c.textContent && c.textContent.trim()) return c.textContent.trim();
+    }
+    return '';
+  };
+
+  const job = doc.querySelector('Job');
+  const jobName = job?.querySelector('JobName')?.textContent?.trim() || '';
+  const jobNumber = job?.querySelector('JobNumber')?.textContent?.trim() || '';
+  const rooms = Array.from(doc.querySelectorAll('Room'));
+  const totalParts = rooms.reduce((sum, room) => sum + room.querySelectorAll('Part').length, 0);
+
+  const thSt: React.CSSProperties = { textAlign: 'left', padding: '7px 10px', fontSize: 11, fontWeight: 700, color: 'var(--teal)', whiteSpace: 'nowrap', borderBottom: '1px solid rgba(255,255,255,0.12)' };
+  const tdSt: React.CSSProperties = { padding: '6px 10px', fontSize: 12, color: 'var(--ink-dim)', whiteSpace: 'nowrap', borderBottom: '1px solid rgba(255,255,255,0.05)' };
+
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div style={{ flex: 1, overflow: 'auto', padding: 16, minHeight: 0 }}>
+        <div style={{ maxWidth: 860, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {/* Job header */}
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--teal)' }}>{jobName || 'Microvellum Job'}</div>
+            {jobNumber && <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginTop: 2 }}>Job #{jobNumber}</div>}
+          </div>
+
+          {rooms.length === 0 && <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No rooms found in this export.</div>}
+
+          {rooms.map((room, ri) => {
+            const roomName = directChildText(room, 'RoomName', 'Name') || `Room ${ri + 1}`;
+            const units = Array.from(room.querySelectorAll('CabinetUnit'));
+            return (
+              <div key={ri} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{roomName}</div>
+                {units.length === 0 && <div style={{ fontSize: 12.5, color: 'var(--ink-mute)' }}>No cabinets in this room.</div>}
+                {units.map((unit, ui) => {
+                  const id = `r${ri}u${ui}`;
+                  const open = expanded[id] ?? false;
+                  const label = unit.getAttribute('id') || unit.getAttribute('ID') || unit.getAttribute('Name')
+                    || directChildText(unit, 'Name', 'CabinetName', 'ItemNumber', 'LinkID') || `Cabinet ${ui + 1}`;
+                  const parts = Array.from(unit.querySelectorAll('Part'));
+                  return (
+                    <div key={id} style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, overflow: 'hidden', background: 'var(--bg-1)' }}>
+                      <button onClick={() => toggle(id)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', background: 'rgba(255,255,255,0.03)', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{label}</div>
+                        </div>
+                        <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{parts.length} part{parts.length === 1 ? '' : 's'}</span>
+                        <IconChevron open={open} />
+                      </button>
+                      {open && (
+                        <div style={{ padding: '4px 8px 10px', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                          <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 'max-content' }}>
+                            <thead>
+                              <tr>{['Part Name', 'Width', 'Height', 'Depth', 'Material', 'Qty', 'Notes'].map((h) => <th key={h} style={thSt}>{h}</th>)}</tr>
+                            </thead>
+                            <tbody>
+                              {parts.length === 0 && <tr><td style={tdSt} colSpan={7}>No parts.</td></tr>}
+                              {parts.map((part, pi) => {
+                                const notes = descText(part, 'Notes', 'Comment', 'Comments');
+                                const upper = notes.toUpperCase();
+                                return (
+                                  <tr key={pi} style={{ background: pi % 2 ? 'rgba(255,255,255,0.02)' : 'transparent' }}>
+                                    <td style={{ ...tdSt, color: 'var(--ink)', fontWeight: 600 }}>{descText(part, 'PartName', 'Name') || '—'}</td>
+                                    <td style={tdSt}>{descText(part, 'Width') || '—'}</td>
+                                    <td style={tdSt}>{descText(part, 'Height') || '—'}</td>
+                                    <td style={tdSt}>{descText(part, 'Depth') || '—'}</td>
+                                    <td style={tdSt}>{descText(part, 'Material') || '—'}</td>
+                                    <td style={tdSt}>{descText(part, 'Quantity', 'Qty') || '—'}</td>
+                                    <td style={{ ...tdSt, whiteSpace: 'normal' }}>
+                                      {upper.includes('CRAFTSMAN') && <MvBadge color="#A78BFA" label="CRAFTSMAN" />}
+                                      {upper.includes('PAINT') && <MvBadge color="#FBBF24" label="PAINT" />}
+                                      {notes ? <span>{notes}</span> : (!upper.includes('CRAFTSMAN') && !upper.includes('PAINT') ? '—' : null)}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+
+          {/* Footer — total parts across the whole export */}
+          <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', textAlign: 'center', paddingTop: 4 }}>
+            {totalParts} part{totalParts === 1 ? '' : 's'} total
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ========================================================================== *
@@ -698,6 +847,10 @@ function InfoView({ file, kind }: { file: ViewerFile; kind: Kind }) {
 export default function FileViewer({ file, onClose }: { file: ViewerFile; onClose: () => void }) {
   const kind = detectKind(file);
 
+  // Swipe-down-to-dismiss (iOS sheet gesture) — tracked on the shell only.
+  const touchStartY = useRef(0);
+  const touchDeltaY = useRef(0);
+
   // Esc to close + lock body scroll while open
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -727,6 +880,9 @@ export default function FileViewer({ file, onClose }: { file: ViewerFile; onClos
     <div role="dialog" aria-modal="true" onClick={onClose}
       style={{ position: 'fixed', inset: 0, zIndex: 2000, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div onClick={(e) => e.stopPropagation()} className="fileviewer-shell"
+        onTouchStart={(e) => { touchStartY.current = e.touches[0].clientY; touchDeltaY.current = 0; }}
+        onTouchMove={(e) => { touchDeltaY.current = e.touches[0].clientY - touchStartY.current; }}
+        onTouchEnd={() => { if (touchDeltaY.current > 80) onClose(); touchDeltaY.current = 0; }}
         style={{
           position: 'relative', display: 'flex', flexDirection: 'column',
           background: 'var(--bg)', border: '1px solid rgba(255,255,255,0.1)',
@@ -738,7 +894,7 @@ export default function FileViewer({ file, onClose }: { file: ViewerFile; onClos
         {/* header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
           <button onClick={onClose} aria-label="Close" title="Close"
-            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 38, height: 38, borderRadius: 9, background: 'rgba(255,255,255,0.06)', color: 'var(--ink-dim)', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer', flexShrink: 0 }}>
+            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, padding: 8, borderRadius: 9, background: 'rgba(255,255,255,0.06)', color: 'var(--ink-dim)', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer', flexShrink: 0 }}>
             <IconX />
           </button>
           <div style={{ flex: 1, minWidth: 0 }}>
