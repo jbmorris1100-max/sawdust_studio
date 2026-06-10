@@ -309,6 +309,7 @@ type PipelineRow = {
   dueDate: string | null;
   cabinetsTotal: number;
   production: number;   // not_cut | cutting | cut (cut but not yet in assembly)
+  craftsman: number;    // units actively being built
   assembly: number;     // in_assembly | flagged
   finishing: number;    // finishing
   done: number;         // complete
@@ -1094,13 +1095,14 @@ export default function SupervisorPage() {
         const meta = jobMeta[jn];
         const rawPath = meta?.jobPath || jn;          // no "Job " prefix
         const key = rawPath.toLowerCase();            // group by lowercased path → merges case duplicates
-        const row = (byJob[key] ??= { jobNumber: jn, jobPath: titleCasePath(rawPath), dueDate: meta?.dueDate ?? null, cabinetsTotal: 0, production: 0, assembly: 0, finishing: 0, done: 0, cabinetsCut: 0, splitDepts: [] });
+        const row = (byJob[key] ??= { jobNumber: jn, jobPath: titleCasePath(rawPath), dueDate: meta?.dueDate ?? null, cabinetsTotal: 0, production: 0, craftsman: 0, assembly: 0, finishing: 0, done: 0, cabinetsCut: 0, splitDepts: [] });
         row.cabinetsTotal++;
         const dept = (c.assigned_dept ?? 'production').toLowerCase();
         if (c.status === 'complete' || dept === 'complete') row.done++;
         else if (c.status === 'ready_for_qc' || c.status === 'in_assembly' || c.status === 'flagged' || dept === 'assembly' || dept === 'qc') row.assembly++;
         else if (dept === 'finishing' || c.status === 'finishing') row.finishing++;
-        else row.production++;   // production + craftsman (upstream work)
+        else if (dept === 'craftsman') row.craftsman++;
+        else row.production++;
         // Track the depts a split touches so the row can badge them (e.g. [Craftsman] [Assembly]).
         if (c.is_split) {
           const label = deptLabel(c.assigned_dept);
@@ -1108,7 +1110,7 @@ export default function SupervisorPage() {
         }
       });
       // "Cut" = cabinets that have left production for a downstream dept.
-      Object.values(byJob).forEach((r) => { r.cabinetsCut = r.assembly + r.finishing + r.done; });
+      Object.values(byJob).forEach((r) => { r.cabinetsCut = r.craftsman + r.assembly + r.finishing + r.done; });
       setPipeline(Object.values(byJob).sort((a, b) => {
         const ad = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
         const bd = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
@@ -3190,15 +3192,16 @@ export default function SupervisorPage() {
                           })}
                           <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{p.cabinetsTotal} cabinet{p.cabinetsTotal === 1 ? '' : 's'}</span>
                         </div>
-                        {/* 4-segment pipeline bar: Production | Assembly | Finishing | Done */}
+                        {/* 5-segment pipeline bar: Production | Craftsman | Assembly | Finishing | Done */}
                         <div style={{ display: 'flex', height: 9, borderRadius: 5, overflow: 'hidden', background: 'rgba(255,255,255,0.06)' }}>
                           <div title="Production" style={{ width: seg(p.production), background: '#2DE1C9', transition: 'width .3s' }} />
+                          <div title="Craftsman"  style={{ width: seg(p.craftsman),  background: '#A78BFA', transition: 'width .3s' }} />
                           <div title="Assembly"   style={{ width: seg(p.assembly),   background: '#3B82F6', transition: 'width .3s' }} />
                           <div title="Finishing"  style={{ width: seg(p.finishing),  background: '#F97316', transition: 'width .3s' }} />
                           <div title="Done"       style={{ width: seg(p.done),       background: '#34D399', transition: 'width .3s' }} />
                         </div>
                         <div style={{ fontSize: 11.5, color: 'var(--ink-mute)', marginTop: 7 }}>
-                          {p.cabinetsCut}/{p.cabinetsTotal} cabinets cut · {p.assembly} in assembly{p.done ? ` · ${p.done} done` : ''}
+                          {p.cabinetsCut}/{p.cabinetsTotal} cabinets cut · {p.craftsman} in craftsman · {p.assembly} in assembly{p.finishing > 0 ? ` · ${p.finishing} finishing` : ''}{p.done > 0 ? ` · ${p.done} done` : ''}
                         </div>
                       </button>
                       {isExpanded && tenant && (

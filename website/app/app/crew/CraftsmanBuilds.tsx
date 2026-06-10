@@ -199,6 +199,7 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     // clock_out) so the supervisor's Craftsman Build Activity panel shows it
     // running in real time. The row id is stored on the build for the close.
     persistBuild({ unitId: cabinetId, start, stop: null, timeClockId: null, accumulatedSeconds: 0 });
+    let liveRowId: string | null = null;
     try {
       const { data, error } = await supabase.from('time_clock').insert({
         tenant_id: tenantId, worker_name: crewName || 'Craftsman', dept: 'Craftsman',
@@ -206,21 +207,25 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         notes: `Build: ${cab?.label ?? 'Cabinet'}`, job_number: jobNumber,
       }).select('id').single();
       if (error) throw error;
-      const id = (data as { id: string }).id;
+      liveRowId = (data as { id: string }).id;
       const b = buildRef.current;
-      if (b && b.unitId === cabinetId) persistBuild({ ...b, timeClockId: id });
-      // Track this as the worker's active project (one per user, follows them).
-      void upsertActiveProject({
-        tenantId, workerName: crewName, dept: 'craftsman', cabinetUnitId: cabinetId,
-        unitLabel: cab?.label ?? 'Cabinet', jobNumber, timeClockId: id, sessionStart: start, accumulatedSeconds: 0,
-      });
-      // Flip the cabinet to 'building' so the supervisor's Craftsman tab shows the
-      // "Building" status badge (CraftsmanTab.statusMeta maps 'building' → blue).
+      if (b && b.unitId === cabinetId) persistBuild({ ...b, timeClockId: liveRowId });
+    } catch { /* live row best-effort; finishUnitBuild still logs hours on push */ }
+    // Track this as the worker's active project (one per user, follows them) —
+    // ALWAYS, even when the live time_clock insert failed, so dept switches and
+    // clock-outs find it in crew_active_projects and pause/notify correctly.
+    await upsertActiveProject({
+      tenantId, workerName: crewName, dept: 'craftsman', cabinetUnitId: cabinetId,
+      unitLabel: cab?.label ?? 'Cabinet', jobNumber, timeClockId: liveRowId, sessionStart: start, accumulatedSeconds: 0,
+    });
+    // Flip the cabinet to 'building' so the supervisor's Craftsman tab shows the
+    // "Building" status badge (CraftsmanTab.statusMeta maps 'building' → blue).
+    try {
       await supabase.from('cabinet_units')
         .update({ status: 'building' })
         .eq('id', cabinetId)
         .eq('tenant_id', tenantId);
-    } catch { /* live row best-effort; finishUnitBuild still logs hours on push */ }
+    } catch { /* best-effort */ }
   }
 
   // PAUSE — close the live session (logging its hours), fold it into the project's

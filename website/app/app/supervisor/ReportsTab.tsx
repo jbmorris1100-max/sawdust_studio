@@ -56,7 +56,7 @@ type NeedRow = {
 
 type JobRow = { id: string; job_number: string; job_name: string | null };
 type SortDir = 'asc' | 'desc';
-type ReportKey = 'daily' | 'job' | 'weekly' | 'craftsman' | 'damage' | 'inventory' | 'parts';
+type ReportKey = 'daily' | 'job' | 'weekly' | 'damage' | 'inventory' | 'parts';
 
 interface Props {
   tenantId: string;
@@ -1065,165 +1065,7 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
   );
 }
 
-// ── 4. Craftsman Build ────────────────────────────────────────────────────────
-
-type CraftUnitRow = {
-  id: string;
-  unit_label: string;
-  job_number: string | null;
-  status: string;
-  assigned_dept: string | null;
-  completed_at: string | null;
-  created_at: string;
-};
-
-// Craftsman status → badge color (mirrors the crew/supervisor craftsman views).
-function craftStatusMeta(status: string): { label: string; color: string; bg: string } {
-  switch ((status || 'pending').toLowerCase()) {
-    case 'building':  return { label: 'Building',  color: '#60A5FA', bg: 'rgba(96,165,250,0.12)' };
-    case 'finishing': return { label: 'Finishing', color: '#FBBF24', bg: 'rgba(251,191,36,0.12)' };
-    case 'complete':  return { label: 'Complete',  color: '#34D399', bg: 'rgba(52,211,153,0.12)' };
-    default:          return { label: 'Pending',   color: '#8BA5A0', bg: 'rgba(139,165,160,0.12)' };
-  }
-}
-const STATUS_RANK: Record<string, number> = { building: 0, finishing: 1, pending: 2, complete: 3 };
-
-function CraftsmanBuildReport({ tenantId, showToast }: Props) {
-  const [start,     setStart]     = useState(() => daysAgo(30));
-  const [end,       setEnd]       = useState(todayISO);
-  const [rows,      setRows]      = useState<CraftUnitRow[]>([]);
-  const [timerHours, setTimerHours] = useState(0);
-  const [jobPaths,  setJobPaths]  = useState<Record<string, string>>({});
-  const [loading,   setLoading]   = useState(false);
-
-  // Pull craftsman cabinets directly (Option B) — this reflects what the
-  // Craftsman tab manages, including in-progress builds, not just timer sessions.
-  useEffect(() => {
-    setLoading(true);
-    let cancelled = false;
-    (async () => {
-      try {
-        // Cabinets assigned to craftsman OR owning a craftsman part (splits).
-        let partCabIds: string[] = [];
-        try {
-          const { data: cp } = await supabase.from('parts').select('cabinet_unit_id').eq('tenant_id', tenantId).eq('assigned_dept', 'craftsman');
-          partCabIds = Array.from(new Set(((cp as { cabinet_unit_id: string | null }[] | null) ?? []).map((p) => p.cabinet_unit_id).filter(Boolean))) as string[];
-        } catch { /* best-effort */ }
-
-        const COLS = 'id, unit_label, job_number, status, assigned_dept, completed_at, created_at';
-        const base = supabase.from('cabinet_units').select(COLS).eq('tenant_id', tenantId);
-        const { data: cuData, error } = partCabIds.length > 0
-          ? await base.or(`assigned_dept.eq.craftsman,id.in.(${partCabIds.join(',')})`)
-          : await base.eq('assigned_dept', 'craftsman');
-        if (error) throw error;
-
-        const fromT = new Date(`${start}T00:00:00`).getTime();
-        const toT   = new Date(`${end}T23:59:59`).getTime();
-        const filtered = ((cuData as CraftUnitRow[]) ?? []).filter((u) => {
-          if (u.status === 'complete') {
-            if (!u.completed_at) return false;
-            const t = new Date(u.completed_at).getTime();
-            return t >= fromT && t <= toT;
-          }
-          // In-progress / queued builds always show so the report reflects live work.
-          return ['building', 'finishing', 'pending'].includes((u.status || '').toLowerCase());
-        }).sort((a, b) => {
-          const ra = STATUS_RANK[a.status?.toLowerCase()] ?? 9;
-          const rb = STATUS_RANK[b.status?.toLowerCase()] ?? 9;
-          if (ra !== rb) return ra - rb;
-          return new Date(b.completed_at || b.created_at).getTime() - new Date(a.completed_at || a.created_at).getTime();
-        });
-        if (!cancelled) setRows(filtered);
-
-        // Job paths for nicer labels.
-        const jobNums = Array.from(new Set(filtered.map((u) => u.job_number).filter(Boolean))) as string[];
-        if (jobNums.length > 0) {
-          try {
-            const { data: jrows } = await supabase.from('jobs').select('job_number, job_path').eq('tenant_id', tenantId).in('job_number', jobNums);
-            const map: Record<string, string> = {};
-            ((jrows as { job_number: string; job_path: string | null }[] | null) ?? []).forEach((j) => { if (j.job_path) map[j.job_number] = j.job_path; });
-            if (!cancelled) setJobPaths(map);
-          } catch { /* best-effort */ }
-        }
-
-        // Supplementary: build-timer hours logged in range (material build timer).
-        try {
-          const { data: tc } = await supabase.from('time_clock')
-            .select('total_hours, clock_in, clock_out').eq('tenant_id', tenantId).eq('status', 'craftsman_build')
-            .gte('date', start).lte('date', end);
-          const hrs = ((tc as { total_hours: number | null; clock_in: string; clock_out: string | null }[] | null) ?? [])
-            .reduce((s, e) => s + (e.total_hours ?? calcHours(e.clock_in, e.clock_out)), 0);
-          if (!cancelled) setTimerHours(hrs);
-        } catch { /* best-effort */ }
-      } catch (err: unknown) {
-        if (!cancelled) showToast(err instanceof Error ? err.message : 'Load failed', true);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [tenantId, start, end, showToast]);
-
-  const jobLabel = (jn: string | null) => jn ? (jobPaths[jn] ? jobPaths[jn].split('/').map((s) => s.trim()).join(' / ') : `Job ${jn}`) : '—';
-  const inProgress = rows.filter((u) => u.status !== 'complete').length;
-  const completed  = rows.filter((u) => u.status === 'complete').length;
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <DateRange start={start} end={end} onStart={setStart} onEnd={setEnd} />
-        <ExportBtn onClick={() => downloadCSV(`craftsman-build_${start}_${end}.csv`,
-          ['Unit', 'Job / Project', 'Status', 'Completed'],
-          rows.map((u) => [u.unit_label, jobLabel(u.job_number), craftStatusMeta(u.status).label, u.completed_at ? fmtDate(u.completed_at) : '—']))} />
-      </div>
-
-      {!loading && rows.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12 }}>
-          <MetricTile label="Craftsman Units" value={String(rows.length)} color="#A78BFA" />
-          <MetricTile label="In Progress"     value={String(inProgress)}  color="#60A5FA" />
-          <MetricTile label="Completed"       value={String(completed)}   color="#34D399" />
-          <MetricTile label="Build Timer Hrs" value={toHHMM(timerHours)}   color="#FBBF24" />
-        </div>
-      )}
-
-      <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                <th style={thSt}>Unit</th>
-                <th style={thSt}>Job / Project</th>
-                <th style={thSt}>Status</th>
-                <th style={thSt}>Completed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? <LoadingRows cols={4} /> : rows.length === 0 ? (
-                <tr><td colSpan={4}><EmptyState msg="No craftsman builds for this period." /></td></tr>
-              ) : (
-                rows.map((u, i) => {
-                  const sm = craftStatusMeta(u.status);
-                  return (
-                    <tr key={u.id} style={{ background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent' }}>
-                      <td style={tdBold}>{u.unit_label}</td>
-                      <td style={tdSt}>{jobLabel(u.job_number)}</td>
-                      <td style={tdSt}>
-                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: sm.color, background: sm.bg, whiteSpace: 'nowrap' }}>{sm.label}</span>
-                      </td>
-                      <td style={tdSt}>{u.completed_at ? new Date(u.completed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : <span style={{ color: 'var(--ink-mute)' }}>In progress</span>}</td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── 5. Damage Log ─────────────────────────────────────────────────────────────
+// ── 4. Damage Log ─────────────────────────────────────────────────────────────
 
 function DamageReportLog({ tenantId, showToast }: Props) {
   const [start,    setStart]    = useState(() => daysAgo(30));
@@ -1326,7 +1168,7 @@ function DamageReportLog({ tenantId, showToast }: Props) {
   );
 }
 
-// ── 6. Inventory ──────────────────────────────────────────────────────────────
+// ── 5. Inventory ──────────────────────────────────────────────────────────────
 
 function InventoryReport({ tenantId, showToast }: Props) {
   const [start,   setStart]   = useState(() => daysAgo(30));
@@ -1435,7 +1277,7 @@ function InventoryReport({ tenantId, showToast }: Props) {
   );
 }
 
-// ── 7. Parts & QC ─────────────────────────────────────────────────────────────
+// ── 6. Parts & QC ─────────────────────────────────────────────────────────────
 
 function PartsQCReport({ tenantId, showToast }: Props) {
   const [start,   setStart]   = useState(() => daysAgo(30));
@@ -1547,7 +1389,6 @@ const REPORT_NAV: { key: ReportKey; label: string }[] = [
   { key: 'daily',     label: 'Daily Labor'     },
   { key: 'job',       label: 'Job Cost'        },
   { key: 'weekly',    label: 'Weekly Summary'  },
-  { key: 'craftsman', label: 'Craftsman Build' },
   { key: 'damage',    label: 'Damage Log'      },
   { key: 'inventory', label: 'Inventory'       },
   { key: 'parts',     label: 'Parts & QC'      },
@@ -1583,7 +1424,6 @@ export default function ReportsTab({ tenantId, showToast, onGoToCrew }: Props) {
       {active === 'daily'     && <DailyLaborReport     tenantId={tenantId} showToast={showToast} />}
       {active === 'job'       && <JobCostReport        tenantId={tenantId} showToast={showToast} onGoToCrew={onGoToCrew} />}
       {active === 'weekly'    && <WeeklySummaryReport  tenantId={tenantId} showToast={showToast} />}
-      {active === 'craftsman' && <CraftsmanBuildReport tenantId={tenantId} showToast={showToast} />}
       {active === 'damage'    && <DamageReportLog      tenantId={tenantId} showToast={showToast} />}
       {active === 'inventory' && <InventoryReport      tenantId={tenantId} showToast={showToast} />}
       {active === 'parts'     && <PartsQCReport        tenantId={tenantId} showToast={showToast} />}
