@@ -984,7 +984,19 @@ export default function SupervisorPage() {
         supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
         supabase.from('damage_reports').select('id, part_name, job_id, dept, notes, photo_url, status, created_at, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, report_type').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
       ]);
-      if (crewRes.data)   setActiveCrew(crewRes.data as CrewRow[]);
+      if (crewRes.data) {
+        // A worker can have more than one open time_clock row (e.g. a normal
+        // clock-in plus a craftsman build). Keep only the most recent open row per
+        // worker so Active Crew shows each person once, under their current dept.
+        const deduped = Object.values(
+          (crewRes.data as CrewRow[]).reduce((acc, row) => {
+            const existing = acc[row.worker_name];
+            if (!existing || new Date(row.clock_in) > new Date(existing.clock_in)) acc[row.worker_name] = row;
+            return acc;
+          }, {} as Record<string, CrewRow>),
+        );
+        setActiveCrew(deduped);
+      }
       if (msgRes.data)    setMessages(msgRes.data as Message[]);
       if (needsRes.data)  setNeeds(needsRes.data as InventoryNeed[]);
       if (damageRes.data) setDamage(damageRes.data as DamageReport[]);
@@ -1407,7 +1419,14 @@ export default function SupervisorPage() {
           if (row.status === 'craftsman_build') {
             setCraftsmanBuilds((prev) => prev.some((b) => b.id === row.id) ? prev : [row as unknown as CraftsmanBuild, ...prev]);
           } else if (!row.clock_out) {
-            setActiveCrew((prev) => prev.some((r) => r.id === row.id) ? prev : [...prev, row]);
+            // Dedupe by worker — replace any existing open row for this worker,
+            // keeping the most recent clock_in, so a second open row never doubles
+            // the entry in the Active Crew table.
+            setActiveCrew((prev) => {
+              const existing = prev.find((r) => r.worker_name === row.worker_name);
+              if (existing && new Date(existing.clock_in) >= new Date(row.clock_in)) return prev;
+              return [...prev.filter((r) => r.worker_name !== row.worker_name), row];
+            });
           }
         } else if (payload.eventType === 'UPDATE') {
           const row = payload.new as CrewRow & { clock_out: string | null; total_hours: number | null; job_number: string | null; status: string | null };
@@ -3039,7 +3058,7 @@ export default function SupervisorPage() {
           {/* Tabs — desktop only. Scrolls horizontally (scrollbar hidden) so every
               tab stays reachable on narrower desktop windows instead of cutting off. */}
           <style>{`.sup-tabbar::-webkit-scrollbar{display:none}`}</style>
-          <div className="hidden md:flex sup-tabbar" style={{ gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 24, overflowX: 'auto', scrollbarWidth: 'none' }}>
+          <div className="hidden md:flex sup-tabbar" style={{ gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 24, overflowX: 'auto', flexWrap: 'nowrap', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
             {tabs.map(({ key, label, count }) => (
               <button
                 key={key}

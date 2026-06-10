@@ -184,6 +184,12 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
       const id = (data as { id: string }).id;
       const b = buildRef.current;
       if (b && b.unitId === cabinetId) persistBuild({ ...b, timeClockId: id });
+      // Flip the cabinet to 'building' so the supervisor's Craftsman tab shows the
+      // "Building" status badge (CraftsmanTab.statusMeta maps 'building' → blue).
+      await supabase.from('cabinet_units')
+        .update({ status: 'building' })
+        .eq('id', cabinetId)
+        .eq('tenant_id', tenantId);
     } catch { /* live row best-effort; finishUnitBuild still logs hours on push */ }
   }
   function readyToPush(cabinetId: string, cabParts: CPart[]) {
@@ -231,6 +237,13 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         }).then(() => {}, () => {});
       }
     }
+    // The craftsman has pushed this cabinet's parts on — mark it complete so the
+    // supervisor's Craftsman tab shows the green "Complete" status badge.
+    void supabase.from('cabinet_units')
+      .update({ status: 'complete' })
+      .eq('id', cabinetId)
+      .eq('tenant_id', tenantId)
+      .then(() => {}, () => {});
     persistBuild(null);
     setPushSel({});
     // If every part on the cabinet was pushed, the cabinet leaves the queue.
