@@ -22,6 +22,7 @@ import OfflineBanner from '@/components/OfflineBanner';
 import MessageThread from '@/components/MessageThread';
 import { sendNotify } from '@/lib/notify';
 import { deptDisplay } from '@/lib/partActions';
+import { fmtAccumulated, type ActiveProject } from '@/lib/activeProject';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -640,6 +641,8 @@ export default function SupervisorPage() {
 
   const [tab,         setTab]         = useState<Tab>('overview');
   const [activeCrew,  setActiveCrew]  = useState<CrewRow[]>([]);
+  // Paused projects keyed by worker_name — amber indicator under each active crew row.
+  const [pausedProjects, setPausedProjects] = useState<Record<string, ActiveProject>>({});
   const [messages,    setMessages]    = useState<Message[]>([]);
   const [needs,       setNeeds]       = useState<InventoryNeed[]>([]);
   const [damage,       setDamage]       = useState<DamageReport[]>([]);
@@ -1001,6 +1004,15 @@ export default function SupervisorPage() {
       if (needsRes.data)  setNeeds(needsRes.data as InventoryNeed[]);
       if (damageRes.data) setDamage(damageRes.data as DamageReport[]);
     } catch (_) {}
+    try {
+      const { data: pausedRows } = await supabase
+        .from('crew_active_projects')
+        .select('id, tenant_id, worker_name, dept, cabinet_unit_id, unit_label, job_number, time_clock_id, session_start, accumulated_seconds, status')
+        .eq('tenant_id', tenant.id).eq('status', 'paused');
+      const map: Record<string, ActiveProject> = {};
+      ((pausedRows as ActiveProject[] | null) ?? []).forEach((p) => { map[p.worker_name] = p; });
+      setPausedProjects(map);
+    } catch (_) { /* table optional until migration runs */ }
     try {
       const [plansRes, sopsRes, buildsRes, partsRes, jobsRes] = await Promise.all([
         supabase.from('job_drawings').select(JOB_DRAWING_COLS).eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(100),
@@ -1528,6 +1540,24 @@ export default function SupervisorPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, () => { void loadPipeline(); })
       .subscribe();
 
+    // Paused projects — keep the amber "Paused" indicators live under crew rows.
+    const projectsCh = supabase
+      .channel('rt-active-projects')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'crew_active_projects', filter: `tenant_id=eq.${tenantId}` }, () => {
+        void (async () => {
+          try {
+            const { data } = await supabase
+              .from('crew_active_projects')
+              .select('id, tenant_id, worker_name, dept, cabinet_unit_id, unit_label, job_number, time_clock_id, session_start, accumulated_seconds, status')
+              .eq('tenant_id', tenantId).eq('status', 'paused');
+            const map: Record<string, ActiveProject> = {};
+            ((data as ActiveProject[] | null) ?? []).forEach((p) => { map[p.worker_name] = p; });
+            setPausedProjects(map);
+          } catch (_) { /* best-effort */ }
+        })();
+      })
+      .subscribe();
+
     return () => {
       supabase.removeChannel(clockCh);
       supabase.removeChannel(msgCh);
@@ -1536,6 +1566,7 @@ export default function SupervisorPage() {
       supabase.removeChannel(partsCh);
       supabase.removeChannel(jobsCh);
       supabase.removeChannel(cabinetsCh);
+      supabase.removeChannel(projectsCh);
     };
   }, [tenant, loadPipeline]);
 
@@ -3163,7 +3194,14 @@ export default function SupervisorPage() {
                                     )}
                                   </div>
                                 </td>
-                                <td style={tdStyle}>{row.current_dept || row.dept}</td>
+                                <td style={tdStyle}>
+                                  {row.current_dept || row.dept}
+                                  {pausedProjects[row.worker_name] && (
+                                    <div style={{ fontSize: 11, fontWeight: 700, color: '#FBBF24', marginTop: 3 }}>
+                                      Paused: {pausedProjects[row.worker_name].unit_label} · {fmtAccumulated(pausedProjects[row.worker_name].accumulated_seconds ?? 0)}
+                                    </div>
+                                  )}
+                                </td>
                                 <td style={tdStyle}>{formatTime(row.clock_in)}</td>
                                 <td style={{ ...tdStyle, textAlign: 'right' }}>
                                   <button
@@ -3207,6 +3245,11 @@ export default function SupervisorPage() {
                                 )}
                               </div>
                               <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{row.current_dept || row.dept}</div>
+                              {pausedProjects[row.worker_name] && (
+                                <div style={{ fontSize: 11, fontWeight: 700, color: '#FBBF24', marginTop: 2 }}>
+                                  Paused: {pausedProjects[row.worker_name].unit_label} · {fmtAccumulated(pausedProjects[row.worker_name].accumulated_seconds ?? 0)}
+                                </div>
+                              )}
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                               <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-dim)' }}>{formatTime(row.clock_in)}</div>

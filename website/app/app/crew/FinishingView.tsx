@@ -2,6 +2,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { colorToHex, pushPart, maybeNotifyJobQc } from '@/lib/partActions';
+import {
+  getWorkerProject, upsertActiveProject, startProjectSession, pauseWorkerProject,
+  clearProject, fmtAccumulated, type ActiveProject,
+} from '@/lib/activeProject';
 import { sendNotify } from '@/lib/notify';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
@@ -94,6 +98,9 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
   const [finishTcId, setFinishTcId] = useState<string | null>(null);
   const timeClockId = useRef<string | null>(null);
   const setTimeClock = (id: string | null) => { timeClockId.current = id; setFinishTcId(id); };
+  // The worker's single paused project (one per user across the whole app).
+  const [pausedProject, setPausedProject] = useState<ActiveProject | null>(null);
+  const openCabRef = useRef<typeof openCab>(null);
 
   const load = useCallback(async () => {
     try {
@@ -142,7 +149,7 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
         } catch { /* best-effort */ }
       }
 
-      setParts(pRows.map((p) => {
+      const mappedParts: FinishPart[] = pRows.map((p) => {
         const cab = cabMap[p.cabinet_unit_id] ?? { label: 'Cabinet', key: '' };
         return {
           id: p.id, part_name: p.part_name, cabinet_unit_id: p.cabinet_unit_id, job_number: p.job_number,
@@ -150,18 +157,37 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
           cabinetLabel: cab.label, cabinetKey: cab.key,
           jobPath: (p.job_number && jobPathMap[p.job_number]) || (p.job_number ? `Job ${p.job_number}` : 'Unassigned'),
         };
-      }));
+      });
+      setParts(mappedParts);
+
+      // The worker's single project — paused badge, or an active finishing project
+      // this device doesn't know about yet (resumed from the clock-in prompt).
+      const proj = await getWorkerProject(tenantId, crewName);
+      setPausedProject(proj && proj.status === 'paused' && proj.dept === 'finishing' ? proj : null);
+      if (proj && proj.status === 'active' && proj.dept === 'finishing' && !openCabRef.current) {
+        const cp = mappedParts.filter((p) => p.cabinet_unit_id === proj.cabinet_unit_id);
+        if (cp.length > 0) {
+          // Adopt the running session without opening a fresh time_clock row.
+          setTimeClock(proj.time_clock_id);
+          setOpenCab({ cabinetId: proj.cabinet_unit_id, label: cp[0].cabinetLabel, key: cp[0].cabinetKey, jobNumber: proj.job_number, jobPath: cp[0].jobPath });
+          const initial: Record<string, boolean> = {};
+          cp.forEach((p) => { initial[p.id] = true; });
+          setChecked(initial);
+        }
+      }
     } catch { /* tables may not exist until migrations run */ }
     setLoading(false);
-  }, [tenantId]);
+  }, [tenantId, crewName]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { openCabRef.current = openCab; }, [openCab]);
 
   useEffect(() => {
     const ch = supabase
       .channel('rt-finishing')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'finish_specs', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'parts', filter: `tenant_id=eq.${tenantId}` }, () => { if (!openCab) void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'crew_active_projects', filter: `tenant_id=eq.${tenantId}` }, () => { if (!openCab) void load(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenantId, load, openCab]);
@@ -195,7 +221,7 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
   const specForJob = useCallback((jobNumber: string | null) => jobNumber ? specs.find((s) => s.job_number === jobNumber) ?? null : null, [specs]);
 
   // ── Background timer ───────────────────────────────────────────────────────
-  async function startTimer(jobNumber: string | null, label: string) {
+  async function startTimer(cabinetId: string, jobNumber: string | null, label: string) {
     const now = new Date().toISOString();
     try {
       const { data } = await supabase.from('time_clock').insert({
@@ -203,7 +229,13 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
         clock_in: now, date: now.split('T')[0], status: 'finishing_work',
         notes: `Finishing: ${label}`, job_number: jobNumber,
       }).select('id').single();
-      setTimeClock((data as { id: string } | null)?.id ?? null);
+      const id = (data as { id: string } | null)?.id ?? null;
+      setTimeClock(id);
+      // Track as the worker's active project (one per user, follows them).
+      void upsertActiveProject({
+        tenantId, workerName: crewName, dept: 'finishing', cabinetUnitId: cabinetId,
+        unitLabel: label, jobNumber, timeClockId: id, sessionStart: now, accumulatedSeconds: 0,
+      });
     } catch { setTimeClock(null); }
   }
   async function stopTimer() {
@@ -221,6 +253,8 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
 
   function openCabinet(g: { cabinetId: string; label: string; key: string; parts: FinishPart[] }) {
     if (!isClockedIn) { onRequireClock?.(); return; }
+    // One project per user — a paused project elsewhere must be resumed first.
+    if (pausedProject && pausedProject.cabinet_unit_id !== g.cabinetId) { showToast('Resume your paused project first', true); return; }
     const jobNumber = g.parts[0]?.job_number ?? null;
     const jobPath = g.parts[0]?.jobPath ?? '';
     setOpenCab({ cabinetId: g.cabinetId, label: g.label, key: g.key, jobNumber, jobPath });
@@ -228,13 +262,41 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
     const initial: Record<string, boolean> = {};
     g.parts.forEach((p) => { initial[p.id] = true; });
     setChecked(initial);
-    void startTimer(jobNumber, g.label);
+    void startTimer(g.cabinetId, jobNumber, g.label);
   }
+  // Back out — pause the project so it persists (and stays resumable) rather than
+  // silently dropping the running session.
   async function closeCabinet() {
-    await stopTimer();
+    const cab = openCab;
+    setTimeClock(null); // pauseWorkerProject closes the session row itself
     setOpenCab(null);
     setChecked({});
+    if (cab) {
+      const res = await pauseWorkerProject(tenantId, crewName);
+      if (res) showToast(`${cab.label} paused — ${fmtAccumulated(res.accumulated)} logged`);
+    }
     void load();
+  }
+
+  // PAUSE — explicit button: same as backing out (close session, mark paused).
+  async function pauseFinishing() {
+    await closeCabinet();
+  }
+
+  // RESUME — open a fresh session for the paused cabinet and re-enter its view.
+  async function resumeFromQueue(proj: ActiveProject) {
+    if (!isClockedIn) { onRequireClock?.(); return; }
+    const cp = parts.filter((p) => p.cabinet_unit_id === proj.cabinet_unit_id);
+    const { timeClockId: id } = await startProjectSession({
+      tenantId, workerName: crewName, dept: 'finishing', cabinetUnitId: proj.cabinet_unit_id,
+      unitLabel: proj.unit_label, jobNumber: proj.job_number, accumulatedSeconds: proj.accumulated_seconds ?? 0,
+    });
+    setTimeClock(id);
+    setPausedProject(null);
+    setOpenCab({ cabinetId: proj.cabinet_unit_id, label: cp[0]?.cabinetLabel ?? proj.unit_label, key: cp[0]?.cabinetKey ?? '', jobNumber: proj.job_number, jobPath: cp[0]?.jobPath ?? (proj.job_number ? `Job ${proj.job_number}` : 'Unassigned') });
+    const initial: Record<string, boolean> = {};
+    cp.forEach((p) => { initial[p.id] = true; });
+    setChecked(initial);
   }
 
   // ── QC exit — send the whole cabinet to QC (Finishing -> QC directly) ───────
@@ -251,6 +313,8 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
         .update({ status: 'ready_for_qc', assigned_dept: 'qc', completed_by: crewName || 'Finishing' })
         .eq('id', openCab.cabinetId).eq('tenant_id', tenantId);
       await stopTimer();
+      void clearProject(tenantId, crewName); // finishing done — terminal
+      setPausedProject(null);
       // Notify the supervisor only when the whole job is accounted for.
       const fired = await maybeNotifyJobQc(tenantId, openCab.jobNumber, openCab.jobPath.split('/').map((s) => s.trim()).join(' / '));
       if (!fired) {
@@ -373,12 +437,19 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
                     } catch { /* best-effort */ }
                   }
                   await stopTimer();
+                  void clearProject(tenantId, crewName); // finishing pushed on — terminal
+                  setPausedProject(null);
                   setOpenCab(null); setChecked({}); void load();
                 })();
               }}
               onToast={showToast}
             />
           ) : <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>No parts selected.</div>}
+          <button onClick={() => void pauseFinishing()}
+            style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '13px', borderRadius: 12, fontSize: 14, fontWeight: 800, fontFamily: 'inherit', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.4)', color: '#FBBF24', cursor: 'pointer' }}>
+            <svg width={17} height={17} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="9" y1="4" x2="9" y2="20"/><line x1="15" y1="4" x2="15" y2="20"/></svg>
+            Pause
+          </button>
           <button onClick={() => void sendToQc()} disabled={exitBusy}
             style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '14px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: exitBusy ? 'wait' : 'pointer', opacity: exitBusy ? 0.6 : 1 }}>
             <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
@@ -421,16 +492,39 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
                 </button>
                 {jobOpen && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '12px 14px 14px', borderTop: '1px solid var(--line)' }}>
-                    {groups.map((g) => (
-                      <button key={g.cabinetId} onClick={() => openCabinet(g)}
-                        style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '15px 16px', borderRadius: 12, background: 'var(--bg-1)', border: '1px solid var(--line)', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
-                        <div style={{ minWidth: 0, flex: 1 }}>
-                          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{g.label}</div>
-                          <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginTop: 2 }}>{g.parts.length} part{g.parts.length === 1 ? '' : 's'} to finish</div>
-                        </div>
-                        <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="m9 18 6-6-6-6"/></svg>
-                      </button>
-                    ))}
+                    {groups.map((g) => {
+                      const paused = pausedProject?.cabinet_unit_id === g.cabinetId ? pausedProject : null;
+                      const blocked = !!pausedProject && !paused;
+                      if (paused) {
+                        return (
+                          <div key={g.cabinetId} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '15px 16px', borderRadius: 12, background: 'var(--bg-1)', border: '1px solid rgba(251,191,36,0.4)' }}>
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{g.label}</span>
+                                <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', padding: '2px 7px', borderRadius: 20, background: 'rgba(251,191,36,0.14)', color: '#FBBF24' }}>Paused</span>
+                              </div>
+                              <div style={{ fontSize: 12.5, color: '#FBBF24', marginTop: 2 }}>{fmtAccumulated(paused.accumulated_seconds ?? 0)} logged</div>
+                            </div>
+                            <button onClick={() => void resumeFromQueue(paused)}
+                              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', borderRadius: 10, fontSize: 13, fontWeight: 800, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: 'pointer', flexShrink: 0 }}>
+                              <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                              Resume
+                            </button>
+                          </div>
+                        );
+                      }
+                      return (
+                        <button key={g.cabinetId} onClick={() => openCabinet(g)}
+                          title={blocked ? 'Resume your paused project first' : undefined}
+                          style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '15px 16px', borderRadius: 12, background: 'var(--bg-1)', border: '1px solid var(--line)', cursor: blocked ? 'not-allowed' : 'pointer', opacity: blocked ? 0.55 : 1, fontFamily: 'inherit', textAlign: 'left' }}>
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{g.label}</div>
+                            <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginTop: 2 }}>{g.parts.length} part{g.parts.length === 1 ? '' : 's'} to finish</div>
+                          </div>
+                          <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="m9 18 6-6-6-6"/></svg>
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>

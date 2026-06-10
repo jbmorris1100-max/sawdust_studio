@@ -2,6 +2,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { pushPart } from '@/lib/partActions';
+import {
+  getWorkerProject, upsertActiveProject, startProjectSession, pauseWorkerProject,
+  clearProject, fmtAccumulated, type ActiveProject,
+} from '@/lib/activeProject';
 import PushPicker, { type AiMode } from '@/components/PushPicker';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 
@@ -33,8 +37,10 @@ type CPart = {
 
 type CabInfo = { label: string; key: string };
 // timeClockId is the live time_clock row opened on START so the supervisor sees
-// the build running in real time; null until that insert lands.
-type ActiveBuild = { unitId: string; start: string; stop: string | null; timeClockId: string | null };
+// the build running in real time; null until that insert lands. start is the REAL
+// session start (used to log only this session's hours); accumulatedSeconds folds
+// in time from earlier paused sessions so the crew display shows the TOTAL.
+type ActiveBuild = { unitId: string; start: string; stop: string | null; timeClockId: string | null; accumulatedSeconds: number };
 
 interface Props {
   tenantId: string;
@@ -83,6 +89,8 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   // The one active build on this device (null = nothing running).
   const [build, setBuild] = useState<ActiveBuild | null>(null);
   const buildRef = useRef<ActiveBuild | null>(null);
+  // The worker's paused project (one per user, across the whole app), if any.
+  const [pausedProject, setPausedProject] = useState<ActiveProject | null>(null);
   // Which parts are selected for the push (all default).
   const [pushSel, setPushSel] = useState<Record<string, boolean>>({});
   const [, setTick] = useState(0);
@@ -125,9 +133,23 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
           setJobPaths(map);
         } catch { /* best-effort */ }
       }
+
+      // The worker's single project (paused badge / cross-device active build).
+      const proj = await getWorkerProject(tenantId, crewName);
+      setPausedProject(proj && proj.status === 'paused' && proj.dept === 'craftsman' ? proj : null);
+      // Adopt an active craftsman project this device doesn't yet know about (e.g.
+      // resumed from the clock-in prompt elsewhere) so the build view reflects it.
+      if (proj && proj.status === 'active' && proj.dept === 'craftsman' && !buildRef.current) {
+        const adopted: ActiveBuild = {
+          unitId: proj.cabinet_unit_id, start: proj.session_start ?? new Date().toISOString(),
+          stop: null, timeClockId: proj.time_clock_id, accumulatedSeconds: proj.accumulated_seconds ?? 0,
+        };
+        persistBuild(adopted);
+        setOpenUnitId(proj.cabinet_unit_id);
+      }
     } catch { /* leave existing state */ }
     setLoading(false);
-  }, [tenantId]);
+  }, [tenantId, crewName]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -136,6 +158,7 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
       .channel('rt-craftsman-builds')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'parts', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'crew_active_projects', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenantId, load]);
@@ -167,14 +190,16 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   async function startBuild(cabinetId: string) {
     if (!isClockedIn) { onRequireClock?.(); return; }
     if (build) return; // one active build at a time
+    // One project per user — a paused project must be resumed before starting new work.
+    if (pausedProject) { showToast('Resume your paused project first', true); return; }
     const start = new Date().toISOString();
+    const cab = cabInfo[cabinetId];
+    const jobNumber = parts.find((p) => p.cabinet_unit_id === cabinetId)?.job_number ?? null;
     // Start the build instantly in the UI, then open a live time_clock row (no
     // clock_out) so the supervisor's Craftsman Build Activity panel shows it
     // running in real time. The row id is stored on the build for the close.
-    persistBuild({ unitId: cabinetId, start, stop: null, timeClockId: null });
+    persistBuild({ unitId: cabinetId, start, stop: null, timeClockId: null, accumulatedSeconds: 0 });
     try {
-      const cab = cabInfo[cabinetId];
-      const jobNumber = parts.find((p) => p.cabinet_unit_id === cabinetId)?.job_number ?? null;
       const { data, error } = await supabase.from('time_clock').insert({
         tenant_id: tenantId, worker_name: crewName || 'Craftsman', dept: 'Craftsman',
         clock_in: start, date: start.split('T')[0], status: 'craftsman_build',
@@ -184,6 +209,11 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
       const id = (data as { id: string }).id;
       const b = buildRef.current;
       if (b && b.unitId === cabinetId) persistBuild({ ...b, timeClockId: id });
+      // Track this as the worker's active project (one per user, follows them).
+      void upsertActiveProject({
+        tenantId, workerName: crewName, dept: 'craftsman', cabinetUnitId: cabinetId,
+        unitLabel: cab?.label ?? 'Cabinet', jobNumber, timeClockId: id, sessionStart: start, accumulatedSeconds: 0,
+      });
       // Flip the cabinet to 'building' so the supervisor's Craftsman tab shows the
       // "Building" status badge (CraftsmanTab.statusMeta maps 'building' → blue).
       await supabase.from('cabinet_units')
@@ -191,6 +221,33 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         .eq('id', cabinetId)
         .eq('tenant_id', tenantId);
     } catch { /* live row best-effort; finishUnitBuild still logs hours on push */ }
+  }
+
+  // PAUSE — close the live session (logging its hours), fold it into the project's
+  // accumulated time, drop back to the queue with a Paused badge. One per user.
+  async function pauseBuild(cabinetId: string) {
+    const b = buildRef.current;
+    if (!b || b.unitId !== cabinetId) return;
+    persistBuild(null);
+    setPushSel({});
+    setOpenUnitId(null);
+    const res = await pauseWorkerProject(tenantId, crewName);
+    if (res) showToast(`Build paused — ${fmtAccumulated(res.accumulated)} logged`);
+    void load();
+  }
+
+  // RESUME — open a fresh session and re-enter the build view showing total time.
+  async function resumeFromQueue(proj: ActiveProject) {
+    if (!isClockedIn) { onRequireClock?.(); return; }
+    const accum = proj.accumulated_seconds ?? 0;
+    const { timeClockId: id, sessionStart } = await startProjectSession({
+      tenantId, workerName: crewName, dept: 'craftsman', cabinetUnitId: proj.cabinet_unit_id,
+      unitLabel: proj.unit_label, jobNumber: proj.job_number, accumulatedSeconds: accum,
+    });
+    persistBuild({ unitId: proj.cabinet_unit_id, start: sessionStart, stop: null, timeClockId: id, accumulatedSeconds: accum });
+    setPausedProject(null);
+    setOpenUnitId(proj.cabinet_unit_id);
+    try { await supabase.from('cabinet_units').update({ status: 'building' }).eq('id', proj.cabinet_unit_id).eq('tenant_id', tenantId); } catch { /* best-effort */ }
   }
   function readyToPush(cabinetId: string, cabParts: CPart[]) {
     const b = buildRef.current;
@@ -244,6 +301,8 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
       .eq('id', cabinetId)
       .eq('tenant_id', tenantId)
       .then(() => {}, () => {});
+    // The project is done — remove it so it no longer shows as active/paused.
+    void clearProject(tenantId, crewName);
     persistBuild(null);
     setPushSel({});
     // If every part on the cabinet was pushed, the cabinet leaves the queue.
@@ -296,11 +355,13 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     const isPushing = isBuilding && !!build?.stop;
     const anotherActive = !!build && build.unitId !== openUnitId;
     const elapsed = build && isBuilding ? elapsedSeconds(build.start, build.stop) : 0;
-    const canPush = elapsed >= MIN_PUSH_SECONDS;
+    // Display TOTAL = time from earlier (paused) sessions + this live session.
+    const totalElapsed = (build?.accumulatedSeconds ?? 0) + elapsed;
+    const canPush = totalElapsed >= MIN_PUSH_SECONDS;
     const representative = cabParts.find((p) => pushSel[p.id]) ?? cabParts[0];
     const jobNumber = cabParts[0]?.job_number ?? null;
     // Progress bar — pure visual fill on a 1-hour scale, no endpoint/estimate.
-    const fillPct = Math.min(100, (elapsed / 3600) * 100);
+    const fillPct = Math.min(100, (totalElapsed / 3600) * 100);
 
     return (
       <div style={{ position: 'fixed', inset: 0, zIndex: 300, background: '#070a0c', display: 'flex', flexDirection: 'column' }}>
@@ -360,12 +421,24 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         {/* Bottom controls */}
         <div style={{ borderTop: '1px solid var(--line)', padding: '14px 18px', background: '#070a0c' }}>
           {!isBuilding ? (
-            <button onClick={() => void startBuild(openUnitId)} disabled={anotherActive}
-              title={anotherActive ? 'Finish your current build first' : undefined}
-              style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '16px', borderRadius: 12, fontSize: 16, fontWeight: 800, fontFamily: 'inherit', background: anotherActive ? 'var(--bg-1)' : '#60A5FA', border: 'none', color: anotherActive ? 'var(--ink-mute)' : '#041020', cursor: anotherActive ? 'not-allowed' : 'pointer' }}>
-              <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
-              {anotherActive ? 'Another build in progress' : 'Start Build'}
-            </button>
+            pausedProject?.cabinet_unit_id === openUnitId ? (
+              <button onClick={() => void resumeFromQueue(pausedProject)}
+                style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '16px', borderRadius: 12, fontSize: 16, fontWeight: 800, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: 'pointer' }}>
+                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                Resume Build — {fmtAccumulated(pausedProject.accumulated_seconds ?? 0)} logged
+              </button>
+            ) : (() => {
+              const blockedByPaused = !!pausedProject;
+              const disabled = anotherActive || blockedByPaused;
+              return (
+                <button onClick={() => void startBuild(openUnitId)} disabled={disabled}
+                  title={blockedByPaused ? 'Resume your paused project first' : anotherActive ? 'Finish your current build first' : undefined}
+                  style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '16px', borderRadius: 12, fontSize: 16, fontWeight: 800, fontFamily: 'inherit', background: disabled ? 'var(--bg-1)' : '#60A5FA', border: 'none', color: disabled ? 'var(--ink-mute)' : '#041020', cursor: disabled ? 'not-allowed' : 'pointer' }}>
+                  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                  {blockedByPaused ? 'Resume your paused project first' : anotherActive ? 'Another build in progress' : 'Start Build'}
+                </button>
+              );
+            })()
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {/* Progress bar only — the crew never sees a clock; the timer runs
@@ -379,12 +452,19 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
               </div>
 
               {!isPushing ? (
-                <button onClick={() => readyToPush(openUnitId, cabParts)} disabled={!canPush}
-                  title={!canPush ? 'Let the build run first' : undefined}
-                  style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '15px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', background: canPush ? '#2DE1C9' : 'var(--bg-1)', border: `1px solid ${canPush ? '#2DE1C9' : 'var(--line)'}`, color: canPush ? '#04201c' : 'var(--ink-mute)', cursor: canPush ? 'pointer' : 'not-allowed' }}>
-                  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-                  Push To
-                </button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => readyToPush(openUnitId, cabParts)} disabled={!canPush}
+                    title={!canPush ? 'Let the build run first' : undefined}
+                    style={{ flex: 1, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '15px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', background: canPush ? '#2DE1C9' : 'var(--bg-1)', border: `1px solid ${canPush ? '#2DE1C9' : 'var(--line)'}`, color: canPush ? '#04201c' : 'var(--ink-mute)', cursor: canPush ? 'pointer' : 'not-allowed' }}>
+                    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                    Push To
+                  </button>
+                  <button onClick={() => void pauseBuild(openUnitId)} title="Pause this build"
+                    style={{ justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 7, padding: '15px 18px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.4)', color: '#FBBF24', cursor: 'pointer' }}>
+                    <svg width={17} height={17} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="9" y1="4" x2="9" y2="20"/><line x1="15" y1="4" x2="15" y2="20"/></svg>
+                    Pause
+                  </button>
+                </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div style={{ fontSize: 12.5, color: 'var(--ink-mute)' }}>Select parts above, then choose where they go:</div>
@@ -450,9 +530,30 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
                     {cabs.map((c) => {
                       const info = cabInfo[c.cabinetId] ?? { label: 'Cabinet', key: '' };
                       const building = build?.unitId === c.cabinetId;
+                      const paused = pausedProject?.cabinet_unit_id === c.cabinetId ? pausedProject : null;
+                      if (paused) {
+                        return (
+                          <div key={c.cabinetId} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '15px 16px', borderRadius: 12, background: 'var(--bg-1)', border: '1px solid rgba(251,191,36,0.4)' }}>
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{info.label}</span>
+                                <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', padding: '2px 7px', borderRadius: 20, background: 'rgba(251,191,36,0.14)', color: '#FBBF24' }}>Paused</span>
+                              </div>
+                              <div style={{ fontSize: 12.5, color: '#FBBF24', marginTop: 2 }}>{fmtAccumulated(paused.accumulated_seconds ?? 0)} logged</div>
+                            </div>
+                            <button onClick={() => void resumeFromQueue(paused)}
+                              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', borderRadius: 10, fontSize: 13, fontWeight: 800, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: 'pointer', flexShrink: 0 }}>
+                              <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                              Resume
+                            </button>
+                          </div>
+                        );
+                      }
+                      const blocked = !!pausedProject;
                       return (
-                        <button key={c.cabinetId} onClick={() => setOpenUnitId(c.cabinetId)}
-                          style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '15px 16px', borderRadius: 12, background: 'var(--bg-1)', border: `1px solid ${building ? 'rgba(96,165,250,0.4)' : 'var(--line)'}`, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
+                        <button key={c.cabinetId} onClick={() => { if (blocked) { showToast('Resume your paused project first', true); return; } setOpenUnitId(c.cabinetId); }}
+                          title={blocked ? 'Resume your paused project first' : undefined}
+                          style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '15px 16px', borderRadius: 12, background: 'var(--bg-1)', border: `1px solid ${building ? 'rgba(96,165,250,0.4)' : 'var(--line)'}`, cursor: blocked ? 'not-allowed' : 'pointer', opacity: blocked ? 0.55 : 1, fontFamily: 'inherit', textAlign: 'left' }}>
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{info.label}</div>
                             <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginTop: 2 }}>{c.parts.length} part{c.parts.length === 1 ? '' : 's'}{building ? ' · building now' : ''}</div>

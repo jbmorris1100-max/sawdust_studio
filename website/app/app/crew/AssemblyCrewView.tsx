@@ -2,6 +2,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { sendNotify } from '@/lib/notify';
+import {
+  getWorkerProject, upsertActiveProject, startProjectSession, pauseWorkerProject,
+  clearProject, fmtAccumulated, type ActiveProject,
+} from '@/lib/activeProject';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 
 // The Assembly department's home view. Parts pushed to assembly, grouped by
@@ -73,6 +77,10 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
   // Running builds on this device (cabinet id -> build). Persisted so a reload
   // does not lose the timer.
   const [builds, setBuilds] = useState<Record<string, ActiveBuild>>({});
+  // The worker's single paused project (one per user, across the whole app).
+  const [pausedProject, setPausedProject] = useState<ActiveProject | null>(null);
+  const buildsRef = useRef<Record<string, ActiveBuild>>({});
+  useEffect(() => { buildsRef.current = builds; }, [builds]);
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -169,9 +177,17 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
           setJobPaths(map);
         } catch { /* best-effort */ }
       }
+
+      // The worker's single project — paused badge, or an active project this
+      // device doesn't know about yet (resumed from the clock-in prompt elsewhere).
+      const proj = await getWorkerProject(tenantId, crewName);
+      setPausedProject(proj && proj.status === 'paused' && proj.dept === 'assembly' ? proj : null);
+      if (proj && proj.status === 'active' && proj.dept === 'assembly' && proj.time_clock_id && !buildsRef.current[proj.cabinet_unit_id]) {
+        persistBuilds({ ...buildsRef.current, [proj.cabinet_unit_id]: { timeClockId: proj.time_clock_id, start: proj.session_start ?? new Date().toISOString() } });
+      }
     } catch { /* tables may not exist until migrations run */ }
     setLoading(false);
-  }, [tenantId]);
+  }, [tenantId, crewName, persistBuilds]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -180,6 +196,7 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
       .channel('rt-assembly-crew')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'parts', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'crew_active_projects', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenantId, load]);
@@ -216,6 +233,8 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
   async function startBuild(cabinetId: string, jobNumber: string | null, label: string) {
     if (!isClockedIn) { onRequireClock?.(); return; }
     if (builds[cabinetId]) return;
+    // One project per user — a paused project must be resumed before starting new work.
+    if (pausedProject) { showToast('Resume your paused project first', true); return; }
     const now = new Date().toISOString();
     try {
       const { data, error } = await supabase.from('time_clock').insert({
@@ -226,11 +245,38 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
       if (error) throw error;
       const id = (data as { id: string }).id;
       persistBuilds({ ...builds, [cabinetId]: { timeClockId: id, start: now } });
+      // Track as the worker's active project (one per user, follows them).
+      void upsertActiveProject({
+        tenantId, workerName: crewName, dept: 'assembly', cabinetUnitId: cabinetId,
+        unitLabel: label, jobNumber, timeClockId: id, sessionStart: now, accumulatedSeconds: 0,
+      });
       try { await supabase.from('cabinet_units').update({ assembly_started_at: now }).eq('id', cabinetId).eq('tenant_id', tenantId).is('assembly_started_at', null); } catch { /* best-effort */ }
       showToast('Build started');
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Could not start build', true);
     }
+  }
+
+  // PAUSE — close the live session (logging its hours), fold into accumulated, and
+  // drop back to the queue with a Paused badge. One project per user.
+  async function pauseBuild(cabinetId: string, label: string) {
+    const b = builds[cabinetId];
+    if (b) { const next = { ...builds }; delete next[cabinetId]; persistBuilds(next); }
+    const res = await pauseWorkerProject(tenantId, crewName);
+    if (res) showToast(`${label} paused — ${fmtAccumulated(res.accumulated)} logged`);
+    void load();
+  }
+
+  // RESUME — open a fresh session for the paused cabinet.
+  async function resumeFromQueue(proj: ActiveProject) {
+    if (!isClockedIn) { onRequireClock?.(); return; }
+    const { timeClockId: id, sessionStart } = await startProjectSession({
+      tenantId, workerName: crewName, dept: 'assembly', cabinetUnitId: proj.cabinet_unit_id,
+      unitLabel: proj.unit_label, jobNumber: proj.job_number, accumulatedSeconds: proj.accumulated_seconds ?? 0,
+    });
+    if (id) persistBuilds({ ...builds, [proj.cabinet_unit_id]: { timeClockId: id, start: sessionStart } });
+    setPausedProject(null);
+    showToast(`${proj.unit_label} resumed`);
   }
 
   // MARK COMPLETE — stop this cabinet's timer, record who finished it, and flip
@@ -253,6 +299,13 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
         .update({ status: 'pending_qc_check', completed_by: crewName || 'Assembly' })
         .eq('id', cabinetId).eq('tenant_id', tenantId);
       if (error) throw error;
+      // Assembly work for this cabinet is done — clear it as the active project,
+      // but only if THIS cabinet is the one being tracked (one project per user).
+      if (pausedProject?.cabinet_unit_id === cabinetId) setPausedProject(null);
+      try {
+        const proj = await getWorkerProject(tenantId, crewName);
+        if (proj && proj.cabinet_unit_id === cabinetId) await clearProject(tenantId, crewName);
+      } catch { /* best-effort */ }
       showToast(`${label} marked complete`);
       void load();
     } catch (e) {
@@ -340,6 +393,8 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                       const jobNumber = c.parts[0]?.job_number ?? (j.jobNumber === '__nojob__' ? null : j.jobNumber);
                       const build = builds[c.cabinetId];
                       const isComplete = DONE_CAB_STATUSES.includes((info.status || '').toLowerCase());
+                      const paused = pausedProject?.cabinet_unit_id === c.cabinetId ? pausedProject : null;
+                      const blockedByPaused = !!pausedProject && !paused;
                       return (
                         <div key={c.cabinetId} style={{ padding: '16px 18px', borderRadius: 14, background: 'var(--bg-1)', border: `1px solid ${build ? 'rgba(45,225,201,0.4)' : 'var(--line)'}` }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
@@ -384,21 +439,47 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                                 <div style={{ fontSize: 12.5, color: 'var(--ink-mute)' }}>Waiting for the rest of the job to finish assembly</div>
                               )}
                             </>
+                          ) : paused ? (
+                            <>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                                <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', padding: '2px 7px', borderRadius: 20, background: 'rgba(251,191,36,0.14)', color: '#FBBF24' }}>Paused</span>
+                                <span style={{ fontSize: 12.5, color: '#FBBF24' }}>{fmtAccumulated(paused.accumulated_seconds ?? 0)} logged</span>
+                              </div>
+                              <button
+                                onClick={() => void resumeFromQueue(paused)}
+                                style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '12px', borderRadius: 10, fontSize: 14, fontWeight: 800, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: 'pointer' }}
+                              >
+                                <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                                Resume
+                              </button>
+                            </>
                           ) : (
                             <div style={{ display: 'flex', gap: 8 }}>
                               <button
                                 onClick={() => void startBuild(c.cabinetId, jobNumber, info.label)}
-                                disabled={!!build}
+                                disabled={!!build || blockedByPaused}
+                                title={blockedByPaused ? 'Resume your paused project first' : undefined}
                                 style={{ ...btnBase,
-                                  background: build ? 'var(--bg-1)' : 'rgba(96,165,250,0.14)',
-                                  border: `1px solid ${build ? 'var(--line)' : 'rgba(96,165,250,0.4)'}`,
-                                  color: build ? 'var(--ink-mute)' : '#60A5FA',
-                                  cursor: build ? 'not-allowed' : 'pointer',
+                                  background: (build || blockedByPaused) ? 'var(--bg-1)' : 'rgba(96,165,250,0.14)',
+                                  border: `1px solid ${(build || blockedByPaused) ? 'var(--line)' : 'rgba(96,165,250,0.4)'}`,
+                                  color: (build || blockedByPaused) ? 'var(--ink-mute)' : '#60A5FA',
+                                  cursor: (build || blockedByPaused) ? 'not-allowed' : 'pointer',
                                 }}
                               >
                                 <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                                 Start
                               </button>
+                              {build && (
+                                <button
+                                  onClick={() => void pauseBuild(c.cabinetId, info.label)}
+                                  title="Pause this build"
+                                  style={{ ...btnBase, flex: '0 0 auto', padding: '11px 16px',
+                                    background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.4)', color: '#FBBF24', cursor: 'pointer' }}
+                                >
+                                  <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="9" y1="4" x2="9" y2="20"/><line x1="15" y1="4" x2="15" y2="20"/></svg>
+                                  Pause
+                                </button>
+                              )}
                               <button
                                 onClick={() => void markComplete(c.cabinetId, info.label)}
                                 disabled={busy}

@@ -14,6 +14,10 @@ import FinishingView from './FinishingView';
 import AssemblyCrewView from './AssemblyCrewView';
 import PushPicker from '@/components/PushPicker';
 import { pushPart, deptDisplay } from '@/lib/partActions';
+import {
+  getWorkerProject, pauseWorkerProject, startProjectSession, fmtAccumulated,
+  deptLabel as projDeptLabel, type ActiveProject,
+} from '@/lib/activeProject';
 import PartPushButton from '@/components/PartPushButton';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 import MessageThread from '@/components/MessageThread';
@@ -728,6 +732,9 @@ export default function CrewPage() {
   const [clockShift, setClockShift] = useState<TimeEntry | null>(null);
   const [gateOpen,   setGateOpen]   = useState(false);
   const isClockedIn = !!clockShift;
+  // A paused project surfaced after clock-in → the "Unfinished project" resume prompt.
+  const [resumePrompt, setResumePrompt] = useState<ActiveProject | null>(null);
+  const [resumeBusy,   setResumeBusy]   = useState(false);
 
   // Break tracking
   const [onBreak,        setOnBreak]        = useState(false);
@@ -1292,6 +1299,21 @@ export default function CrewPage() {
     const newDept = switchDeptVal;
     console.log('[switchDept] fired, newDept=', newDept, 'current=', crewDept);
     if (!newDept) return;
+    const oldDept = crewDept;
+    // 0. An active (not paused) project must be auto-paused before the switch, so
+    //    the crew member can resume it later and the supervisor is told why it stopped.
+    if (tenant && crewName) {
+      try {
+        const res = await pauseWorkerProject(tenant.id, crewName);
+        if (res) {
+          const logged = fmtAccumulated(res.accumulated);
+          showToast(`Your ${res.project.unit_label} build in ${projDeptLabel(res.project.dept)} has been paused`);
+          const body = `${crewName} switched from ${oldDept || projDeptLabel(res.project.dept)} to ${newDept} — ${res.project.unit_label} paused with ${logged} logged`;
+          sendNotify({ tenant_id: tenant.id, target: 'supervisor', title: 'Incomplete project paused', body, url: '/app/supervisor' });
+          try { await supabase.from('notifications').insert({ tenant_id: tenant.id, target_type: 'supervisor', title: 'Incomplete project paused', body, url: '/app/supervisor' }); } catch (_) { /* bell best-effort */ }
+        }
+      } catch (_) { /* pause best-effort — never blocks the dept switch */ }
+    }
     // 1. Persist and update React state immediately
     saveIdentity(crewName, newDept);
     // 2. Reset any open message thread so the inbox re-renders for new dept
@@ -2270,11 +2292,38 @@ export default function CrewPage() {
       await reloadClock();
       closeModal();
       showToast(`${name} clocked in`);
+      // If they were mid-build when they last clocked out, offer to resume it.
+      try {
+        const proj = await getWorkerProject(tenant!.id, name);
+        if (proj && proj.status === 'paused') setResumePrompt(proj);
+      } catch (_) { /* best-effort */ }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       showToast(msg, true);
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Resume the paused project from the clock-in prompt: open a fresh time_clock
+  // session + flip the project active. The dept view picks it up on next load.
+  async function handleResumeProject() {
+    if (!resumePrompt || resumeBusy || !tenant) return;
+    setResumeBusy(true);
+    try {
+      await startProjectSession({
+        tenantId: tenant.id, workerName: resumePrompt.worker_name, dept: resumePrompt.dept,
+        cabinetUnitId: resumePrompt.cabinet_unit_id, unitLabel: resumePrompt.unit_label,
+        jobNumber: resumePrompt.job_number, accumulatedSeconds: resumePrompt.accumulated_seconds ?? 0,
+      });
+      // Follow the project into its department so the build view is on screen.
+      if (resumePrompt.dept && projDeptLabel(resumePrompt.dept) !== crewDept) saveIdentity(crewName, projDeptLabel(resumePrompt.dept));
+      showToast(`${resumePrompt.unit_label} resumed`);
+      setResumePrompt(null);
+    } catch (_) {
+      showToast('Could not resume — try again from the queue', true);
+    } finally {
+      setResumeBusy(false);
     }
   }
 
@@ -2338,6 +2387,15 @@ export default function CrewPage() {
 
   async function handleClockOut() {
     if (!openEntry || saving) return;
+
+    // Auto-pause any active project so it survives the clock-out and can be
+    // resumed on the next clock-in. Best-effort; never blocks the clock-out.
+    if (tenant && crewName && typeof navigator !== 'undefined' && navigator.onLine) {
+      try {
+        const res = await pauseWorkerProject(tenant.id, crewName);
+        if (res) showToast(`${res.project.unit_label} paused — resume when you clock back in`);
+      } catch (_) { /* best-effort */ }
+    }
 
     // Offline — queue the clock-out and clear local active state.
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -4516,6 +4574,29 @@ export default function CrewPage() {
 
       {/* ── Clock-in gate ──────────────────────────────────────────────────────
           Shown when a work action is attempted with no open shift. */}
+      {/* Unfinished project — resume prompt after clock-in */}
+      {resumePrompt && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 280, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <div style={{ width: '100%', maxWidth: 360, background: '#0a0d10', border: '1px solid rgba(251,191,36,0.25)', borderRadius: 18, padding: '28px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, textAlign: 'center' }}>
+            <div style={{ width: 52, height: 52, borderRadius: '50%', background: 'rgba(251,191,36,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FBBF24' }}>
+              <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#FBBF24' }}>Unfinished project</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--ink)' }}>{resumePrompt.unit_label}</div>
+            <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>{projDeptLabel(resumePrompt.dept)}{resumePrompt.job_number ? ` · Job ${resumePrompt.job_number}` : ''}</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--teal)' }}>{fmtAccumulated(resumePrompt.accumulated_seconds ?? 0)} logged</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', marginTop: 4 }}>
+              <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', opacity: resumeBusy ? 0.6 : 1 }} disabled={resumeBusy} onClick={() => void handleResumeProject()}>
+                {resumeBusy ? 'Resuming…' : 'Resume Build'}
+              </button>
+              <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }} disabled={resumeBusy} onClick={() => setResumePrompt(null)}>
+                Not now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {gateOpen && (
         <div
           style={{ position: 'fixed', inset: 0, zIndex: 260, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
