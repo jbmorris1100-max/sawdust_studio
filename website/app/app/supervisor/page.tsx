@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
 import { useSession } from '@/lib/useSession';
-import { trialDaysLeft, getDepartments, planLabel as planLabelFor, isPaidPlan, PLAN_DISPLAY } from '@/lib/auth';
+import { trialDaysLeft, getDepartments, planLabel as planLabelFor, isPaidPlan, isPartnerActive, PLAN_DISPLAY } from '@/lib/auth';
 import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
 import ReportsTab from './ReportsTab';
 import SetupWizard from './SetupWizard';
@@ -455,6 +455,20 @@ function TrialBanner({ days }: { days: number }) {
       <Link href="/pricing" style={{ fontSize: 13, fontWeight: 700, color: '#FBBF24', textDecoration: 'underline' }}>
         {urgent ? 'Choose a plan' : 'Upgrade'}
       </Link>
+    </div>
+  );
+}
+
+// Soft, non-alarming banner shown once a partner's extended trial has ended —
+// their lifetime discount is now active. Teal, not amber/red.
+function PartnerEndedBanner({ discount }: { discount: number }) {
+  return (
+    <div style={{ position: 'sticky', top: 64, zIndex: 50, background: 'rgba(45,225,201,0.06)', borderBottom: '1px solid rgba(45,225,201,0.25)', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
+      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+      <span style={{ fontSize: 13, color: 'var(--teal)' }}>
+        Your partner trial has ended — your lifetime {discount}% discount is now active
+      </span>
+      <Link href="/pricing" style={{ fontSize: 13, fontWeight: 700, color: 'var(--teal)', textDecoration: 'underline' }}>View plans</Link>
     </div>
   );
 }
@@ -2928,6 +2942,10 @@ export default function SupervisorPage() {
   const isTrial = tenant?.subscription_status === 'trial' && !isPaidPlan(tenant?.plan ?? null);
   const isPastDue = tenant?.subscription_status === 'past_due';
   const days = trialDaysLeft(tenant?.trial_ends_at ?? null);
+  // Partner accounts: while inside their partner trial, suppress the trial
+  // banner entirely. Once it ends, show the soft lifetime-discount banner.
+  const partnerActive = tenant ? isPartnerActive(tenant) : false;
+  const partnerEnded = !!tenant?.is_partner && !partnerActive;
 
   // True unread = crew messages (sender ≠ Supervisor) the supervisor hasn't opened yet
   // (read_at IS NULL). Persisted in Supabase, so it survives across devices/sessions.
@@ -3047,7 +3065,8 @@ export default function SupervisorPage() {
           </div>
         </div>
 
-        {isTrial && <TrialBanner days={days} />}
+        {isTrial && !partnerActive && <TrialBanner days={days} />}
+        {partnerEnded && <PartnerEndedBanner discount={tenant?.partner_discount ?? 0} />}
         {isPastDue && <PastDueBanner onManage={() => void openBillingPortal()} busy={billingBusy} />}
 
         <OfflineBanner tenantId={tenant?.id} onSynced={loadAll} />
@@ -5395,6 +5414,8 @@ export default function SupervisorPage() {
             <Link href="/terms" style={{ color: 'var(--ink-mute)', textDecoration: 'none' }}>Terms</Link>
             <span>·</span>
             <Link href="/privacy" style={{ color: 'var(--ink-mute)', textDecoration: 'none' }}>Privacy</Link>
+            <span>·</span>
+            <Link href="/admin/partners" style={{ fontSize: 11, color: 'rgba(255,255,255,0.15)', textDecoration: 'none' }}>Admin Access</Link>
           </div>
 
           {/* Mobile bottom-nav spacer — pushes content above the fixed bar */}

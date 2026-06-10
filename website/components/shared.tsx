@@ -115,7 +115,11 @@ export function Footer() {
             <Link href="/admin" style={{ color: 'var(--ink-mute)', opacity: 0.6, fontSize: 12 }}>Admin</Link>
           )}
         </div>
-        <div className="foot-copy">© 2026 InlineIQ, Inc.</div>
+        <div className="foot-copy">
+          © 2026 InlineIQ, Inc.
+          <span style={{ margin: '0 6px', color: 'rgba(255,255,255,0.15)' }}>·</span>
+          <Link href="/admin/partners" style={{ fontSize: 11, color: 'rgba(255,255,255,0.15)', textDecoration: 'none' }}>Admin Access</Link>
+        </div>
       </div>
     </footer>
   );

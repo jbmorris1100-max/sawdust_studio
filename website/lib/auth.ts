@@ -28,6 +28,10 @@ export type Tenant = {
   stripe_price_id: string | null;
   current_period_end: string | null;
   cancel_at_period_end: boolean | null;
+  // ── Partner accounts (created via /admin/partners) ──
+  is_partner?: boolean;
+  partner_discount?: number;
+  partner_trial_ends_at?: string | null;
 };
 
 // Display metadata per plan, mirrored from lib/stripe.ts PLAN_META so the client
@@ -67,7 +71,19 @@ export function trialDaysLeft(trial_ends_at: string | null): number {
   return Math.max(0, Math.ceil(ms / (1000 * 60 * 60 * 24)));
 }
 
+// A partner account is "active" while inside its partner trial window (or
+// indefinitely if no end date is set). After the window, the partner keeps
+// access through their normal subscription/trial state, but isPartnerActive
+// flips to false so the supervisor can surface the lifetime-discount banner.
+export function isPartnerActive(tenant: Tenant): boolean {
+  if (!tenant.is_partner) return false;
+  if (!tenant.partner_trial_ends_at) return true;
+  return new Date(tenant.partner_trial_ends_at) > new Date();
+}
+
 export function isTenantExpired(tenant: Tenant): boolean {
+  // Partners inside their partner trial never count as expired.
+  if (isPartnerActive(tenant)) return false;
   // Paid + active, or past_due (kept in a grace window so they can fix billing)
   // both retain access; the supervisor shows a banner for past_due.
   if (tenant.subscription_status === 'active') return false;
