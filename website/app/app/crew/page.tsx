@@ -806,6 +806,14 @@ export default function CrewPage() {
   // a batch can be pushed to one dept at once.
   const [selectMode,     setSelectMode]     = useState(false);
   const [selectedParts,  setSelectedParts]  = useState<Record<string, { part: CutJobPart; cabinetId: string }>>({});
+  // Undo toast — shown after any dept push so the worker can reverse it.
+  const [undoState, setUndoState] = useState<{
+    label: string;
+    toDept: string;
+    fromDept: string;
+    parts: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[];
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
   const longPressTimerCut = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressFired = useRef(false);
 
@@ -2024,22 +2032,49 @@ export default function CrewPage() {
   }
 
   // Push every part of the given cabinets to a destination dept and drop them.
+  function showUndoToast(
+    label: string,
+    toDept: string,
+    fromDept: string,
+    parts: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[],
+  ) {
+    if (undoState) clearTimeout(undoState.timer);
+    const timer = setTimeout(() => { setUndoState(null); }, 8000);
+    setUndoState({ label, toDept, fromDept, parts, timer });
+  }
+
+  async function handleUndo() {
+    if (!undoState) return;
+    clearTimeout(undoState.timer);
+    const u = undoState;
+    setUndoState(null);
+    for (const p of u.parts) {
+      try {
+        await pushPart({ tenantId: tenant!.id, partId: p.partId, partName: p.partName, cabinetUnitId: p.cabinetUnitId, jobNumber: p.jobNumber, fromDept: u.toDept, toDept: u.fromDept, workerName: crewName, timeClockId: activeTimeClockId });
+      } catch { /* best-effort per part */ }
+    }
+    showToast(`Undone — parts returned to ${deptDisplay(u.fromDept)}`);
+    void loadProduction();
+  }
+
   async function pushCutCabinets(cabinetIds: string[], toDept: string) {
     if (cutJobBusy) return;
     setCutJobBusy(true);
     try {
+      const pushedParts: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[] = [];
       for (const cid of cabinetIds) {
         const cab = cutJobCabs.find((c) => c.cabinetId === cid);
         if (!cab) continue;
         for (const p of cab.parts) {
           try {
             await pushPart({ tenantId: tenant!.id, partId: p.id, partName: p.part_name, cabinetUnitId: cid, jobNumber: cab.jobNumber, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId });
+            pushedParts.push({ partId: p.id, cabinetUnitId: cid, partName: p.part_name, jobNumber: cab.jobNumber });
           } catch { /* best-effort per part */ }
         }
       }
       setCutJobCabs((cabs) => cabs.filter((c) => !cabinetIds.includes(c.cabinetId)));
       setHeldCabs((h) => { const n = { ...h }; cabinetIds.forEach((id) => delete n[id]); return n; });
-      showToast(`Pushed ${cabinetIds.length} cabinet${cabinetIds.length === 1 ? '' : 's'} to ${deptDisplay(toDept)}`);
+      showUndoToast(`${cabinetIds.length} cabinet${cabinetIds.length === 1 ? '' : 's'}`, toDept, 'production', pushedParts);
       void loadProduction();
     } finally {
       setCutJobBusy(false);
@@ -2053,7 +2088,7 @@ export default function CrewPage() {
     try {
       await pushPart({ tenantId: tenant!.id, partId: part.id, partName: part.part_name, cabinetUnitId: cabinetId, jobNumber: cutJob?.jobNumber ?? null, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId });
       setCutJobCabs((cabs) => cabs.map((c) => c.cabinetId !== cabinetId ? c : { ...c, parts: c.parts.filter((p) => p.id !== part.id) }).filter((c) => c.parts.length > 0));
-      showToast(`Sent to ${deptDisplay(toDept)}`);
+      showUndoToast(part.part_name, toDept, 'production', [{ partId: part.id, cabinetUnitId: cabinetId, partName: part.part_name, jobNumber: cutJob?.jobNumber ?? null }]);
       void loadProduction();
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Push failed', true);
@@ -2074,7 +2109,12 @@ export default function CrewPage() {
       }
       const pushedIds = new Set(items.map((it) => it.part.id));
       setCutJobCabs((cabs) => cabs.map((c) => ({ ...c, parts: c.parts.filter((p) => !pushedIds.has(p.id)) })).filter((c) => c.parts.length > 0));
-      showToast(`Pushed ${items.length} part${items.length === 1 ? '' : 's'} to ${deptDisplay(toDept)}`);
+      showUndoToast(
+        `${items.length} part${items.length === 1 ? '' : 's'}`,
+        toDept,
+        'production',
+        items.map((it) => ({ partId: it.part.id, cabinetUnitId: it.cabinetId, partName: it.part.part_name, jobNumber: cutJob?.jobNumber ?? null })),
+      );
       setSelectedParts({});
       setSelectMode(false);
       void loadProduction();
@@ -4774,7 +4814,7 @@ export default function CrewPage() {
               <ViewDrawingsButton tenantId={tenant!.id} jobNumber={cutJob.jobNumber} cabinetKey="" compact />
               <button
                 onClick={() => { if (selectMode) { setSelectMode(false); setSelectedParts({}); } else { setSelectMode(true); } }}
-                style={{ flexShrink: 0, padding: '9px 14px', borderRadius: 10, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', background: selectMode ? 'rgba(45,225,201,0.14)' : 'rgba(255,255,255,0.06)', border: `1px solid ${selectMode ? 'rgba(45,225,201,0.4)' : 'var(--line)'}`, color: selectMode ? 'var(--teal)' : 'var(--ink-dim)', cursor: 'pointer' }}>
+                style={{ flexShrink: 0, padding: '8px 16px', borderRadius: 10, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', background: selectMode ? 'rgba(248,113,113,0.15)' : 'rgba(251,191,36,0.15)', border: `1px solid ${selectMode ? 'rgba(248,113,113,0.5)' : 'rgba(251,191,36,0.5)'}`, color: selectMode ? '#F87171' : '#FBBF24', cursor: 'pointer' }}>
                 {selectMode ? 'Cancel' : 'Select'}
               </button>
             </div>
@@ -4868,6 +4908,24 @@ export default function CrewPage() {
                 </div>
               );
             })()}
+
+            {/* Undo toast — reverse the last push within 8s */}
+            {undoState && (
+              <div style={{ position: 'fixed', bottom: 'calc(20px + env(safe-area-inset-bottom))', left: 16, right: 16, zIndex: 2000, background: '#0a0f0e', border: '1px solid rgba(45,225,201,0.35)', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 4px 24px rgba(0,0,0,0.5)' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{undoState.label}</div>
+                  <div style={{ fontSize: 12, color: 'var(--teal)' }}>Sent to {deptDisplay(undoState.toDept)}</div>
+                </div>
+                <button onClick={() => void handleUndo()}
+                  style={{ background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.4)', color: '#F87171', borderRadius: 8, padding: '8px 14px', fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer' }}>
+                  Undo
+                </button>
+                <button onClick={() => { clearTimeout(undoState.timer); setUndoState(null); }} aria-label="Dismiss"
+                  style={{ background: 'none', border: 'none', color: 'var(--ink-mute)', cursor: 'pointer', display: 'flex', padding: 4 }}>
+                  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                </button>
+              </div>
+            )}
           </div>
         );
       })()}

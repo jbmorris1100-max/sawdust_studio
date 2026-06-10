@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import { pushPart } from '@/lib/partActions';
+import { pushPart, deptDisplay, PART_DEPTS } from '@/lib/partActions';
 import {
   getWorkerProject, upsertActiveProject, startProjectSession, pauseWorkerProject,
   clearProject, fmtAccumulated, type ActiveProject,
@@ -94,6 +94,17 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   // Which parts are selected for the push (all default).
   const [pushSel, setPushSel] = useState<Record<string, boolean>>({});
   const [, setTick] = useState(0);
+  // Queue-level multi-select: pick whole cabinets and push them all at once.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedCabs, setSelectedCabs] = useState<Set<string>>(new Set());
+  // Undo toast — reverse the last push within 8s.
+  const [undoState, setUndoState] = useState<{
+    label: string;
+    toDept: string;
+    fromDept: string;
+    parts: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[];
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -162,6 +173,18 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenantId, load]);
+
+  useEffect(() => {
+    function handleVisibility() {
+      if (document.visibilityState === 'visible') {
+        void load();
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [load]);
 
   // Restore an in-progress build after a reload (only restores, never starts).
   useEffect(() => {
@@ -274,6 +297,11 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   async function finishUnitBuild(cabinetId: string, allParts: CPart[], representativeId: string, toDept: string) {
     const b = buildRef.current;
     const jobNumber = allParts[0]?.job_number ?? null;
+    // Every selected part (including the representative PushPicker already moved)
+    // goes into the undo set so the whole push can be reversed.
+    const pushedParts = allParts
+      .filter((p) => pushSel[p.id])
+      .map((p) => ({ partId: p.id, cabinetUnitId: p.cabinet_unit_id, partName: p.part_name, jobNumber: p.job_number }));
     for (const p of allParts) {
       if (p.id === representativeId || !pushSel[p.id]) continue;
       try {
@@ -314,6 +342,56 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     const remaining = allParts.some((p) => !pushSel[p.id]);
     setParts((prev) => prev.filter((p) => p.cabinet_unit_id !== cabinetId || (remaining && !pushSel[p.id])));
     if (!remaining) setOpenUnitId(null);
+    if (pushedParts.length > 0) {
+      const cab = cabInfo[cabinetId];
+      showUndoToast(cab?.label ?? 'Cabinet', toDept, 'craftsman', pushedParts);
+    }
+  }
+
+  function showUndoToast(
+    label: string,
+    toDept: string,
+    fromDept: string,
+    parts: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[],
+  ) {
+    if (undoState) clearTimeout(undoState.timer);
+    const timer = setTimeout(() => { setUndoState(null); }, 8000);
+    setUndoState({ label, toDept, fromDept, parts, timer });
+  }
+
+  async function handleUndo() {
+    if (!undoState) return;
+    clearTimeout(undoState.timer);
+    const u = undoState;
+    setUndoState(null);
+    for (const p of u.parts) {
+      try {
+        await pushPart({ tenantId, partId: p.partId, partName: p.partName, cabinetUnitId: p.cabinetUnitId, jobNumber: p.jobNumber, fromDept: u.toDept, toDept: u.fromDept, workerName: crewName, timeClockId });
+      } catch { /* best-effort per part */ }
+    }
+    showToast(`Undone — parts returned to ${deptDisplay(u.fromDept)}`);
+    void load();
+  }
+
+  // Push every part across the selected cabinets to one dept at once.
+  async function pushSelectedCraftsman(toDept: string) {
+    const cabIds = Array.from(selectedCabs);
+    if (cabIds.length === 0) return;
+    const idSet = new Set(cabIds);
+    const pushed: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[] = [];
+    for (const cid of cabIds) {
+      for (const p of parts.filter((pp) => pp.cabinet_unit_id === cid)) {
+        try {
+          await pushPart({ tenantId, partId: p.id, partName: p.part_name, cabinetUnitId: p.cabinet_unit_id, jobNumber: p.job_number, fromDept: 'craftsman', toDept, workerName: crewName, timeClockId });
+          pushed.push({ partId: p.id, cabinetUnitId: p.cabinet_unit_id, partName: p.part_name, jobNumber: p.job_number });
+        } catch { /* best-effort per part */ }
+      }
+    }
+    showUndoToast(`${cabIds.length} cabinet${cabIds.length === 1 ? '' : 's'}`, toDept, 'craftsman', pushed);
+    setSelectedCabs(new Set());
+    setSelectMode(false);
+    setParts((prev) => prev.filter((p) => !idSet.has(p.cabinet_unit_id)));
+    void load();
   }
 
   const jobLabel = (jobNumber: string | null) =>
@@ -351,6 +429,24 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     });
     return Object.entries(groups).map(([cabinetId, cp]) => ({ cabinetId, parts: cp }));
   };
+
+  // Undo toast — rendered in both the work-order and queue views (fixed, zIndex 2000).
+  const undoToast = undoState ? (
+    <div style={{ position: 'fixed', bottom: 'calc(20px + env(safe-area-inset-bottom))', left: 16, right: 16, zIndex: 2000, background: '#0a0f0e', border: '1px solid rgba(45,225,201,0.35)', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 4px 24px rgba(0,0,0,0.5)' }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{undoState.label}</div>
+        <div style={{ fontSize: 12, color: 'var(--teal)' }}>Sent to {deptDisplay(undoState.toDept)}</div>
+      </div>
+      <button onClick={() => void handleUndo()}
+        style={{ background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.4)', color: '#F87171', borderRadius: 8, padding: '8px 14px', fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer' }}>
+        Undo
+      </button>
+      <button onClick={() => { clearTimeout(undoState.timer); setUndoState(null); }} aria-label="Dismiss"
+        style={{ background: 'none', border: 'none', color: 'var(--ink-mute)', cursor: 'pointer', display: 'flex', padding: 4 }}>
+        <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  ) : null;
 
   // ── Full-screen work order ─────────────────────────────────────────────────
   if (openUnitId) {
@@ -500,6 +596,7 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
             </div>
           )}
         </div>
+        {undoToast}
       </div>
     );
   }
@@ -510,6 +607,13 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
         <span style={{ color: 'var(--teal)', display: 'flex' }}><IcoCraft /></span>
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Craftsman Builds</div>
+        {!loading && jobOptions.length > 0 && (
+          <button
+            onClick={() => { if (selectMode) { setSelectMode(false); setSelectedCabs(new Set()); } else { setSelectMode(true); } }}
+            style={{ marginLeft: 'auto', padding: '8px 16px', borderRadius: 10, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', background: selectMode ? 'rgba(248,113,113,0.15)' : 'rgba(251,191,36,0.15)', border: `1px solid ${selectMode ? 'rgba(248,113,113,0.5)' : 'rgba(251,191,36,0.5)'}`, color: selectMode ? '#F87171' : '#FBBF24', cursor: 'pointer' }}>
+            {selectMode ? 'Cancel' : 'Select'}
+          </button>
+        )}
       </div>
 
       {loading ? (
@@ -558,16 +662,30 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
                         );
                       }
                       const blocked = !!pausedProject;
+                      const selected = selectedCabs.has(c.cabinetId);
                       return (
-                        <button key={c.cabinetId} onClick={() => { if (blocked) { showToast('Resume your paused project first', true); return; } setOpenUnitId(c.cabinetId); }}
-                          title={blocked ? 'Resume your paused project first' : undefined}
-                          style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '15px 16px', borderRadius: 12, background: 'var(--bg-1)', border: `1px solid ${building ? 'rgba(96,165,250,0.4)' : 'var(--line)'}`, cursor: blocked ? 'not-allowed' : 'pointer', opacity: blocked ? 0.55 : 1, fontFamily: 'inherit', textAlign: 'left' }}>
+                        <button key={c.cabinetId}
+                          onClick={() => {
+                            if (selectMode) {
+                              setSelectedCabs((s) => { const n = new Set(s); if (n.has(c.cabinetId)) n.delete(c.cabinetId); else n.add(c.cabinetId); return n; });
+                              return;
+                            }
+                            if (blocked) { showToast('Resume your paused project first', true); return; }
+                            setOpenUnitId(c.cabinetId);
+                          }}
+                          title={blocked && !selectMode ? 'Resume your paused project first' : undefined}
+                          style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '15px 16px', borderRadius: 12, background: 'var(--bg-1)', border: `1px solid ${selectMode && selected ? 'var(--teal)' : building ? 'rgba(96,165,250,0.4)' : 'var(--line)'}`, cursor: (blocked && !selectMode) ? 'not-allowed' : 'pointer', opacity: (blocked && !selectMode) ? 0.55 : 1, fontFamily: 'inherit', textAlign: 'left' }}>
+                          {selectMode && (
+                            <span style={{ width: 22, height: 22, flexShrink: 0, borderRadius: 6, border: `1px solid ${selected ? 'var(--teal)' : 'var(--line-strong)'}`, background: selected ? 'var(--teal)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              {selected && <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#04201c" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                            </span>
+                          )}
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{info.label}</div>
                             <div style={{ fontSize: 12.5, color: 'var(--ink-mute)', marginTop: 2 }}>{c.parts.length} part{c.parts.length === 1 ? '' : 's'}{building ? ' · building now' : ''}</div>
                           </div>
                           {building && <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#60A5FA', display: 'inline-block', animation: 'craftPulse 1.4s ease-in-out infinite' }} />}
-                          <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="m9 18 6-6-6-6"/></svg>
+                          {!selectMode && <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="m9 18 6-6-6-6"/></svg>}
                         </button>
                       );
                     })}
@@ -578,6 +696,23 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
           })}
         </div>
       )}
+
+      {/* Multi-select push bar */}
+      {selectMode && selectedCabs.size > 0 && (
+        <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 1500, padding: '14px 16px calc(14px + env(safe-area-inset-bottom))', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-dim)', marginBottom: 10 }}>Push {selectedCabs.size} cabinet{selectedCabs.size === 1 ? '' : 's'} to:</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {PART_DEPTS.filter((d) => d.toLowerCase() !== 'craftsman').map((d) => (
+              <button key={d} onClick={() => void pushSelectedCraftsman(d)}
+                style={{ flex: 1, minWidth: 0, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 6, padding: '13px 12px', borderRadius: 12, fontSize: 14, fontWeight: 800, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: 'pointer' }}>
+                {deptDisplay(d)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {undoToast}
       <style>{`@keyframes craftPulse{0%,100%{opacity:1}50%{opacity:0.25}}`}</style>
     </div>
   );

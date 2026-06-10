@@ -87,6 +87,17 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
   const buildsRef = useRef<Record<string, ActiveBuild>>({});
   useEffect(() => { buildsRef.current = builds; }, [builds]);
   const [, setTick] = useState(0);
+  // Part-level multi-select push.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedParts, setSelectedParts] = useState<Record<string, { part: AsmPart; cabinetId: string }>>({});
+  // Undo toast — reverse the last push within 8s.
+  const [undoState, setUndoState] = useState<{
+    label: string;
+    toDept: string;
+    fromDept: string;
+    parts: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[];
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
 
   useEffect(() => {
     try { const r = localStorage.getItem(BUILDS_KEY); if (r) setBuilds(JSON.parse(r) as Record<string, ActiveBuild>); } catch { /* ignore */ }
@@ -332,11 +343,58 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
         jobNumber: part.job_number, fromDept: 'assembly', toDept, workerName: crewName, timeClockId: null,
       });
       setParts((prev) => prev.filter((p) => p.id !== part.id));
-      showToast(`Sent to ${deptDisplay(toDept)}`);
+      showUndoToast(part.part_name, toDept, 'assembly', [{ partId: part.id, cabinetUnitId: part.cabinet_unit_id, partName: part.part_name, jobNumber: part.job_number }]);
       void load();
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Push failed', true);
     }
+  }
+
+  function showUndoToast(
+    label: string,
+    toDept: string,
+    fromDept: string,
+    parts: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[],
+  ) {
+    if (undoState) clearTimeout(undoState.timer);
+    const timer = setTimeout(() => { setUndoState(null); }, 8000);
+    setUndoState({ label, toDept, fromDept, parts, timer });
+  }
+
+  async function handleUndo() {
+    if (!undoState) return;
+    clearTimeout(undoState.timer);
+    const u = undoState;
+    setUndoState(null);
+    for (const p of u.parts) {
+      try {
+        await pushPart({ tenantId, partId: p.partId, partName: p.partName, cabinetUnitId: p.cabinetUnitId, jobNumber: p.jobNumber, fromDept: u.toDept, toDept: u.fromDept, workerName: crewName, timeClockId: null });
+      } catch { /* best-effort per part */ }
+    }
+    showToast(`Undone — parts returned to ${deptDisplay(u.fromDept)}`);
+    void load();
+  }
+
+  // Push every selected part to one dept at once, then exit select mode.
+  async function pushSelectedAsmParts(toDept: string) {
+    const items = Object.values(selectedParts);
+    if (items.length === 0) return;
+    for (const { part } of items) {
+      try {
+        await pushPart({ tenantId, partId: part.id, partName: part.part_name, cabinetUnitId: part.cabinet_unit_id, jobNumber: part.job_number, fromDept: 'assembly', toDept, workerName: crewName, timeClockId: null });
+      } catch { /* best-effort per part */ }
+    }
+    showUndoToast(
+      `${items.length} part${items.length === 1 ? '' : 's'}`,
+      toDept,
+      'assembly',
+      items.map((i) => ({ partId: i.part.id, cabinetUnitId: i.cabinetId, partName: i.part.part_name, jobNumber: i.part.job_number })),
+    );
+    const pushedIds = new Set(items.map((i) => i.part.id));
+    setParts((prev) => prev.filter((p) => !pushedIds.has(p.id)));
+    setSelectedParts({});
+    setSelectMode(false);
+    void load();
   }
 
   const btnBase: React.CSSProperties = {
@@ -349,6 +407,13 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
         <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Assembly</div>
+        {!loading && jobOptions.length > 0 && (
+          <button
+            onClick={() => { if (selectMode) { setSelectMode(false); setSelectedParts({}); } else { setSelectMode(true); } }}
+            style={{ marginLeft: 'auto', padding: '8px 16px', borderRadius: 10, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', background: selectMode ? 'rgba(248,113,113,0.15)' : 'rgba(251,191,36,0.15)', border: `1px solid ${selectMode ? 'rgba(248,113,113,0.5)' : 'rgba(251,191,36,0.5)'}`, color: selectMode ? '#F87171' : '#FBBF24', cursor: 'pointer' }}>
+            {selectMode ? 'Cancel' : 'Select'}
+          </button>
+        )}
       </div>
 
       {loading ? (
@@ -395,17 +460,26 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                             <span style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--ink-mute)' }}>{c.parts.length} part{c.parts.length === 1 ? '' : 's'}</span>
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
-                            {c.parts.map((p) => (
+                            {c.parts.map((p) => {
+                              const selected = !!selectedParts[p.id];
+                              return (
                               <div key={p.id}
-                                onPointerDown={() => { asmLongPressFired.current = false; asmLongPressTimer.current = setTimeout(() => { asmLongPressFired.current = true; setLongPressedAsmPart({ part: p, cabinetId: c.cabinetId, label: info.label }); }, 500); }}
-                                onPointerUp={() => { if (asmLongPressTimer.current) clearTimeout(asmLongPressTimer.current); }}
-                                onPointerLeave={() => { if (asmLongPressTimer.current) clearTimeout(asmLongPressTimer.current); }}
-                                onPointerCancel={() => { if (asmLongPressTimer.current) clearTimeout(asmLongPressTimer.current); }}
-                                style={{ display: 'flex', alignItems: 'center', gap: 10, userSelect: 'none', touchAction: 'manipulation' }}>
+                                onPointerDown={selectMode ? undefined : () => { asmLongPressFired.current = false; asmLongPressTimer.current = setTimeout(() => { asmLongPressFired.current = true; setLongPressedAsmPart({ part: p, cabinetId: c.cabinetId, label: info.label }); }, 500); }}
+                                onPointerUp={selectMode ? undefined : () => { if (asmLongPressTimer.current) clearTimeout(asmLongPressTimer.current); }}
+                                onPointerLeave={selectMode ? undefined : () => { if (asmLongPressTimer.current) clearTimeout(asmLongPressTimer.current); }}
+                                onPointerCancel={selectMode ? undefined : () => { if (asmLongPressTimer.current) clearTimeout(asmLongPressTimer.current); }}
+                                onClick={selectMode ? () => { setSelectedParts((s) => { const n = { ...s }; if (n[p.id]) delete n[p.id]; else n[p.id] = { part: p, cabinetId: c.cabinetId }; return n; }); } : undefined}
+                                style={{ display: 'flex', alignItems: 'center', gap: 10, userSelect: 'none', touchAction: 'manipulation', cursor: selectMode ? 'pointer' : 'default' }}>
+                                {selectMode && (
+                                  <span style={{ width: 20, height: 20, flexShrink: 0, borderRadius: 6, border: `1px solid ${selected ? 'var(--teal)' : 'var(--line-strong)'}`, background: selected ? 'var(--teal)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    {selected && <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#04201c" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                                  </span>
+                                )}
                                 <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partDisplay(p)}</span>
                                 <ViewDrawingsButton tenantId={tenantId} jobNumber={p.job_number} cabinetKey={info.key} compact />
                               </div>
-                            ))}
+                              );
+                            })}
                           </div>
 
                           {/* A complete cabinet has already gone to QC — show its
@@ -499,6 +573,42 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Multi-select push bar */}
+      {selectMode && Object.keys(selectedParts).length > 0 && (() => {
+        const n = Object.keys(selectedParts).length;
+        return (
+          <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 1500, padding: '14px 16px calc(14px + env(safe-area-inset-bottom))', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-dim)', marginBottom: 10 }}>Push {n} part{n === 1 ? '' : 's'} to:</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {ASM_PUSH_DEPTS.map((d) => (
+                <button key={d} onClick={() => void pushSelectedAsmParts(d)}
+                  style={{ flex: 1, minWidth: 0, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 6, padding: '13px 12px', borderRadius: 12, fontSize: 14, fontWeight: 800, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: 'pointer' }}>
+                  {deptDisplay(d)}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Undo toast — reverse the last push within 8s */}
+      {undoState && (
+        <div style={{ position: 'fixed', bottom: 'calc(20px + env(safe-area-inset-bottom))', left: 16, right: 16, zIndex: 2000, background: '#0a0f0e', border: '1px solid rgba(45,225,201,0.35)', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 4px 24px rgba(0,0,0,0.5)' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{undoState.label}</div>
+            <div style={{ fontSize: 12, color: 'var(--teal)' }}>Sent to {deptDisplay(undoState.toDept)}</div>
+          </div>
+          <button onClick={() => void handleUndo()}
+            style={{ background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.4)', color: '#F87171', borderRadius: 8, padding: '8px 14px', fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer' }}>
+            Undo
+          </button>
+          <button onClick={() => { clearTimeout(undoState.timer); setUndoState(null); }} aria-label="Dismiss"
+            style={{ background: 'none', border: 'none', color: 'var(--ink-mute)', cursor: 'pointer', display: 'flex', padding: 4 }}>
+            <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
         </div>
       )}
       <style>{`@keyframes asmPulse{0%,100%{opacity:1}50%{opacity:0.25}}`}</style>
