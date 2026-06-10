@@ -364,23 +364,26 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     const fillPct = Math.min(100, (totalElapsed / 3600) * 100);
 
     return (
-      <div style={{ position: 'fixed', inset: 0, zIndex: 300, background: '#070a0c', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '16px 18px', borderBottom: '1px solid var(--line)' }}>
-          <button onClick={() => setOpenUnitId(null)} disabled={isBuilding} title={isBuilding ? 'Finish or push the build first' : undefined}
-            style={{ background: 'none', border: 'none', cursor: isBuilding ? 'not-allowed' : 'pointer', color: isBuilding ? 'var(--line-strong)' : 'var(--ink-mute)', padding: 4, display: 'flex' }} aria-label="Back">
-            <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-          </button>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 19, fontWeight: 800, color: 'var(--ink)' }}>{info.label}</div>
-            <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{jobLabel(jobNumber)}</div>
+      <div style={{ position: 'fixed', inset: 0, zIndex: 1500, background: 'var(--bg)', display: 'flex', flexDirection: 'column', paddingTop: 'max(env(safe-area-inset-top), 16px)' }}>
+        {/* Header — sits below the safe area; back + label/job on the left, View Drawings on the right */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+            <button onClick={() => setOpenUnitId(null)} disabled={isBuilding} title={isBuilding ? 'Finish or push the build first' : undefined}
+              style={{ background: 'none', border: 'none', cursor: isBuilding ? 'not-allowed' : 'pointer', color: isBuilding ? 'var(--line-strong)' : 'var(--ink-mute)', padding: 4, display: 'flex', flexShrink: 0 }} aria-label="Back">
+              <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 19, fontWeight: 800, color: 'var(--ink)' }}>{info.label}</div>
+              <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{jobLabel(jobNumber)}</div>
+            </div>
           </div>
-          <div style={{ marginLeft: 'auto' }}>
+          <div style={{ flexShrink: 0 }}>
             <ViewDrawingsButton tenantId={tenantId} jobNumber={jobNumber} cabinetKey={info.key} compact={false} />
           </div>
         </div>
 
         {/* Work order — every part's full spec, always expanded */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 18px 24px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
           {cabParts.map((p) => {
             const dims = dimLabel(p);
             const flagged = !!p.flag_type || !!p.flag_notes;
@@ -419,7 +422,7 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         </div>
 
         {/* Bottom controls */}
-        <div style={{ borderTop: '1px solid var(--line)', padding: '14px 18px', background: '#070a0c' }}>
+        <div style={{ borderTop: '1px solid var(--line)', padding: '12px 16px', paddingBottom: 'max(env(safe-area-inset-bottom), 12px)' }}>
           {!isBuilding ? (
             pausedProject?.cabinet_unit_id === openUnitId ? (
               <button onClick={() => void resumeFromQueue(pausedProject)}

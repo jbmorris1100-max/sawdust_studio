@@ -3089,7 +3089,7 @@ export default function SupervisorPage() {
           {/* Tabs — desktop only. Scrolls horizontally (scrollbar hidden) so every
               tab stays reachable on narrower desktop windows instead of cutting off. */}
           <style>{`.sup-tabbar::-webkit-scrollbar{display:none}`}</style>
-          <div className="hidden md:flex sup-tabbar" style={{ gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 24, overflowX: 'auto', flexWrap: 'nowrap', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+          <div className="hidden md:flex sup-tabbar" style={{ gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 24, overflowX: 'auto', flexWrap: 'nowrap', scrollbarWidth: 'none', msOverflowStyle: 'none', paddingBottom: 1 }}>
             {tabs.map(({ key, label, count }) => (
               <button
                 key={key}
