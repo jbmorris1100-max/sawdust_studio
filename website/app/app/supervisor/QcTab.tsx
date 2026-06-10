@@ -144,6 +144,27 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
     }
   }
 
+  // OVERRIDE — manually push a legacy 'pending_qc_check' cabinet to ready_for_qc
+  // without requiring a crew QC tap. New completions go straight to ready_for_qc;
+  // this handles cabinets stranded in the old two-step flow.
+  async function sendToQcOverride(cab: QcCabinet) {
+    if (busy) return;
+    setBusy(cab.id);
+    try {
+      const { error } = await supabase.from('cabinet_units')
+        .update({ status: 'ready_for_qc', assigned_dept: 'qc' })
+        .eq('id', cab.id).eq('tenant_id', tenantId);
+      if (error) throw error;
+      try { await supabase.from('parts').update({ assigned_dept: 'qc' }).eq('cabinet_unit_id', cab.id).eq('tenant_id', tenantId).eq('assigned_dept', 'assembly'); } catch { /* best-effort */ }
+      setCabs((prev) => prev.map((c) => c.id === cab.id ? { ...c, status: 'ready_for_qc' } : c));
+      showToast(`${cab.unit_label} moved to QC`);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Could not move cabinet to QC', true);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function openFail(cab: QcCabinet) {
     setFailCab(cab);
     setFailDept(depts[0] ?? 'Production');
@@ -229,9 +250,19 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
                         {(() => {
                           const ready = (cab.status || '').toLowerCase() === 'ready_for_qc';
                           return (
-                            <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '0.05em', textTransform: 'uppercase', padding: '2px 7px', borderRadius: 20, background: ready ? 'rgba(45,225,201,0.14)' : 'rgba(251,191,36,0.14)', color: ready ? 'var(--teal)' : '#FBBF24' }}>
-                              {ready ? 'Ready for QC' : 'Awaiting QC tap'}
-                            </span>
+                            <>
+                              <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '0.05em', textTransform: 'uppercase', padding: '2px 7px', borderRadius: 20, background: ready ? 'rgba(45,225,201,0.14)' : 'rgba(251,191,36,0.14)', color: ready ? 'var(--teal)' : '#FBBF24' }}>
+                                {ready ? 'Ready for QC' : 'Awaiting QC tap'}
+                              </span>
+                              {!ready && (
+                                <button onClick={() => void sendToQcOverride(cab)} disabled={isBusy}
+                                  title="Move this cabinet to QC without a crew tap"
+                                  style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 20, background: 'rgba(45,225,201,0.1)', border: '1px solid rgba(45,225,201,0.35)', color: 'var(--teal)', cursor: isBusy ? 'wait' : 'pointer', fontFamily: 'inherit' }}>
+                                  <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                                  Send to QC
+                                </button>
+                              )}
+                            </>
                           );
                         })()}
                         <ViewDrawingsButton tenantId={tenantId} jobNumber={cab.job_number} cabinetKey={cab.cabinet_number || cab.unit_label || ''} compact />

@@ -77,10 +77,10 @@ export default function MessageThread({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', overflowX: 'hidden', maxWidth: '100%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', width: '100%', maxWidth: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
       <div
         ref={scrollRef}
-        style={{ display: 'flex', flexDirection: 'column', gap: 1, maxHeight: '60vh', overflowY: 'auto', overflowX: 'hidden', maxWidth: '100%', paddingLeft: 6, paddingRight: 6, paddingBottom: 8 }}
+        style={{ display: 'flex', flexDirection: 'column', gap: 1, maxHeight: '60vh', overflowY: 'auto', overflowX: 'hidden', width: '100%', maxWidth: '100%', boxSizing: 'border-box', paddingLeft: 6, paddingRight: 6, paddingBottom: 8 }}
       >
         {messages.length === 0 ? (
           <div style={{ fontSize: 13, color: 'var(--ink-mute)', padding: '12px 0' }}>No messages yet.</div>
@@ -101,9 +101,9 @@ export default function MessageThread({
                 )}
                 <div
                   style={{
-                    position: 'relative', maxWidth: '70%', padding: '8px 13px',
+                    position: 'relative', maxWidth: '80%', padding: '8px 13px', boxSizing: 'border-box',
                     borderRadius: 18, background: self ? SELF_BG : OTHER_BG, color: self ? '#04201c' : '#fff',
-                    fontSize: 14.5, lineHeight: 1.4, wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap',
+                    fontSize: 14.5, lineHeight: 1.4, wordBreak: 'break-word', overflowWrap: 'break-word', whiteSpace: 'pre-wrap',
                     borderBottomRightRadius: self && lastOfSeq ? 5 : 18,
                     borderBottomLeftRadius: !self && lastOfSeq ? 5 : 18,
                     opacity: m.id.startsWith('opt-') ? 0.6 : 1,
@@ -129,7 +129,7 @@ export default function MessageThread({
       </div>
 
       {/* Pinned input bar */}
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, paddingTop: 12, marginTop: 4, borderTop: '1px solid var(--line)', maxWidth: '100%' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, paddingTop: 12, marginTop: 4, borderTop: '1px solid var(--line)', width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
         <textarea
           ref={taRef}
           value={text}
@@ -138,7 +138,7 @@ export default function MessageThread({
           onChange={(e) => setText(e.target.value)}
           onFocus={() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight; }}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
-          style={{ flex: 1, minWidth: 0, resize: 'none', maxHeight: 108, padding: '10px 15px', borderRadius: 20, border: '1px solid var(--line)', background: 'var(--bg-1)', color: 'var(--ink)', fontSize: 14.5, fontFamily: 'inherit', lineHeight: '22px', outline: 'none' }}
+          style={{ flex: 1, minWidth: 0, boxSizing: 'border-box', resize: 'none', maxHeight: 108, padding: '10px 15px', borderRadius: 20, border: '1px solid var(--line)', background: 'var(--bg-1)', color: 'var(--ink)', fontSize: 14.5, fontFamily: 'inherit', lineHeight: '22px', outline: 'none' }}
         />
         <button
           onClick={submit}

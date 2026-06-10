@@ -13,13 +13,12 @@ import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 //
 // START logs a clock_in to time_clock (dept = Assembly) — multiple crew can have
 // a build running on different cabinets at once, each its own row. MARK COMPLETE
-// stops that timer (clock_out + total_hours), records who finished it, and flips
-// the cabinet to 'pending_qc_check' — it does NOT send anything to QC on its own.
-//
-// A per-cabinet QC button only appears once the WHOLE job is assembled (every
-// cabinet marked complete and no parts left upstream). Tapping QC flips the
-// cabinet to ready_for_qc; when every cabinet in the job is ready, the supervisor
-// gets a single "Job ready for QC" notification.
+// stops that timer (clock_out + total_hours), records who finished it, and sends
+// the cabinet straight to QC (status = ready_for_qc, assigned_dept = qc) — no
+// waiting on the rest of the job. The cabinet leaves the assembly queue
+// immediately and appears in the supervisor's QC tab on its own. The supervisor
+// gets a single "Job ready for QC" notification only once EVERY cabinet in the
+// job is ready_for_qc / complete.
 
 type AsmPart = {
   id: string;
@@ -67,9 +66,6 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
   // the assembly workflow — pending / in_assembly / pending_qc_check) so a
   // cabinet marked complete stays visible with its QC button.
   const [cabsByJob, setCabsByJob] = useState<Record<string, string[]>>({});
-  // jobAssembled[jobNumber] = every cabinet in the job is marked complete and no
-  // part is still upstream — the gate for showing the QC button.
-  const [jobAssembled, setJobAssembled] = useState<Record<string, boolean>>({});
   const [jobPaths, setJobPaths] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [selectedJob, setSelectedJob] = useState<string>('');
@@ -113,7 +109,7 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
         .eq('tenant_id', tenantId)
         .eq('assigned_dept', 'assembly')
         .neq('status', 'complete')
-        .limit(600);
+        .limit(1000);
       let asm = (partRows as AsmPart[] | null) ?? [];
       if (activeJobNums) asm = asm.filter((p) => !p.job_number || activeJobNums!.has(p.job_number));
       setParts(asm);
@@ -129,23 +125,15 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
         });
       }
 
-      // QC gate: per job, every cabinet must be marked complete and no part may
-      // remain in an upstream working dept (production/craftsman/finishing).
-      const assembled: Record<string, boolean> = {};
       // Cabinets to render per job — every cabinet still in the assembly workflow
-      // (pending / in_assembly / pending_qc_check), regardless of their parts'
-      // status, so a cabinet marked complete stays visible for its QC button.
+      // (pending / in_assembly). Completed cabinets go straight to QC, so they
+      // leave this view the moment they're marked complete.
       const visibleCabs: Record<string, string[]> = {};
-      const WORKFLOW_CAB_STATUSES = ['pending', 'in_assembly', 'pending_qc_check'];
+      const WORKFLOW_CAB_STATUSES = ['pending', 'in_assembly'];
       if (jobNums.length > 0) {
-        const [{ data: jobParts }, { data: jobCabs }] = await Promise.all([
-          supabase.from('parts').select('assigned_dept, status, job_number').eq('tenant_id', tenantId).in('job_number', jobNums),
-          supabase.from('cabinet_units').select('id, unit_label, cabinet_number, status, completed_by, job_number').eq('tenant_id', tenantId).in('job_number', jobNums),
-        ]);
-        const partsByJob: Record<string, { assigned_dept: string | null; status: string | null }[]> = {};
-        ((jobParts as { assigned_dept: string | null; status: string | null; job_number: string | null }[] | null) ?? []).forEach((p) => {
-          if (p.job_number) (partsByJob[p.job_number] ??= []).push(p);
-        });
+        const { data: jobCabs } = await supabase
+          .from('cabinet_units').select('id, unit_label, cabinet_number, status, completed_by, job_number')
+          .eq('tenant_id', tenantId).in('job_number', jobNums).limit(1000);
         type CabRow = { id: string; unit_label: string | null; cabinet_number: string | null; status: string | null; completed_by: string | null; job_number: string | null };
         const cabRowsByJob: Record<string, CabRow[]> = {};
         ((jobCabs as CabRow[] | null) ?? []).forEach((c) => {
@@ -154,20 +142,12 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
           info[c.id] = { label: c.unit_label || c.cabinet_number || 'Cabinet', key: c.cabinet_number || c.unit_label || '', status: c.status, completedBy: c.completed_by };
         });
         for (const jn of jobNums) {
-          const ps = partsByJob[jn] ?? [];
           const cs = cabRowsByJob[jn] ?? [];
-          const noneUpstream = ps.length > 0 && ps.every((p) => {
-            const d = (p.assigned_dept || 'production').toLowerCase();
-            return p.status === 'complete' || (d !== 'production' && d !== 'craftsman' && d !== 'finishing');
-          });
-          const allCabsDone = cs.length > 0 && cs.every((c) => DONE_CAB_STATUSES.includes((c.status || '').toLowerCase()));
-          assembled[jn] = noneUpstream && allCabsDone;
           visibleCabs[jn] = cs.filter((c) => WORKFLOW_CAB_STATUSES.includes((c.status || '').toLowerCase())).map((c) => c.id);
         }
       }
       setCabInfo(info);
       setCabsByJob(visibleCabs);
-      setJobAssembled(assembled);
 
       if (jobNums.length > 0) {
         try {
@@ -279,9 +259,11 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
     showToast(`${proj.unit_label} resumed`);
   }
 
-  // MARK COMPLETE — stop this cabinet's timer, record who finished it, and flip
-  // the cabinet to pending_qc_check. Never triggers QC on its own.
-  async function markComplete(cabinetId: string, label: string) {
+  // MARK COMPLETE — stop this cabinet's timer, record who finished it, and send
+  // the cabinet straight to QC. The cabinet leaves the assembly queue at once;
+  // the supervisor sees it in the QC tab immediately. The single "Job ready for
+  // QC" notification fires only once EVERY cabinet in the job is in.
+  async function markComplete(cabinetId: string, jobNumber: string | null, label: string) {
     if (!isClockedIn) { onRequireClock?.(); return; }
     if (busyCab) return;
     setBusyCab(cabinetId);
@@ -296,9 +278,11 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
         const next = { ...builds }; delete next[cabinetId]; persistBuilds(next);
       }
       const { error } = await supabase.from('cabinet_units')
-        .update({ status: 'pending_qc_check', completed_by: crewName || 'Assembly' })
+        .update({ status: 'ready_for_qc', assigned_dept: 'qc', completed_by: crewName || 'Assembly' })
         .eq('id', cabinetId).eq('tenant_id', tenantId);
       if (error) throw error;
+      // Move this cabinet's parts out of assembly so the QC tab shows their final dept.
+      try { await supabase.from('parts').update({ assigned_dept: 'qc' }).eq('cabinet_unit_id', cabinetId).eq('tenant_id', tenantId).eq('assigned_dept', 'assembly'); } catch { /* best-effort */ }
       // Assembly work for this cabinet is done — clear it as the active project,
       // but only if THIS cabinet is the one being tracked (one project per user).
       if (pausedProject?.cabinet_unit_id === cabinetId) setPausedProject(null);
@@ -306,27 +290,6 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
         const proj = await getWorkerProject(tenantId, crewName);
         if (proj && proj.cabinet_unit_id === cabinetId) await clearProject(tenantId, crewName);
       } catch { /* best-effort */ }
-      showToast(`${label} marked complete`);
-      void load();
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Could not complete cabinet', true);
-    } finally {
-      setBusyCab(null);
-    }
-  }
-
-  // QC — send this cabinet to the supervisor's QC gate. Only callable once the
-  // whole job is assembled. Fires the job notification once every cabinet is in.
-  async function sendToQc(cabinetId: string, jobNumber: string | null, label: string) {
-    if (busyCab) return;
-    setBusyCab(cabinetId);
-    try {
-      const { error } = await supabase.from('cabinet_units')
-        .update({ status: 'ready_for_qc', assigned_dept: 'qc' })
-        .eq('id', cabinetId).eq('tenant_id', tenantId);
-      if (error) throw error;
-      // Move this cabinet's parts out of assembly so the QC tab shows their final dept.
-      try { await supabase.from('parts').update({ assigned_dept: 'qc' }).eq('cabinet_unit_id', cabinetId).eq('tenant_id', tenantId).eq('assigned_dept', 'assembly'); } catch { /* best-effort */ }
 
       // If every cabinet in the job is now ready_for_qc / complete, notify once.
       if (jobNumber) {
@@ -343,8 +306,9 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
       }
       setParts((prev) => prev.filter((p) => p.cabinet_unit_id !== cabinetId));
       showToast(`${label} sent to QC`);
+      void load();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Could not send to QC', true);
+      showToast(e instanceof Error ? e.message : 'Could not complete cabinet', true);
     } finally {
       setBusyCab(null);
     }
@@ -375,14 +339,12 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
             const open = selectedJob === j.jobNumber;
             const cabs = open ? cabinetsForJob(j.jobNumber) : [];
             const count = parts.filter((p) => (p.job_number ?? '__nojob__') === j.jobNumber).length;
-            const canQc = !!jobAssembled[j.jobNumber];
             return (
               <div key={j.jobNumber} style={{ borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)', overflow: 'hidden' }}>
                 <button onClick={() => setSelectedJob(open ? '' : j.jobNumber)}
                   style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
                   <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transition: 'transform 0.2s ease', transform: open ? 'rotate(90deg)' : 'none' }}><polyline points="9 6 15 12 9 18"/></svg>
                   <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{j.label}</span>
-                  {canQc && <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', padding: '2px 7px', borderRadius: 20, background: 'rgba(45,225,201,0.14)', color: 'var(--teal)' }}>Ready for QC</span>}
                   <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{count} part{count === 1 ? '' : 's'}</span>
                 </button>
                 {open && (
@@ -416,28 +378,14 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                             ))}
                           </div>
 
-                          {/* A complete cabinet shows no Start/Complete — only its
-                              status and (once the whole job is assembled) the QC
-                              button. An in-progress cabinet shows Start + Complete. */}
+                          {/* A complete cabinet has already gone to QC — show its
+                              status only. An in-progress cabinet shows Start + Complete. */}
                           {isComplete ? (
                             <>
                               <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginBottom: 10 }}>
                                 {info.completedBy ? `Completed by ${info.completedBy}` : 'Completed'}
                               </div>
-                              {(info.status || '').toLowerCase() === 'ready_for_qc' ? (
-                                <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--teal)' }}>Sent to QC</div>
-                              ) : canQc ? (
-                                <button
-                                  onClick={() => void sendToQc(c.cabinetId, jobNumber, info.label)}
-                                  disabled={busy}
-                                  style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '12px', borderRadius: 10, fontSize: 14, fontWeight: 700, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: busy ? 'wait' : 'pointer' }}
-                                >
-                                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-                                  {busy ? 'Sending…' : 'Send to QC'}
-                                </button>
-                              ) : (
-                                <div style={{ fontSize: 12.5, color: 'var(--ink-mute)' }}>Waiting for the rest of the job to finish assembly</div>
-                              )}
+                              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--teal)' }}>Sent to QC</div>
                             </>
                           ) : paused ? (
                             <>
@@ -481,7 +429,7 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                                 </button>
                               )}
                               <button
-                                onClick={() => void markComplete(c.cabinetId, info.label)}
+                                onClick={() => void markComplete(c.cabinetId, jobNumber, info.label)}
                                 disabled={busy}
                                 style={{ ...btnBase,
                                   background: 'rgba(45,225,201,0.14)',

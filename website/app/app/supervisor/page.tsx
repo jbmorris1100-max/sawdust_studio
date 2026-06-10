@@ -983,7 +983,7 @@ export default function SupervisorPage() {
     if (!tenant) return;
     try {
       const [crewRes, msgRes, needsRes, damageRes] = await Promise.all([
-        supabase.from('time_clock').select('id, worker_name, dept, clock_in, status').eq('tenant_id', tenant.id).is('clock_out', null).order('clock_in', { ascending: true }),
+        supabase.from('time_clock').select('id, worker_name, dept, clock_in, status, current_dept, on_break, total_break_minutes').eq('tenant_id', tenant.id).is('clock_out', null).order('clock_in', { ascending: true }),
         supabase.from('messages').select('id, sender_name, dept, body, created_at, read_at, topic, payload').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(200),
         supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),
         supabase.from('damage_reports').select('id, part_name, job_id, dept, notes, photo_url, status, created_at, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, report_type').eq('tenant_id', tenant.id).order('created_at', { ascending: false }).limit(50),

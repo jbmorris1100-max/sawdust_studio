@@ -12,6 +12,7 @@ import OfflineBanner from '@/components/OfflineBanner';
 import CraftsmanBuilds from './CraftsmanBuilds';
 import FinishingView from './FinishingView';
 import AssemblyCrewView from './AssemblyCrewView';
+import CabinetScanner from '../scan/CabinetScanner';
 import PushPicker from '@/components/PushPicker';
 import { pushPart, deptDisplay } from '@/lib/partActions';
 import {
@@ -593,6 +594,9 @@ export default function CrewPage() {
   const { loading: sessionLoading, tenant, email } = useCrewTenant();
   // Department list for every crew dropdown — from tenant, falling back to defaults.
   const deptOptions = getDepartments(tenant);
+  // Push destinations from the production cutlist — every tenant dept except
+  // production itself (parts are pushed FROM production), as lowercase keys.
+  const pushDeptKeys = deptOptions.map((d) => d.toLowerCase()).filter((d) => d !== 'production');
   // AI push-suggestion mode (shared via the tenant row). 'learn' = no suggestions.
   const aiMode = (tenant?.ai_mode ?? 'learn') as 'learn' | 'assist' | 'autonomous';
 
@@ -762,6 +766,9 @@ export default function CrewPage() {
   const [scanAiResult,   setScanAiResult]   = useState<ScanAiResult | null>(null);
   const [scanShowAlts,   setScanShowAlts]   = useState(false);
   const [scanFlash,      setScanFlash]      = useState(false);
+  // Claude Vision handwritten-label scanner (full-screen overlay, separate from
+  // the ZXing QR flow above and from the QR clock-in page at /scan).
+  const [labelScannerOpen, setLabelScannerOpen] = useState(false);
   // Auto-detect couldn't decide Assembly vs Production/QC → ask the crew.
   const [scanChoiceUnit, setScanChoiceUnit] = useState<(AssemblyCabinetUnit & { production_status?: string | null }) | null>(null);
   const zxingRef    = useRef<{ reset: () => void } | null>(null);
@@ -3334,7 +3341,7 @@ export default function CrewPage() {
             </div>
 
             {/* Body */}
-            <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: openThread !== null ? '12px 16px' : '8px' }}>
+            <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', width: '100%', maxWidth: '100vw', boxSizing: 'border-box', padding: openThread !== null ? '12px 16px' : '8px' }}>
               {openThread === null ? (
                 /* Inbox — single Supervisor thread row */
                 <button
@@ -4321,6 +4328,15 @@ export default function CrewPage() {
                   )}
                 </div>
 
+                {/* Handwritten label? Claude Vision reads it from a photo. */}
+                <button
+                  onClick={() => { setModal(null); setLabelScannerOpen(true); }}
+                  style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '13px', borderRadius: 12, fontSize: 14, fontWeight: 700, fontFamily: 'inherit', background: 'rgba(45,225,201,0.1)', border: '1px solid rgba(45,225,201,0.35)', color: 'var(--teal)', cursor: 'pointer' }}
+                >
+                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                  Read Handwritten Label
+                </button>
+
                 {/* ── Auto-detect couldn't decide → pick the flow manually ── */}
                 {scanChoiceUnit && (
                   <div style={{ border: '1px solid var(--line-strong)', borderRadius: 12, padding: 16, background: 'var(--bg-1)' }}>
@@ -4854,7 +4870,7 @@ export default function CrewPage() {
           onClick={(e) => { if (e.target === e.currentTarget && !cutJobBusy) setDestForCabs(null); }}>
           <div style={{ width: '100%', maxWidth: 480, background: '#0a0d10', borderTopLeftRadius: 20, borderTopRightRadius: 20, border: '1px solid var(--line-strong)', padding: '22px 20px calc(22px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>Send {destForCabs.length} cabinet{destForCabs.length === 1 ? '' : 's'} to</div>
-            {(['craftsman', 'finishing', 'assembly'] as const).map((d) => (
+            {pushDeptKeys.map((d) => (
               <button key={d} onClick={() => void pushCutCabinets(destForCabs, d)} disabled={cutJobBusy}
                 style={{ width: '100%', justifyContent: 'space-between', display: 'flex', alignItems: 'center', padding: '15px 16px', borderRadius: 12, fontSize: 15, fontWeight: 700, fontFamily: 'inherit', background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', cursor: cutJobBusy ? 'wait' : 'pointer' }}>
                 {deptDisplay(d)}
@@ -4865,13 +4881,32 @@ export default function CrewPage() {
         </div>
       )}
 
+      {/* ── Claude Vision cabinet-label scanner ─────────────────────────────── */}
+      {labelScannerOpen && tenant && (
+        <CabinetScanner
+          tenantId={tenant.id}
+          onClose={() => setLabelScannerOpen(false)}
+          onNavigate={(deptKey) => {
+            setLabelScannerOpen(false);
+            // Already in the cabinet's dept — the view is right behind the
+            // scanner. Otherwise open the existing switch-dept flow prefilled
+            // (it auto-pauses active projects and notifies the supervisor).
+            const target = deptOptions.find((d) => d.toLowerCase() === deptKey.toLowerCase()) ?? deptDisplay(deptKey);
+            if (crewDept.toLowerCase() !== target.toLowerCase()) {
+              setSwitchDeptVal(target);
+              setModal('switchDept');
+            }
+          }}
+        />
+      )}
+
       {/* Long-press part action sheet */}
       {longPressPart && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 1700, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
           onClick={(e) => { if (e.target === e.currentTarget) setLongPressPart(null); }}>
           <div style={{ width: '100%', maxWidth: 480, background: '#0a0d10', borderTopLeftRadius: 20, borderTopRightRadius: 20, border: '1px solid var(--line-strong)', padding: '22px 20px calc(22px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)', marginBottom: 2 }}>{longPressPart.part.part_name}</div>
-            {(['craftsman', 'finishing', 'assembly'] as const).map((d) => (
+            {pushDeptKeys.map((d) => (
               <button key={d} onClick={() => void pushSingleCutPart(longPressPart.cabinetId, longPressPart.part, d)}
                 style={{ width: '100%', justifyContent: 'space-between', display: 'flex', alignItems: 'center', padding: '14px 16px', borderRadius: 12, fontSize: 15, fontWeight: 700, fontFamily: 'inherit', background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', cursor: 'pointer' }}>
                 Push to {deptDisplay(d)}
