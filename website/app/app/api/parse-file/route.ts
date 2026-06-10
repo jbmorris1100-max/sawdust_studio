@@ -15,7 +15,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-const MODEL = 'claude-sonnet-4-20250514';
+const MODEL = 'claude-sonnet-4-6';
 const API_URL = 'https://api.anthropic.com/v1/messages';
 
 type Field = 'cabinet_unit_id' | 'part_name' | 'room' | 'material' | 'width' | 'height' | 'depth' | 'quantity' | 'notes';

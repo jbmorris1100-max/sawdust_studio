@@ -16,7 +16,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 //
 // Fire-and-forget from the upload flow — never blocks the upload.
 
-const MODEL = 'claude-sonnet-4-20250514';
+const MODEL = 'claude-sonnet-4-6';
 const AUTO_CONFIRM_THRESHOLD = 3;   // learned-pattern confidence floor for AI-free assignment
 const HIGH_CONFIDENCE = 85;
 const REVIEW_CONFIDENCE = 70;

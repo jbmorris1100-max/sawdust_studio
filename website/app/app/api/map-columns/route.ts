@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-const MODEL = 'claude-sonnet-4-20250514';
+const MODEL = 'claude-sonnet-4-6';
 
 const SYSTEM_PROMPT = `You are a cabinet shop data mapper. Given CSV headers and sample rows from a cabinet cutlist, map each column to these fields:
 - cabinet_unit_id (cabinet/unit identifier)

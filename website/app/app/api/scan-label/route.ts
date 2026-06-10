@@ -7,7 +7,7 @@ import { NextResponse } from 'next/server';
 // The Anthropic key never leaves the server; the client posts here instead of
 // calling the Anthropic API directly.
 
-const MODEL = 'claude-sonnet-4-20250514';
+const MODEL = 'claude-sonnet-4-6';
 
 const PROMPT = `This image shows a handwritten cabinet label on a piece of wood or tape in a cabinet shop.
 Extract the cabinet label exactly as written. Cabinet labels follow patterns like:
