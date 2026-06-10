@@ -258,6 +258,14 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
     try {
       const { error } = await supabase.from('cabinet_units').update({ assigned_dept: target }).eq('id', unit.id);
       if (error) throw error;
+      // Parts carry the dept the crew views filter on — move them too, or the
+      // reassigned cabinet never surfaces in the destination crew view.
+      const { error: partsError } = await supabase
+        .from('parts')
+        .update({ assigned_dept: target })
+        .eq('cabinet_unit_id', unit.id)
+        .eq('tenant_id', tenantId);
+      if (partsError) throw partsError;
       showToast(`Moved to ${dept}`);
       void load();
     } catch (err: unknown) {
@@ -275,6 +283,12 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
     try {
       const { error } = await supabase.from('cabinet_units').update({ assigned_dept: 'craftsman' }).eq('id', unit.id);
       if (error) throw error;
+      // Parts carry the dept the crew Craftsman view filters on — move them too.
+      await supabase
+        .from('parts')
+        .update({ assigned_dept: 'craftsman' })
+        .eq('cabinet_unit_id', unit.id)
+        .eq('tenant_id', tenantId);
       // Save the pattern so the classifier learns this is craftsman work.
       try {
         await supabase.from('craftsman_classifications').insert({
