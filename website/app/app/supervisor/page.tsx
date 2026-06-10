@@ -673,13 +673,8 @@ export default function SupervisorPage() {
   // job_number → accumulated labor cost (supervisor-only: pay rates fetched here,
   // never on a crew query). Only populated for jobs with a rated worker + hours.
   const [laborByJob,     setLaborByJob]     = useState<Record<string, number>>({});
-  const [newJobNum,      setNewJobNum]      = useState('');
-  const [newJobName,     setNewJobName]     = useState('');
-  const [newJobClient,   setNewJobClient]   = useState('');
-  const [newJobRoom,     setNewJobRoom]     = useState('');
-  const [newJobDue,      setNewJobDue]      = useState('');
-  const [newJobInstall,  setNewJobInstall]  = useState('');
-  const [addingJob,      setAddingJob]      = useState(false);
+  // Overview Active Jobs — only one row expanded at a time.
+  const [expandedJobId,  setExpandedJobId]  = useState<string | null>(null);
   // Job completion / archive (Overview)
   const [completeJobTarget, setCompleteJobTarget] = useState<Job | null>(null);
   const [completingJob,     setCompletingJob]     = useState(false);
@@ -1612,40 +1607,6 @@ export default function SupervisorPage() {
   }
 
   // ── Job handlers ────────────────────────────────────────────────────────────
-
-  async function handleAddJob() {
-    const num    = newJobNum.trim();
-    const client = toTitleCase(newJobClient.trim());
-    const room   = toTitleCase(newJobRoom.trim());
-    if ((!num && !client) || addingJob || !tenant) return;
-    const jobPath   = client ? (room ? `${client}/${room}` : client) : null;
-    const jobNumber = num || jobPath || client; // job_number is NOT NULL
-    setAddingJob(true);
-    try {
-      // Only send the new columns when filled, so inserts still work pre-migration.
-      const insert: Record<string, unknown> = {
-        job_number: jobNumber,
-        job_name:   newJobName.trim() || (client ? (room ? `${client} — ${room}` : client) : null),
-        status:     'active',
-        tenant_id:  tenant.id,
-      };
-      if (client)        insert.client_name  = client;
-      if (room)          insert.room_name    = room;
-      if (jobPath)       insert.job_path     = jobPath;
-      if (newJobDue)     insert.due_date     = newJobDue;
-      if (newJobInstall) insert.install_date = newJobInstall;
-
-      const { error } = await supabase.from('jobs').insert(insert);
-      if (error) throw error;
-      setNewJobNum(''); setNewJobName(''); setNewJobClient(''); setNewJobRoom(''); setNewJobDue(''); setNewJobInstall('');
-      showToast('Job added');
-      void loadPipeline();
-    } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : 'Insert failed', true);
-    } finally {
-      setAddingJob(false);
-    }
-  }
 
   async function handleDeleteJob(id: string) {
     const prev = jobs.find((j) => j.id === id);
@@ -3611,93 +3572,75 @@ export default function SupervisorPage() {
                   <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{jobs.filter((j) => j.status === 'active' && !j.archived).length} jobs</span>
                 </div>
 
-                {/* Add job form */}
-                <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <input className="form-input" placeholder="Client name *" value={newJobClient}
-                      onChange={(e) => setNewJobClient(e.target.value)}
-                      onBlur={(e) => setNewJobClient(toTitleCase(e.target.value))} style={{ flex: '1 1 160px' }} />
-                    <input className="form-input" placeholder="Room / Area  e.g. Kitchen, Master Bath" value={newJobRoom}
-                      onChange={(e) => setNewJobRoom(e.target.value)}
-                      onBlur={(e) => setNewJobRoom(toTitleCase(e.target.value))} style={{ flex: '1 1 160px' }} />
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <input className="form-input" placeholder="Job / Project # (optional)" value={newJobNum}
-                      onChange={(e) => setNewJobNum(e.target.value)} style={{ flex: '1 1 120px' }} />
-                    <label style={{ flex: '1 1 120px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                      <span style={{ fontSize: 10, color: 'var(--ink-mute)', fontWeight: 600 }}>Due date</span>
-                      <input className="form-input" type="date" value={newJobDue} onChange={(e) => setNewJobDue(e.target.value)} />
-                    </label>
-                    <label style={{ flex: '1 1 120px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                      <span style={{ fontSize: 10, color: 'var(--ink-mute)', fontWeight: 600 }}>Install date</span>
-                      <input className="form-input" type="date" value={newJobInstall} onChange={(e) => setNewJobInstall(e.target.value)} />
-                    </label>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                    {newJobClient.trim() && (
-                      <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
-                        Job path: <b style={{ color: 'var(--teal)' }}>{newJobClient.trim()}{newJobRoom.trim() ? `/${newJobRoom.trim()}` : ''}</b>
-                      </span>
-                    )}
-                    <button
-                      className="btn btn-primary"
-                      style={{ marginLeft: 'auto', flexShrink: 0, padding: '8px 16px', fontSize: 13, boxShadow: 'none', opacity: ((!newJobClient.trim() && !newJobNum.trim()) || addingJob) ? 0.5 : 1 }}
-                      onClick={handleAddJob}
-                      disabled={(!newJobClient.trim() && !newJobNum.trim()) || addingJob}
-                    >
-                      {addingJob ? 'Adding…' : '+ Add Job'}
-                    </button>
-                  </div>
-                </div>
-
                 {jobs.filter((j) => j.status === 'active' && !j.archived).length === 0 ? (
-                  <div style={{ padding: '16px 20px', fontSize: 13, color: 'var(--ink-mute)' }}>No active jobs. Add one above — crew will see these in the parts dropdown.</div>
+                  <div style={{ padding: '16px 20px', fontSize: 13, color: 'var(--ink-mute)' }}>No active jobs. Upload a CSV cut list in the Plans tab to get started.</div>
                 ) : (
-                  jobs.filter((j) => j.status === 'active' && !j.archived).map((j) => (
-                    <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 20px', borderBottom: '1px solid var(--line)' }}>
-                      <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{j.job_path ? titleCasePath(j.job_path).split('/').join(' / ') : j.job_number}</span>
-                        {j.job_name && !j.job_path && <span style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{toTitleCase(j.job_name)}</span>}
-                        <SourceBadge source={j.source} />
-                        {j.due_date && (() => { const m = dueMeta(j.due_date); return (
-                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: `${m.color}22`, color: m.color, ...(m.overdue ? { animation: 'craftsPulse 1.4s ease-in-out infinite' } : {}) }}>
-                            Due {m.label}
-                          </span>
-                        ); })()}
-                        {j.install_date && j.install_date !== j.due_date && (
-                          <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>Install {new Date(j.install_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-                        )}
-                        {(() => { const c = laborByJob[j.job_number]; return c && c > 0 ? (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--teal)' }}>Labor to date: ${c.toFixed(2)}</span>
-                        ) : null; })()}
+                  jobs.filter((j) => j.status === 'active' && !j.archived).map((j) => {
+                    const open = expandedJobId === j.id;
+                    return (
+                    <div key={j.id} style={{ borderBottom: '1px solid var(--line)' }}>
+                      {/* header row — tap the job name to expand / collapse */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 20px' }}>
+                        <button
+                          onClick={() => setExpandedJobId((cur) => (cur === j.id ? null : j.id))}
+                          aria-expanded={open}
+                          style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', padding: 0 }}
+                        >
+                          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}><path d="M6 9l6 6 6-6"/></svg>
+                          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{j.job_path ? titleCasePath(j.job_path).split('/').join(' / ') : j.job_number}</span>
+                          {j.job_name && !j.job_path && <span style={{ fontSize: 13, color: 'var(--ink-dim)' }}>{toTitleCase(j.job_name)}</span>}
+                        </button>
+                        <button
+                          onClick={() => setCompleteJobTarget(j)}
+                          className="btn btn-ghost"
+                          style={{ flexShrink: 0, padding: '6px 12px', fontSize: 12, fontWeight: 700, color: 'var(--teal)', borderColor: 'rgba(45,225,201,0.3)', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                          title="Complete job"
+                        >
+                          <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                          Complete
+                        </button>
+                        <button
+                          onClick={() => { void handleDeleteJob(j.id); }}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex', alignItems: 'center' }}
+                          title="Delete job"
+                        >
+                          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                        </button>
                       </div>
-                      <button
-                        onClick={() => setFinishSpecsJob(j)}
-                        className="btn btn-ghost"
-                        style={{ flexShrink: 0, padding: '6px 12px', fontSize: 12, fontWeight: 700, color: '#A78BFA', borderColor: 'rgba(167,139,250,0.3)', display: 'inline-flex', alignItems: 'center', gap: 6 }}
-                        title="Finish specs"
-                      >
-                        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7Z"/><path d="M9 21h6"/></svg>
-                        Finish Specs
-                      </button>
-                      <button
-                        onClick={() => setCompleteJobTarget(j)}
-                        className="btn btn-ghost"
-                        style={{ flexShrink: 0, padding: '6px 12px', fontSize: 12, fontWeight: 700, color: 'var(--teal)', borderColor: 'rgba(45,225,201,0.3)', display: 'inline-flex', alignItems: 'center', gap: 6 }}
-                        title="Complete job"
-                      >
-                        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                        Complete
-                      </button>
-                      <button
-                        onClick={() => { void handleDeleteJob(j.id); }}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex', alignItems: 'center' }}
-                        title="Delete job"
-                      >
-                        <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-                      </button>
+                      {/* expanded body — details + finish specs */}
+                      {open && (
+                        <div style={{ margin: '0 20px 12px', padding: '12px 14px', borderLeft: '2px solid var(--teal)', background: 'rgba(45,225,201,0.05)', borderRadius: '0 8px 8px 0', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                            {j.due_date && (() => { const m = dueMeta(j.due_date); return (
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: `${m.color}22`, color: m.color, ...(m.overdue ? { animation: 'craftsPulse 1.4s ease-in-out infinite' } : {}) }}>
+                                Due {m.label}
+                              </span>
+                            ); })()}
+                            {j.install_date && j.install_date !== j.due_date && (
+                              <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>Install {new Date(j.install_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                            )}
+                            <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>Job #{j.job_number}</span>
+                            {(() => { const c = laborByJob[j.job_number]; return c && c > 0 ? (
+                              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--teal)' }}>Labor to date: ${c.toFixed(2)}</span>
+                            ) : null; })()}
+                            <SourceBadge source={j.source} />
+                          </div>
+                          <div>
+                            <button
+                              onClick={() => setFinishSpecsJob(j)}
+                              className="btn btn-ghost"
+                              style={{ padding: '6px 12px', fontSize: 12, fontWeight: 700, color: '#A78BFA', borderColor: 'rgba(167,139,250,0.3)', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                              title="Finish specs"
+                            >
+                              <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7Z"/><path d="M9 21h6"/></svg>
+                              Finish Specs
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
 
@@ -4339,7 +4282,7 @@ export default function SupervisorPage() {
 
                 {/* Unified drop zone — one file or many, processed sequentially */}
                 <div style={{ marginBottom: 4 }}>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Files (PDF, CSV, image, SVG, DXF, XML, HTML, or spreadsheet) — one or many *</label>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Files (PDF, CSV, SVG, XML, images, or spreadsheet) — one or many *</label>
                   <div
                     onDragOver={(e) => { e.preventDefault(); if (!multiProcessing && planJobReady) setMultiDropHover(true); }}
                     onDragLeave={() => setMultiDropHover(false)}
@@ -4363,7 +4306,7 @@ export default function SupervisorPage() {
                     <input
                       type="file"
                       multiple
-                      accept=".pdf,.csv,.svg,.html,.dxf,.xml,.xlsx,.xls,.jpg,.jpeg,.png,.webp"
+                      accept=".pdf,.csv,.svg,.html,.xml,.xlsx,.xls,.jpg,.jpeg,.png,.webp"
                       disabled={multiProcessing || !planJobReady}
                       onChange={(e) => {
                         const fs = Array.from(e.target.files ?? []);
@@ -4378,7 +4321,7 @@ export default function SupervisorPage() {
                       <line x1="12" y1="3" x2="12" y2="15"/>
                     </svg>
                     <span style={{ fontSize: 14, color: '#2DE1C9' }}>Drop files here or tap to browse</span>
-                    <span style={{ fontSize: 11, color: '#8BA5A0', textAlign: 'center' }}>PDF, CSV, SVG, DXF, XML, HTML, images, spreadsheets — one or many at once</span>
+                    <span style={{ fontSize: 11, color: '#8BA5A0', textAlign: 'center' }}>PDF, CSV, SVG, XML, images, spreadsheets — one or many at once. For shop drawings, use PDF not DXF.</span>
                   </div>
                   {!planJobReady && (
                     <div style={{ fontSize: 11.5, color: '#FBBF24', marginTop: 8 }}>Choose a Job / Project above before uploading.</div>

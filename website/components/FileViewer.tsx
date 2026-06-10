@@ -12,10 +12,6 @@
  *               onClose={() => setOpen(false)} />
  * ========================================================================== */
 import { useEffect, useRef, useState, useCallback } from 'react';
-import DxfParser, {
-  type IDxf, type IEntity, type ILineEntity, type IArcEntity, type ICircleEntity,
-  type ILwpolylineEntity, type IPolylineEntity, type ITextEntity, type IMtextEntity,
-} from 'dxf-parser';
 
 /* ---- types --------------------------------------------------------------- */
 export type ViewerPart = {
@@ -342,244 +338,6 @@ function SvgView({ url }: { url: string }) {
 }
 
 /* ========================================================================== *
- *  DXF VIEWER  (dxf-parser → SVG, rendered inline)
- *  ASCII DXF is fetched, parsed with dxf-parser, and converted to an SVG
- *  string we build ourselves from the parsed geometry — so the
- *  dangerouslySetInnerHTML below never touches user-authored markup.
- *  DXF Y-axis points up, SVG Y points down: every Y is negated inline
- *  (no global flip transform, so text stays upright as-is).
- * ========================================================================== */
-
-// AutoCAD Color Index → app palette. Anything else falls back to off-white.
-const ACI_COLORS: Record<number, string> = {
-  1: '#F87171', // red
-  2: '#FBBF24', // yellow
-  3: '#34D399', // green
-  4: '#2DE1C9', // cyan
-  5: '#60A5FA', // blue
-  6: '#A78BFA', // magenta
-  7: '#E5E7EB', // white/default
-};
-const DXF_DEFAULT_COLOR = '#E5E7EB';
-
-function layerColor(layerName: string | undefined, dxf: IDxf): string {
-  const layer = layerName ? dxf.tables?.layer?.layers?.[layerName] : undefined;
-  // colorIndex is the raw ACI code; `color` is a converted 24-bit RGB int.
-  const aci = layer?.colorIndex ?? layer?.color;
-  return (aci != null && ACI_COLORS[aci]) || DXF_DEFAULT_COLOR;
-}
-
-function escXml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-// Strip MTEXT inline formatting: {\fArial;...} groups, \P paragraph breaks,
-// and \X...; control codes, leaving just the readable text.
-function mtextPlain(s: string): string {
-  return s
-    .replace(/\\P/g, ' ')
-    .replace(/\\[A-Za-z][^;{}\\]*;/g, '')
-    .replace(/[{}]/g, '')
-    .trim();
-}
-
-function dxfToSvg(dxf: IDxf): string {
-  const entities = dxf.entities ?? [];
-
-  // A. Bounds — collect every X/Y the renderer will use.
-  const xs: number[] = [];
-  const ys: number[] = [];
-  const addPt = (p?: { x?: number; y?: number } | null) => {
-    if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) { xs.push(p.x as number); ys.push(p.y as number); }
-  };
-  for (const e of entities) {
-    switch (e.type) {
-      case 'LINE': case 'LWPOLYLINE': case 'POLYLINE':
-        ((e as ILineEntity).vertices ?? []).forEach((v) => addPt(v));
-        break;
-      case 'CIRCLE': case 'ARC': {
-        const c = e as ICircleEntity;
-        if (c.center && Number.isFinite(c.radius)) {
-          addPt({ x: c.center.x - c.radius, y: c.center.y - c.radius });
-          addPt({ x: c.center.x + c.radius, y: c.center.y + c.radius });
-        }
-        break;
-      }
-      case 'TEXT': addPt((e as ITextEntity).startPoint); break;
-      case 'MTEXT': addPt((e as IMtextEntity).position); break;
-      default: break;
-    }
-  }
-  if (xs.length === 0) throw new Error('No drawable entities found in this DXF');
-
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const minY = Math.min(...ys), maxY = Math.max(...ys);
-  const width = Math.max(maxX - minX, 1e-6);
-  const height = Math.max(maxY - minY, 1e-6);
-  const pad = Math.max(width, height) * 0.05;
-  const viewBox = `${minX - pad} ${-(maxY + pad)} ${width + pad * 2} ${height + pad * 2}`;
-  const fmt = (n: number) => Number(n.toFixed(4));
-
-  // B. Entities → SVG elements.
-  const parts: string[] = [];
-  for (const e of entities) {
-    const color = layerColor(e.layer, dxf);
-    // vector-effect keeps lines visible no matter the drawing's unit scale.
-    const strokeAttrs = `stroke="${color}" stroke-width="0.5" vector-effect="non-scaling-stroke" fill="none"`;
-    switch (e.type) {
-      case 'LINE': {
-        const v = (e as ILineEntity).vertices;
-        if (!v || v.length < 2) break;
-        parts.push(`<line x1="${fmt(v[0].x)}" y1="${fmt(-v[0].y)}" x2="${fmt(v[1].x)}" y2="${fmt(-v[1].y)}" ${strokeAttrs} />`);
-        break;
-      }
-      case 'TEXT': {
-        const t = e as ITextEntity;
-        if (!t.startPoint || !t.text) break;
-        parts.push(`<text x="${fmt(t.startPoint.x)}" y="${fmt(-t.startPoint.y)}" font-size="${fmt(t.textHeight ?? 1.5)}" fill="${color}">${escXml(t.text)}</text>`);
-        break;
-      }
-      case 'MTEXT': {
-        const t = e as IMtextEntity;
-        const text = mtextPlain(t.text ?? '');
-        if (!t.position || !text) break;
-        parts.push(`<text x="${fmt(t.position.x)}" y="${fmt(-t.position.y)}" font-size="${fmt(t.height ?? 1.5)}" fill="${color}">${escXml(text)}</text>`);
-        break;
-      }
-      case 'CIRCLE': {
-        const c = e as ICircleEntity;
-        if (!c.center || !Number.isFinite(c.radius)) break;
-        parts.push(`<circle cx="${fmt(c.center.x)}" cy="${fmt(-c.center.y)}" r="${fmt(c.radius)}" ${strokeAttrs} />`);
-        break;
-      }
-      case 'ARC': {
-        const a = e as IArcEntity;
-        if (!a.center || !Number.isFinite(a.radius)) break;
-        // dxf-parser angles are radians, CCW from +X. With Y negated, CCW in
-        // DXF renders as CW in SVG → sweep-flag 0.
-        const x1 = a.center.x + a.radius * Math.cos(a.startAngle);
-        const y1 = a.center.y + a.radius * Math.sin(a.startAngle);
-        const x2 = a.center.x + a.radius * Math.cos(a.endAngle);
-        const y2 = a.center.y + a.radius * Math.sin(a.endAngle);
-        let delta = a.endAngle - a.startAngle;
-        while (delta < 0) delta += Math.PI * 2;
-        const largeArc = delta > Math.PI ? 1 : 0;
-        parts.push(`<path d="M ${fmt(x1)} ${fmt(-y1)} A ${fmt(a.radius)} ${fmt(a.radius)} 0 ${largeArc} 0 ${fmt(x2)} ${fmt(-y2)}" ${strokeAttrs} />`);
-        break;
-      }
-      case 'LWPOLYLINE': case 'POLYLINE': {
-        const p = e as ILwpolylineEntity | IPolylineEntity;
-        const v = (p.vertices ?? []).filter((pt) => Number.isFinite(pt.x) && Number.isFinite(pt.y));
-        if (v.length < 2) break;
-        const pts = v.map((pt) => `${fmt(pt.x)},${fmt(-pt.y)}`).join(' ');
-        const tag = p.shape === true ? 'polygon' : 'polyline'; // shape = closed flag
-        parts.push(`<${tag} points="${pts}" ${strokeAttrs} />`);
-        break;
-      }
-      default: break; // unsupported entity types are skipped silently
-    }
-  }
-
-  // D. Wrapper.
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="100%" height="100%" style="background:#0a0f0e">${parts.join('')}</svg>`;
-}
-
-const dxfZoomBtn: React.CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36,
-  borderRadius: 9, fontSize: 17, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
-  border: '1px solid rgba(94,234,212,0.3)', background: 'rgba(94,234,212,0.1)', color: 'var(--teal)',
-};
-
-function DxfView({ url }: { url: string }) {
-  const [svg, setSvg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [binary, setBinary] = useState(false);
-  const [zoom, setZoom] = useState(1);
-  const loading = !svg && !err && !binary;
-
-  useEffect(() => {
-    let cancelled = false;
-    let settled = false;
-    // Safety net: if nothing resolves within 8s (iOS Safari can hang on a slow
-    // fetch or a parser that never returns), surface an error so the spinner
-    // never shows forever.
-    const timer = setTimeout(() => {
-      if (!cancelled && !settled) setErr('Could not parse DXF on this device — use the download button');
-    }, 8000);
-    // Mark resolved and stop the timeout. Success paths also clear any error a
-    // late-firing timeout may already have set, so a slow-but-valid parse wins.
-    const finish = (fn: () => void) => {
-      if (cancelled) return;
-      settled = true;
-      clearTimeout(timer);
-      fn();
-    };
-    (async () => {
-      try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`fetch failed (${res.status})`);
-        const text = await res.text();
-        if (cancelled) return;
-        // Binary DXF starts with a fixed sentinel; null bytes are another giveaway.
-        if (text.startsWith('AutoCAD Binary DXF') || /[\u0000\uFFFD]/.test(text.slice(0, 512))) {
-          finish(() => { setErr(null); setBinary(true); });
-          return;
-        }
-        const parser = new DxfParser();
-        const dxf = parser.parseSync(text);
-        if (!dxf) throw new Error('parser returned no data');
-        const markup = dxfToSvg(dxf);
-        finish(() => { setErr(null); setSvg(markup); });
-      } catch (e) {
-        const msg = e instanceof Error
-          ? e.message
-          : (typeof e === 'string' && e.trim() ? e : 'Parse failed');
-        finish(() => setErr(msg));
-      }
-    })();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [url]);
-
-  if (binary) {
-    return (
-      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: 32, textAlign: 'center' }}>
-        <svg width="56" height="56" viewBox="0 0 24 24" {...stroke}><path d="M14 3v5h5M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /></svg>
-        <div style={{ fontSize: 14, color: 'var(--ink-mute)', maxWidth: 320 }}>Binary DXF — download to open in CAD app.</div>
-        <a href={url} download target="_blank" rel="noopener noreferrer" className="btn btn-primary" style={{ marginTop: 4 }}>Download</a>
-      </div>
-    );
-  }
-  if (err) {
-    return <div style={{ padding: 40, color: 'var(--ink-mute)', textAlign: 'center' }}>Could not render DXF inline ({err}). Use the download button to open it.</div>;
-  }
-  if (loading) {
-    return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <style>{`@keyframes dxfSpin{to{transform:rotate(360deg)}}`}</style>
-        <svg width="28" height="28" viewBox="0 0 24 24" {...stroke} style={{ color: 'var(--teal)', animation: 'dxfSpin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.2-8.56" /></svg>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ position: 'relative', height: '100%', minHeight: 0 }}>
-      <div onDoubleClick={() => setZoom((z) => (z === 1 ? 2.5 : 1))}
-        style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto', background: '#0a0f0e', touchAction: 'pinch-zoom' }}>
-        <div
-          style={{ width: '100%', height: '100%', transform: `scale(${zoom})`, transition: 'transform .2s', transformOrigin: 'center' }}
-          dangerouslySetInnerHTML={{ __html: svg! }}
-        />
-      </div>
-      {/* zoom controls */}
-      <div style={{ position: 'absolute', bottom: 14, right: 14, display: 'flex', gap: 8 }}>
-        <button onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.25) * 100) / 100))} aria-label="Zoom out" style={dxfZoomBtn}>−</button>
-        <button onClick={() => setZoom((z) => Math.min(4, Math.round((z + 0.25) * 100) / 100))} aria-label="Zoom in" style={dxfZoomBtn}>+</button>
-      </div>
-    </div>
-  );
-}
-
-/* ========================================================================== *
  *  HTML VIEWER  (fetch → sanitize → render)
  *  Mobile Safari refuses to render same-origin HTML inside a sandboxed iframe
  *  and shows raw source instead. So we fetch the file, strip scripts + inline
@@ -868,7 +626,46 @@ export default function FileViewer({ file, onClose }: { file: ViewerFile; onClos
       case 'csv':   return <CsvView file={file} />;
       case 'image': return <ImageView url={file.url} />;
       case 'svg':   return <SvgView url={file.url} />;
-      case 'dxf':   return <DxfView url={file.url} />;
+      case 'dxf':   return (
+        <div style={{
+          height: '100%', display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center',
+          gap: 20, padding: 40, textAlign: 'center'
+        }}>
+          <svg width="56" height="56" viewBox="0 0 24 24"
+            fill="none" stroke="var(--ink-mute)"
+            strokeWidth="1.4" strokeLinecap="round"
+            strokeLinejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+          <div style={{ maxWidth: 360 }}>
+            <div style={{
+              fontSize: 16, fontWeight: 700,
+              color: 'var(--ink)', marginBottom: 10
+            }}>
+              DXF files require CAD software
+            </div>
+            <div style={{
+              fontSize: 13, color: 'var(--ink-mute)',
+              lineHeight: 1.7, marginBottom: 20
+            }}>
+              For shop floor use, export your drawing as PDF
+              from your CAD or design software and upload that
+              instead. PDF renders on any device — no CAD app
+              required.
+            </div>
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+              <a href={file.url} download={file.name}
+                target="_blank" rel="noopener noreferrer"
+                className="btn btn-ghost"
+                style={{ fontSize: 13 }}>
+                Download DXF
+              </a>
+            </div>
+          </div>
+        </div>
+      );
       case 'html':  return <HtmlView url={file.url} />;
       case 'json':  return <StructuredView url={file.url} kind="json" />;
       case 'xml':   return <StructuredView url={file.url} kind="xml" />;
