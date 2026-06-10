@@ -211,6 +211,18 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
     return () => { supabase.removeChannel(ch); };
   }, [tenantId, load]);
 
+  useEffect(() => {
+    function handleVisibility() {
+      if (document.visibilityState === 'visible') {
+        void load();
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [load]);
+
   const partsFor = useCallback((unitId: string) => parts.filter((p) => p.cabinet_unit_id === unitId), [parts]);
 
   // Cabinet ids that have at least one part pushed to craftsman.
