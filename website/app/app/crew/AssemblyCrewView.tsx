@@ -7,7 +7,7 @@ import {
   clearProject, fmtAccumulated, type ActiveProject,
 } from '@/lib/activeProject';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
-import { pushPart, deptDisplay, PART_DEPTS } from '@/lib/partActions';
+import { pushPart, deptDisplay, PART_DEPTS, recomputeCabinet } from '@/lib/partActions';
 
 // The Assembly department's home view. Parts pushed to assembly, grouped by
 // job -> cabinet (folder accordion). Each cabinet has START and MARK COMPLETE.
@@ -381,11 +381,13 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
   async function pushSelectedAsmParts(toDept: string) {
     const items = Object.values(selectedParts);
     if (items.length === 0) return;
-    for (const { part } of items) {
-      try {
-        await pushPart({ tenantId, partId: part.id, partName: part.part_name, cabinetUnitId: part.cabinet_unit_id, jobNumber: part.job_number, fromDept: 'assembly', toDept, workerName: crewName, timeClockId: null });
-      } catch { /* best-effort per part */ }
-    }
+    // Push all parts in parallel.
+    await Promise.all(items.map(({ part }) =>
+      pushPart({ tenantId, partId: part.id, partName: part.part_name, cabinetUnitId: part.cabinet_unit_id, jobNumber: part.job_number, fromDept: 'assembly', toDept, workerName: crewName, timeClockId: null }).catch(() => {})
+    ));
+    // Recompute each unique cabinet once.
+    const uniqueCabIds = [...new Set(items.map((i) => i.cabinetId))];
+    await Promise.all(uniqueCabIds.map((id) => recomputeCabinet(tenantId, id).catch(() => {})));
     showUndoToast(
       `${items.length} part${items.length === 1 ? '' : 's'}`,
       toDept,

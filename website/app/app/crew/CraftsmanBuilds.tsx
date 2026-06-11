@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import { pushPart, deptDisplay, PART_DEPTS } from '@/lib/partActions';
+import { pushPart, deptDisplay, PART_DEPTS, recomputeCabinet } from '@/lib/partActions';
 import {
   getWorkerProject, upsertActiveProject, startProjectSession, pauseWorkerProject,
   clearProject, fmtAccumulated, type ActiveProject,
@@ -385,15 +385,16 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     const cabIds = Array.from(selectedCabs);
     if (cabIds.length === 0) return;
     const idSet = new Set(cabIds);
-    const pushed: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[] = [];
-    for (const cid of cabIds) {
-      for (const p of parts.filter((pp) => pp.cabinet_unit_id === cid)) {
-        try {
-          await pushPart({ tenantId, partId: p.id, partName: p.part_name, cabinetUnitId: p.cabinet_unit_id, jobNumber: p.job_number, fromDept: 'craftsman', toDept, workerName: crewName, timeClockId });
-          pushed.push({ partId: p.id, cabinetUnitId: p.cabinet_unit_id, partName: p.part_name, jobNumber: p.job_number });
-        } catch { /* best-effort per part */ }
-      }
-    }
+    // Flatten to the parts being pushed across the selected cabinets.
+    const toPush = parts.filter((p) => idSet.has(p.cabinet_unit_id));
+    const pushed = toPush.map((p) => ({ partId: p.id, cabinetUnitId: p.cabinet_unit_id, partName: p.part_name, jobNumber: p.job_number }));
+    // Push all parts in parallel.
+    await Promise.all(toPush.map((p) =>
+      pushPart({ tenantId, partId: p.id, partName: p.part_name, cabinetUnitId: p.cabinet_unit_id, jobNumber: p.job_number, fromDept: 'craftsman', toDept, workerName: crewName, timeClockId }).catch(() => {})
+    ));
+    // Recompute each unique cabinet once.
+    const uniqueCabIds = [...new Set(toPush.map((p) => p.cabinet_unit_id))];
+    await Promise.all(uniqueCabIds.map((id) => recomputeCabinet(tenantId, id).catch(() => {})));
     showUndoToast(`${cabIds.length} cabinet${cabIds.length === 1 ? '' : 's'}`, toDept, 'craftsman', pushed);
     setSelectedCabs(new Set());
     setSelectMode(false);

@@ -14,7 +14,7 @@ import FinishingView from './FinishingView';
 import AssemblyCrewView from './AssemblyCrewView';
 import CabinetScanner from '../scan/CabinetScanner';
 import PushPicker from '@/components/PushPicker';
-import { pushPart, deptDisplay } from '@/lib/partActions';
+import { pushPart, deptDisplay, recomputeCabinet } from '@/lib/partActions';
 import {
   getWorkerProject, pauseWorkerProject, startProjectSession, fmtAccumulated,
   deptLabel as projDeptLabel, type ActiveProject,
@@ -2061,17 +2061,21 @@ export default function CrewPage() {
     if (cutJobBusy) return;
     setCutJobBusy(true);
     try {
-      const pushedParts: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[] = [];
+      // Flatten to (part, cabinet) push tasks across the selected cabinets.
+      const tasks: { part: CutJobPart; cid: string; jobNumber: string | null }[] = [];
       for (const cid of cabinetIds) {
         const cab = cutJobCabs.find((c) => c.cabinetId === cid);
         if (!cab) continue;
-        for (const p of cab.parts) {
-          try {
-            await pushPart({ tenantId: tenant!.id, partId: p.id, partName: p.part_name, cabinetUnitId: cid, jobNumber: cab.jobNumber, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId });
-            pushedParts.push({ partId: p.id, cabinetUnitId: cid, partName: p.part_name, jobNumber: cab.jobNumber });
-          } catch { /* best-effort per part */ }
-        }
+        for (const p of cab.parts) tasks.push({ part: p, cid, jobNumber: cab.jobNumber });
       }
+      const pushedParts = tasks.map((t) => ({ partId: t.part.id, cabinetUnitId: t.cid, partName: t.part.part_name, jobNumber: t.jobNumber }));
+      // Push all parts in parallel.
+      await Promise.all(tasks.map((t) =>
+        pushPart({ tenantId: tenant!.id, partId: t.part.id, partName: t.part.part_name, cabinetUnitId: t.cid, jobNumber: t.jobNumber, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId }).catch(() => {})
+      ));
+      // Recompute each unique cabinet once.
+      const uniqueCabIds = [...new Set(tasks.map((t) => t.cid))];
+      await Promise.all(uniqueCabIds.map((id) => recomputeCabinet(tenant!.id, id).catch(() => {})));
       setCutJobCabs((cabs) => cabs.filter((c) => !cabinetIds.includes(c.cabinetId)));
       setHeldCabs((h) => { const n = { ...h }; cabinetIds.forEach((id) => delete n[id]); return n; });
       showUndoToast(`${cabinetIds.length} cabinet${cabinetIds.length === 1 ? '' : 's'}`, toDept, 'production', pushedParts);
@@ -2102,11 +2106,13 @@ export default function CrewPage() {
     if (items.length === 0) return;
     setCutJobBusy(true);
     try {
-      for (const { part, cabinetId } of items) {
-        try {
-          await pushPart({ tenantId: tenant!.id, partId: part.id, partName: part.part_name, cabinetUnitId: cabinetId, jobNumber: cutJob?.jobNumber ?? null, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId });
-        } catch { /* best-effort per part */ }
-      }
+      // Push all parts in parallel.
+      await Promise.all(items.map(({ part, cabinetId }) =>
+        pushPart({ tenantId: tenant!.id, partId: part.id, partName: part.part_name, cabinetUnitId: cabinetId, jobNumber: cutJob?.jobNumber ?? null, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId }).catch(() => {})
+      ));
+      // Recompute each unique cabinet once.
+      const uniqueCabIds = [...new Set(items.map((it) => it.cabinetId))];
+      await Promise.all(uniqueCabIds.map((id) => recomputeCabinet(tenant!.id, id).catch(() => {})));
       const pushedIds = new Set(items.map((it) => it.part.id));
       setCutJobCabs((cabs) => cabs.map((c) => ({ ...c, parts: c.parts.filter((p) => !pushedIds.has(p.id)) })).filter((c) => c.parts.length > 0));
       showUndoToast(
