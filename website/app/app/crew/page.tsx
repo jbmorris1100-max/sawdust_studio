@@ -1120,9 +1120,9 @@ export default function CrewPage() {
   }, [tenant]);
 
   // ── Production cut-list loader ─────────────────────────────────────────────
-  const loadProduction = useCallback(async () => {
+  const loadProduction = useCallback(async (showSpinner = true) => {
     if (!tenant) return;
-    setProdLoading(true);
+    if (showSpinner) setProdLoading(true);
     try {
       const { data: units } = await supabase
         .from('cabinet_units')
@@ -1203,7 +1203,7 @@ export default function CrewPage() {
   useEffect(() => {
     if (!tenant || crewDept !== 'Production') return;
     const iv = setInterval(() => {
-      void loadProduction();
+      void loadProduction(false);
     }, 15000);
     return () => clearInterval(iv);
   }, [tenant, crewDept, loadProduction]);
@@ -1211,7 +1211,7 @@ export default function CrewPage() {
   useEffect(() => {
     if (!tenant || crewDept !== 'Production') return;
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void loadProduction();
+      if (document.visibilityState === 'visible') void loadProduction(false);
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
