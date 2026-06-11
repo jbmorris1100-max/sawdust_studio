@@ -464,7 +464,14 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                       return (
                         <div key={c.cabinetId} style={{ padding: '16px 18px', borderRadius: 14, background: 'var(--bg-1)', border: `1px solid ${build ? 'rgba(45,225,201,0.4)' : 'var(--line)'}` }}>
                           <button
-                            onClick={() => { if (selectMode) toggleCabinetSelection(); else setExpandedCabs((e) => ({ ...e, [c.cabinetId]: !e[c.cabinetId] })); }}
+                            onClick={() => {
+                              if (selectMode) {
+                                toggleCabinetSelection();
+                                setExpandedCabs((e) => ({ ...e, [c.cabinetId]: true }));
+                              } else {
+                                setExpandedCabs((e) => ({ ...e, [c.cabinetId]: !e[c.cabinetId] }));
+                              }
+                            }}
                             style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, marginBottom: expanded ? 12 : 0, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                           >
                             <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transition: 'transform 0.2s ease', transform: expanded ? 'rotate(90deg)' : 'none' }}><polyline points="9 6 15 12 9 18"/></svg>
@@ -530,7 +537,7 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                                 Resume
                               </button>
                             </>
-                          ) : (
+                          ) : c.parts.length > 0 ? (
                             <div style={{ display: 'flex', gap: 8, width: '100%' }}>
                               <button
                                 onClick={() => void startBuild(c.cabinetId, jobNumber, info.label)}
@@ -571,6 +578,10 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                                 <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                                 {busy ? 'Sending…' : 'QC'}
                               </button>
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 12, color: 'var(--ink-mute)', padding: '4px 0' }}>
+                              No parts in assembly
                             </div>
                           ))}
                         </div>

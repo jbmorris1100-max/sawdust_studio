@@ -396,6 +396,18 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
                         <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>
                           <polyline points="6 9 12 15 18 9"/>
                         </svg>
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`Remove ${m.name}`}
+                          onClick={(e) => { e.stopPropagation(); setExpandedId(m.id); setConfirmRemoveId(m.id); }}
+                          style={{ width: 28, height: 28, flexShrink: 0, borderRadius: '50%', background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.5)', color: '#F87171', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                        >
+                          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                          </svg>
+                        </span>
                       </button>
 
                       {/* Expanded actions */}
