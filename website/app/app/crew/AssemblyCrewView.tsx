@@ -90,6 +90,8 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
   // Part-level multi-select push.
   const [selectMode, setSelectMode] = useState(false);
   const [selectedParts, setSelectedParts] = useState<Record<string, { part: AsmPart; cabinetId: string }>>({});
+  // Cabinet collapse state — all cabinets start collapsed.
+  const [expandedCabs, setExpandedCabs] = useState<Record<string, boolean>>({});
   // Undo toast — reverse the last push within 8s.
   const [undoState, setUndoState] = useState<{
     label: string;
@@ -447,9 +449,25 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                       const isComplete = DONE_CAB_STATUSES.includes((info.status || '').toLowerCase());
                       const paused = pausedProject?.cabinet_unit_id === c.cabinetId ? pausedProject : null;
                       const blockedByPaused = !!pausedProject && !paused;
+                      const expanded = !!expandedCabs[c.cabinetId];
+                      const selCount = c.parts.filter((p) => selectedParts[p.id]).length;
+                      const allSel = c.parts.length > 0 && selCount === c.parts.length;
+                      const someSel = selCount > 0 && !allSel;
+                      const toggleCabinetSelection = () => {
+                        setSelectedParts((s) => {
+                          const n = { ...s };
+                          if (allSel) c.parts.forEach((p) => { delete n[p.id]; });
+                          else c.parts.forEach((p) => { n[p.id] = { part: p, cabinetId: c.cabinetId }; });
+                          return n;
+                        });
+                      };
                       return (
                         <div key={c.cabinetId} style={{ padding: '16px 18px', borderRadius: 14, background: 'var(--bg-1)', border: `1px solid ${build ? 'rgba(45,225,201,0.4)' : 'var(--line)'}` }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                          <button
+                            onClick={() => { if (selectMode) toggleCabinetSelection(); else setExpandedCabs((e) => ({ ...e, [c.cabinetId]: !e[c.cabinetId] })); }}
+                            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, marginBottom: expanded ? 12 : 0, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transition: 'transform 0.2s ease', transform: expanded ? 'rotate(90deg)' : 'none' }}><polyline points="9 6 15 12 9 18"/></svg>
                             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{info.label}</span>
                             {/* Active-build indicator — pulsing dot only. The crew
                                 never sees a clock; the elapsed time is logged to
@@ -458,7 +476,13 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                               <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--teal)', display: 'inline-block', animation: 'asmPulse 1.4s ease-in-out infinite' }} />
                             )}
                             <span style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--ink-mute)' }}>{c.parts.length} part{c.parts.length === 1 ? '' : 's'}</span>
-                          </div>
+                            {selectMode && (
+                              <span style={{ width: 22, height: 22, flexShrink: 0, borderRadius: 6, border: `1px solid ${allSel ? 'var(--teal)' : someSel ? 'rgba(251,191,36,0.8)' : 'var(--line-strong)'}`, background: allSel ? 'var(--teal)' : someSel ? 'rgba(251,191,36,0.25)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                {allSel && <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#04201c" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                              </span>
+                            )}
+                          </button>
+                          {expanded && (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
                             {c.parts.map((p) => {
                               const selected = !!selectedParts[p.id];
@@ -481,10 +505,11 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                               );
                             })}
                           </div>
+                          )}
 
                           {/* A complete cabinet has already gone to QC — show its
                               status only. An in-progress cabinet shows Start + Complete. */}
-                          {isComplete ? (
+                          {expanded && (isComplete ? (
                             <>
                               <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginBottom: 10 }}>
                                 {info.completedBy ? `Completed by ${info.completedBy}` : 'Completed'}
@@ -547,7 +572,7 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                                 {busy ? 'Sending…' : 'QC'}
                               </button>
                             </div>
-                          )}
+                          ))}
                         </div>
                       );
                     })}

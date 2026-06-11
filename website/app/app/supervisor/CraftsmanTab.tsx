@@ -223,6 +223,13 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
     };
   }, [load]);
 
+  useEffect(() => {
+    const iv = setInterval(() => {
+      void load();
+    }, 15000);
+    return () => clearInterval(iv);
+  }, [load]);
+
   const partsFor = useCallback((unitId: string) => parts.filter((p) => p.cabinet_unit_id === unitId), [parts]);
 
   // Cabinet ids that have at least one part pushed to craftsman.

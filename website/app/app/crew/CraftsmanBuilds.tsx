@@ -186,6 +186,13 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     };
   }, [load]);
 
+  useEffect(() => {
+    const iv = setInterval(() => {
+      void load();
+    }, 15000);
+    return () => clearInterval(iv);
+  }, [load]);
+
   // Restore an in-progress build after a reload (only restores, never starts).
   useEffect(() => {
     try {
