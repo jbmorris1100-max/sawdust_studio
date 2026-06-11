@@ -155,7 +155,7 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
       if (jobNums.length > 0) {
         const { data: jobCabs } = await supabase
           .from('cabinet_units').select('id, unit_label, cabinet_number, status, completed_by, job_number')
-          .eq('tenant_id', tenantId).in('job_number', jobNums).limit(1000);
+          .eq('tenant_id', tenantId).eq('assigned_dept', 'assembly').in('job_number', jobNums).limit(1000);
         type CabRow = { id: string; unit_label: string | null; cabinet_number: string | null; status: string | null; completed_by: string | null; job_number: string | null };
         const cabRowsByJob: Record<string, CabRow[]> = {};
         ((jobCabs as CabRow[] | null) ?? []).forEach((c) => {
