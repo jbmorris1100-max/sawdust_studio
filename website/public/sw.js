@@ -304,7 +304,18 @@ self.addEventListener('push', function (event) {
   event.waitUntil(
     (async () => {
       if (options.data.isMessage) await setNewMessagesFlag();
-      await self.registration.showNotification(data.title || 'InlineIQ', options);
+      // Only show the notification if no app tab is currently visible.
+      // When the app is open, realtime/polling handles the UI update silently.
+      const clientList = await self.clients.matchAll({
+        type: 'window',
+        includeUncontrolled: true,
+      });
+      const appIsOpen = clientList.some(
+        (c) => c.visibilityState === 'visible'
+      );
+      if (!appIsOpen) {
+        await self.registration.showNotification(data.title || 'InlineIQ', options);
+      }
     })()
   );
 });

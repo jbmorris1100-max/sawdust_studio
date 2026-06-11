@@ -1200,6 +1200,23 @@ export default function CrewPage() {
     return () => { supabase.removeChannel(ch); };
   }, [tenant, crewDept, loadProduction]);
 
+  useEffect(() => {
+    if (!tenant || crewDept !== 'Production') return;
+    const iv = setInterval(() => {
+      void loadProduction();
+    }, 15000);
+    return () => clearInterval(iv);
+  }, [tenant, crewDept, loadProduction]);
+
+  useEffect(() => {
+    if (!tenant || crewDept !== 'Production') return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void loadProduction();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [tenant, crewDept, loadProduction]);
+
   // Collapse a Production job that no longer has uncut work. Default is
   // all-collapsed (no auto-open) so the job list shows as a tidy folder list.
   useEffect(() => {

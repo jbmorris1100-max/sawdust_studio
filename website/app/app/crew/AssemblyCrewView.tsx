@@ -203,6 +203,21 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
     return () => { supabase.removeChannel(ch); };
   }, [tenantId, load]);
 
+  useEffect(() => {
+    const iv = setInterval(() => {
+      void load();
+    }, 15000);
+    return () => clearInterval(iv);
+  }, [load]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [load]);
+
   const jobLabel = (jobNumber: string | null) =>
     jobNumber ? (jobPaths[jobNumber] ? jobPaths[jobNumber].split('/').map((s) => s.trim()).join(' / ') : `Job ${jobNumber}`) : 'No Job';
 

@@ -192,6 +192,21 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
     return () => { supabase.removeChannel(ch); };
   }, [tenantId, load, openCab]);
 
+  useEffect(() => {
+    const iv = setInterval(() => {
+      void load();
+    }, 15000);
+    return () => clearInterval(iv);
+  }, [load]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [load]);
+
   const jobOptions = useMemo(() => {
     const map: Record<string, string> = {};
     parts.forEach((p) => { const jn = p.job_number ?? '__nojob__'; if (!map[jn]) map[jn] = p.jobPath; });
