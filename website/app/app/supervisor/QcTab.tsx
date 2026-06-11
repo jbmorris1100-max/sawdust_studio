@@ -19,8 +19,9 @@ type QcCabinet = {
   job_number: string | null;
   status: string;
   completed_by: string | null;
+  qc_notes: string | null;
 };
-type QcPart = { id: string; part_name: string; assigned_dept: string | null; cabinet_unit_id: string };
+type QcPart = { id: string; part_name: string; assigned_dept: string | null; cabinet_unit_id: string; status: string | null };
 type DeptEvent = { part_id: string; to_dept: string | null; created_at: string };
 
 interface Props {
@@ -49,6 +50,7 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
   const [failDept, setFailDept] = useState(depts[0] ?? 'Production');
   const [failNotes, setFailNotes] = useState('');
   const [failBusy, setFailBusy] = useState(false);
+  const [failSelectedParts, setFailSelectedParts] = useState<Record<string, boolean>>({});
 
   const jobLabel = useCallback((jobNumber: string | null) => {
     if (!jobNumber) return 'No Job';
@@ -60,7 +62,7 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
     try {
       const { data: cabRows } = await supabase
         .from('cabinet_units')
-        .select('id, unit_label, cabinet_number, job_number, status, completed_by')
+        .select('id, unit_label, cabinet_number, job_number, status, completed_by, qc_notes')
         .eq('tenant_id', tenantId)
         // pending_qc_check = assembly marked it done, awaiting the crew's QC tap;
         // ready_for_qc = QC tapped, supervisor needs to act. Show both so cabinets
@@ -75,7 +77,7 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
       const dTime: Record<string, Record<string, number>> = {};
       if (cabIds.length > 0) {
         const [{ data: pr }, { data: ev }] = await Promise.all([
-          supabase.from('parts').select('id, part_name, assigned_dept, cabinet_unit_id').in('cabinet_unit_id', cabIds).eq('tenant_id', tenantId),
+          supabase.from('parts').select('id, part_name, assigned_dept, cabinet_unit_id, status').in('cabinet_unit_id', cabIds).eq('tenant_id', tenantId),
           supabase.from('part_dept_events').select('part_id, to_dept, created_at, cabinet_unit_id').in('cabinet_unit_id', cabIds).eq('tenant_id', tenantId).order('created_at', { ascending: true }),
         ]);
         ((pr as QcPart[] | null) ?? []).forEach((p) => { (pByCab[p.cabinet_unit_id] ??= []).push(p); });
@@ -169,6 +171,7 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
     setFailCab(cab);
     setFailDept(depts[0] ?? 'Production');
     setFailNotes('');
+    setFailSelectedParts({});
   }
 
   // FAIL — route the cabinet back to a chosen dept with required notes.
@@ -177,32 +180,56 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
     if (!failNotes.trim()) { showToast('Notes are required', true); return; }
     setFailBusy(true);
     const destLower = failDept.toLowerCase();
+    const allParts = partsByCab[failCab.id] ?? [];
+    const selectedIds = Object.keys(failSelectedParts).filter((id) => failSelectedParts[id]);
+    const isPartial = selectedIds.length > 0 && selectedIds.length < allParts.length;
+    const partsToFail = isPartial ? allParts.filter((p) => selectedIds.includes(p.id)) : allParts;
+    const partsToHold = isPartial ? allParts.filter((p) => !selectedIds.includes(p.id)) : [];
     try {
-      await supabase.from('parts').update({ assigned_dept: destLower, status: 'pending' }).eq('cabinet_unit_id', failCab.id).eq('tenant_id', tenantId);
-      const { error } = await supabase.from('cabinet_units')
-        .update({ status: 'in_progress', assigned_dept: destLower, qc_notes: failNotes.trim() })
-        .eq('id', failCab.id).eq('tenant_id', tenantId);
-      if (error) throw error;
-
-      // Log the kickback on each part (best-effort).
+      if (partsToFail.length > 0) {
+        await supabase.from('parts')
+          .update({ assigned_dept: destLower, status: 'pending', qc_notes: failNotes.trim(), qc_failed: true })
+          .in('id', partsToFail.map((p) => p.id))
+          .eq('tenant_id', tenantId);
+      }
+      if (partsToHold.length > 0) {
+        await supabase.from('parts')
+          .update({ assigned_dept: 'qc', status: 'qc_hold' })
+          .in('id', partsToHold.map((p) => p.id))
+          .eq('tenant_id', tenantId);
+      }
+      if (isPartial) {
+        const { error } = await supabase.from('cabinet_units')
+          .update({ qc_notes: failNotes.trim(), assigned_dept: 'qc' })
+          .eq('id', failCab.id).eq('tenant_id', tenantId);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from('cabinet_units')
+          .update({ status: 'in_progress', assigned_dept: destLower, qc_notes: failNotes.trim() })
+          .eq('id', failCab.id).eq('tenant_id', tenantId);
+        if (error) throw error;
+      }
       try {
-        const ids = (partsByCab[failCab.id] ?? []).map((p) => p.id);
-        if (ids.length > 0) {
-          await supabase.from('part_dept_events').insert(ids.map((pid) => ({
-            tenant_id: tenantId, part_id: pid, cabinet_unit_id: failCab!.id,
+        if (partsToFail.length > 0) {
+          await supabase.from('part_dept_events').insert(partsToFail.map((p) => ({
+            tenant_id: tenantId, part_id: p.id, cabinet_unit_id: failCab!.id,
             job_number: failCab!.job_number, from_dept: 'qc', to_dept: destLower, worker_name: 'Supervisor',
           })));
         }
       } catch { /* best-effort */ }
-
       sendNotify({
         tenant_id: tenantId, target: 'crew', dept_target: deptDisplay(destLower),
         title: `QC kickback to ${deptDisplay(destLower)}`,
         body: `${failCab.unit_label}${failCab.job_number ? ` — Job ${failCab.job_number}` : ''}: ${failNotes.trim()}`,
         url: '/app/crew',
       });
-      setCabs((prev) => prev.filter((c) => c.id !== failCab!.id));
-      showToast(`${failCab.unit_label} sent back to ${failDept}`);
+      if (!isPartial) {
+        setCabs((prev) => prev.filter((c) => c.id !== failCab!.id));
+        showToast(`${failCab.unit_label} sent back to ${failDept}`);
+      } else {
+        showToast(`${selectedIds.length} part${selectedIds.length === 1 ? '' : 's'} sent back to ${failDept}`);
+        void load();
+      }
       setFailCab(null);
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Could not fail cabinet', true);
@@ -245,6 +272,12 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
                   const isBusy = busy === cab.id;
                   return (
                     <div key={cab.id} style={card}>
+                      {cab.qc_notes && (
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 12px', borderRadius: 10, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.3)', marginBottom: 12 }}>
+                          <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                          <span style={{ fontSize: 13, color: '#F87171', lineHeight: 1.5 }}>{cab.qc_notes}</span>
+                        </div>
+                      )}
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
                         <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{cab.unit_label}</span>
                         {(() => {
@@ -271,12 +304,18 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
 
                       {/* Parts + final dept */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
-                        {parts.map((p) => (
-                          <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                            <span style={{ flex: 1, minWidth: 0, color: 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.part_name}</span>
-                            <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{deptDisplay(p.assigned_dept || '')}</span>
-                          </div>
-                        ))}
+                        {parts.map((p) => {
+                          const isHeld = (p.status || '') === 'qc_hold';
+                          return (
+                            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, opacity: isHeld ? 0.5 : 1 }}>
+                              <span style={{ flex: 1, minWidth: 0, color: isHeld ? 'var(--ink-mute)' : 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.part_name}</span>
+                              {isHeld
+                                ? <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(139,165,160,0.15)', color: '#8BA5A0', flexShrink: 0 }}>Held</span>
+                                : <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{deptDisplay(p.assigned_dept || '')}</span>
+                              }
+                            </div>
+                          );
+                        })}
                       </div>
 
                       {/* Time in each dept */}
@@ -315,8 +354,26 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
       {failCab && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 20 }}
           onClick={(e) => { if (e.target === e.currentTarget && !failBusy) setFailCab(null); }}>
-          <div style={{ background: '#0a0d10', borderRadius: 16, border: '1px solid var(--line-strong)', padding: 28, width: '100%', maxWidth: 440, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div style={{ background: '#0a0d10', borderRadius: 16, border: '1px solid var(--line-strong)', padding: 28, width: '100%', maxWidth: 480, display: 'flex', flexDirection: 'column', gap: 16, maxHeight: '85vh', overflowY: 'auto' }}>
             <h3 style={{ margin: 0, color: 'var(--ink)', fontSize: 17, fontWeight: 700 }}>Fail — {failCab.unit_label}</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginBottom: 2 }}>
+                Select parts to rework (leave all unchecked to fail the entire cabinet):
+              </div>
+              {(partsByCab[failCab.id] ?? []).map((p) => {
+                const selected = !!failSelectedParts[p.id];
+                return (
+                  <button key={p.id} onClick={() => setFailSelectedParts((s) => ({ ...s, [p.id]: !s[p.id] }))}
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, background: selected ? 'rgba(248,113,113,0.08)' : 'var(--bg-1)', border: `1px solid ${selected ? 'rgba(248,113,113,0.4)' : 'var(--line)'}`, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
+                    <span style={{ width: 20, height: 20, flexShrink: 0, borderRadius: 5, border: `1px solid ${selected ? '#F87171' : 'var(--line-strong)'}`, background: selected ? 'rgba(248,113,113,0.25)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {selected && <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                    </span>
+                    <span style={{ flex: 1, fontSize: 13.5, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.part_name}</span>
+                    <span style={{ fontSize: 11, color: 'var(--ink-mute)', flexShrink: 0 }}>{deptDisplay(p.assigned_dept || '')}</span>
+                  </button>
+                );
+              })}
+            </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <label style={{ color: 'var(--ink-mute)', fontSize: 13 }}>Send back to</label>
               <select value={failDept} onChange={(e) => setFailDept(e.target.value)}
@@ -334,7 +391,10 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
                 style={{ background: 'var(--bg-1)', color: 'var(--ink-mute)', border: '1px solid var(--line)', borderRadius: 8, padding: '9px 20px', fontSize: 14, cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
               <button onClick={() => void submitFail()} disabled={failBusy || !failNotes.trim()}
                 style={{ background: failBusy || !failNotes.trim() ? 'rgba(248,113,113,0.4)' : '#F87171', color: '#1a0606', border: 'none', borderRadius: 8, padding: '9px 20px', fontSize: 14, fontWeight: 700, cursor: failBusy || !failNotes.trim() ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }}>
-                {failBusy ? 'Sending…' : 'Submit'}
+                {failBusy ? 'Sending…' : (() => {
+                  const n = Object.values(failSelectedParts).filter(Boolean).length;
+                  return n > 0 ? `Fail ${n} Part${n === 1 ? '' : 's'}` : 'Fail Entire Cabinet';
+                })()}
               </button>
             </div>
           </div>

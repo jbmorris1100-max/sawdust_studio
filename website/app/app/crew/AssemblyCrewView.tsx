@@ -32,6 +32,8 @@ type AsmPart = {
   depth: number | null;
   assigned_dept: string | null;
   status: string | null;
+  qc_notes: string | null;
+  qc_failed: boolean | null;
 };
 
 type CabInfo = { label: string; key: string; status: string | null; completedBy: string | null };
@@ -127,7 +129,7 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
 
       const { data: partRows } = await supabase
         .from('parts')
-        .select('id, part_name, cabinet_unit_id, job_number, material, width, height, depth, assigned_dept, status')
+        .select('id, part_name, cabinet_unit_id, job_number, material, width, height, depth, assigned_dept, status, qc_notes, qc_failed')
         .eq('tenant_id', tenantId)
         .eq('assigned_dept', 'assembly')
         .neq('status', 'complete')
@@ -524,6 +526,12 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                                   </span>
                                 )}
                                 <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partDisplay(p)}</span>
+                                {p.qc_failed && p.qc_notes && (
+                                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '6px 10px', borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.25)', marginTop: 4, width: '100%' }}>
+                                    <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                                    <span style={{ fontSize: 12, color: '#F87171', lineHeight: 1.4 }}>QC: {p.qc_notes}</span>
+                                  </div>
+                                )}
                                 <ViewDrawingsButton tenantId={tenantId} jobNumber={p.job_number} cabinetKey={info.key} compact />
                               </div>
                               );

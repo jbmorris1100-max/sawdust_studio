@@ -237,6 +237,8 @@ type CutJobPart = {
   quantity: number;
   checked: boolean;
   cabinet_unit_id: string;
+  qc_notes: string | null;
+  qc_failed: boolean | null;
 };
 type CutJobCab = { cabinetId: string; label: string; key: string; jobNumber: string | null; parts: CutJobPart[] };
 
@@ -2003,7 +2005,7 @@ export default function CrewPage() {
       const cabIds = units.map((u) => u.id);
       const { data } = await supabase
         .from('parts')
-        .select('id, part_name, material, width, height, depth, quantity, checked, cabinet_unit_id, assigned_dept')
+        .select('id, part_name, material, width, height, depth, quantity, checked, cabinet_unit_id, assigned_dept, qc_notes, qc_failed')
         .in('cabinet_unit_id', cabIds)
         .order('part_name');
       const rows = (data as (CutJobPart & { assigned_dept: string | null })[] | null) ?? [];
@@ -4889,6 +4891,12 @@ export default function CrewPage() {
                                 </span>
                                 <div style={{ minWidth: 0, flex: 1 }}>
                                   <div style={{ fontSize: 14, fontWeight: 600, color: p.checked ? 'var(--ink-mute)' : 'var(--ink)', textDecoration: p.checked ? 'line-through' : 'none' }}>{p.part_name}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</div>
+                                  {p.qc_failed && p.qc_notes && (
+                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '6px 10px', borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.25)', marginTop: 4 }}>
+                                      <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                                      <span style={{ fontSize: 12, color: '#F87171', lineHeight: 1.4 }}>QC: {p.qc_notes}</span>
+                                    </div>
+                                  )}
                                   <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>{[dims(p), p.material].filter(Boolean).join(' · ')}</div>
                                 </div>
                               </div>
