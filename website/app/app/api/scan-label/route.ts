@@ -33,6 +33,7 @@ export async function POST(req: Request) {
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
+      signal: AbortSignal.timeout(15000),
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
         model: MODEL,
@@ -53,6 +54,7 @@ export async function POST(req: Request) {
     if (!label) return NextResponse.json({ error: 'Empty response from vision model' }, { status: 502 });
     return NextResponse.json({ label });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    console.error('[scan-label]', err);
+    return NextResponse.json({ error: 'Label scan failed. Please try again.' }, { status: 500 });
   }
 }

@@ -47,6 +47,7 @@ function mappingMatches(mapping: Mapping, headers: string[]): boolean {
 async function callClaude(system: string, content: unknown, maxTokens = 1500, apiKey?: string) {
   const res = await fetch(API_URL, {
     method: 'POST',
+    signal: AbortSignal.timeout(30000),
     headers: {
       'x-api-key': apiKey ?? process.env.ANTHROPIC_API_KEY ?? '',
       'anthropic-version': '2023-06-01',
@@ -168,6 +169,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ error: `unknown mode: ${mode}` }, { status: 400 });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    console.error('[parse-file]', err);
+    return NextResponse.json({ error: 'File processing failed. Please try again.' }, { status: 500 });
   }
 }

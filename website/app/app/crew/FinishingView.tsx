@@ -193,8 +193,11 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
   }, [tenantId, load, openCab]);
 
   useEffect(() => {
+    let inFlight = false;
     const iv = setInterval(() => {
-      void load();
+      if (inFlight) return;
+      inFlight = true;
+      void load().finally(() => { inFlight = false; });
     }, 15000);
     return () => clearInterval(iv);
   }, [load]);

@@ -206,8 +206,11 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
   }, [tenantId, load]);
 
   useEffect(() => {
+    let inFlight = false;
     const iv = setInterval(() => {
-      void load();
+      if (inFlight) return;
+      inFlight = true;
+      void load().finally(() => { inFlight = false; });
     }, 15000);
     return () => clearInterval(iv);
   }, [load]);
@@ -399,9 +402,13 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
     const items = Object.values(selectedParts);
     if (items.length === 0) return;
     // Push all parts in parallel.
-    await Promise.all(items.map(({ part }) =>
-      pushPart({ tenantId, partId: part.id, partName: part.part_name, cabinetUnitId: part.cabinet_unit_id, jobNumber: part.job_number, fromDept: 'assembly', toDept, workerName: crewName, timeClockId: null }).catch(() => {})
+    const pushResults = await Promise.allSettled(items.map(({ part }) =>
+      pushPart({ tenantId, partId: part.id, partName: part.part_name, cabinetUnitId: part.cabinet_unit_id, jobNumber: part.job_number, fromDept: 'assembly', toDept, workerName: crewName, timeClockId: null })
     ));
+    const failedCount = pushResults.filter((r) => r.status === 'rejected').length;
+    if (failedCount > 0) {
+      showToast(`${failedCount} part${failedCount === 1 ? '' : 's'} failed to push — try again`, true);
+    }
     // Recompute each unique cabinet once.
     const uniqueCabIds = [...new Set(items.map((i) => i.cabinetId))];
     await Promise.all(uniqueCabIds.map((id) => recomputeCabinet(tenantId, id).catch(() => {})));

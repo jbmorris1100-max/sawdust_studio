@@ -148,6 +148,7 @@ ${partsText}`;
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
+      signal: AbortSignal.timeout(20000),
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
         model: MODEL,
@@ -166,6 +167,7 @@ ${partsText}`;
     const parsed = JSON.parse(m[0]) as AiResult;
     return NextResponse.json(parsed);
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    console.error('[match-label]', err);
+    return NextResponse.json({ error: 'Label match failed. Please try again.' }, { status: 500 });
   }
 }

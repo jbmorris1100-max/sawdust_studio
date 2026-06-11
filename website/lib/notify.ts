@@ -11,13 +11,9 @@ export function sendNotify(payload: {
   body: string;
   url?: string;
 }): void {
-  try {
-    void fetch('/app/api/notify', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    }).catch(() => {});
-  } catch {
-    /* push unavailable — ignore */
-  }
+  void fetch('/app/api/notify', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).catch(() => {});
 }

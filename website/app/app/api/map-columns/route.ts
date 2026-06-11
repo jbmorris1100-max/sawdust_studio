@@ -41,6 +41,7 @@ export async function POST(req: Request) {
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
+      signal: AbortSignal.timeout(15000),
       headers: {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
@@ -70,6 +71,7 @@ export async function POST(req: Request) {
     const parsed = JSON.parse(match[0]) as Record<string, string | null>;
     return NextResponse.json(parsed);
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    console.error('[map-columns]', err);
+    return NextResponse.json({ error: 'Column mapping failed. Please try again.' }, { status: 500 });
   }
 }

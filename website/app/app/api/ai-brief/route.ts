@@ -212,6 +212,7 @@ ${benchmarks.sampleSize === 0 ? 'No benchmark data yet.' : [
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
+      signal: AbortSignal.timeout(30000),
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
         model: MODEL,
@@ -231,6 +232,7 @@ ${benchmarks.sampleSize === 0 ? 'No benchmark data yet.' : [
     // Return both: flat `insights` for the current UI + the rich structure for richer cards.
     return NextResponse.json({ insights: toCards(rich), brief: rich });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    console.error('[ai-brief]', err);
+    return NextResponse.json({ error: 'Brief generation failed. Please try again.' }, { status: 500 });
   }
 }

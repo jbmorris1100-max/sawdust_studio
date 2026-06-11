@@ -187,8 +187,11 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   }, [load]);
 
   useEffect(() => {
+    let inFlight = false;
     const iv = setInterval(() => {
-      void load();
+      if (inFlight) return;
+      inFlight = true;
+      void load().finally(() => { inFlight = false; });
     }, 15000);
     return () => clearInterval(iv);
   }, [load]);
@@ -336,11 +339,15 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     }
     // The craftsman has pushed this cabinet's parts on — mark it complete so the
     // supervisor's Craftsman tab shows the green "Complete" status badge.
-    void supabase.from('cabinet_units')
-      .update({ status: 'complete' })
-      .eq('id', cabinetId)
-      .eq('tenant_id', tenantId)
-      .then(() => {}, () => {});
+    try {
+      const { error: cabErr } = await supabase.from('cabinet_units')
+        .update({ status: 'complete' })
+        .eq('id', cabinetId)
+        .eq('tenant_id', tenantId);
+      if (cabErr) throw cabErr;
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Cabinet status update failed', true);
+    }
     // The project is done — remove it so it no longer shows as active/paused.
     void clearProject(tenantId, crewName);
     persistBuild(null);
@@ -389,9 +396,13 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     const toPush = parts.filter((p) => idSet.has(p.cabinet_unit_id));
     const pushed = toPush.map((p) => ({ partId: p.id, cabinetUnitId: p.cabinet_unit_id, partName: p.part_name, jobNumber: p.job_number }));
     // Push all parts in parallel.
-    await Promise.all(toPush.map((p) =>
-      pushPart({ tenantId, partId: p.id, partName: p.part_name, cabinetUnitId: p.cabinet_unit_id, jobNumber: p.job_number, fromDept: 'craftsman', toDept, workerName: crewName, timeClockId }).catch(() => {})
+    const pushResults = await Promise.allSettled(toPush.map((p) =>
+      pushPart({ tenantId, partId: p.id, partName: p.part_name, cabinetUnitId: p.cabinet_unit_id, jobNumber: p.job_number, fromDept: 'craftsman', toDept, workerName: crewName, timeClockId })
     ));
+    const failedCount = pushResults.filter((r) => r.status === 'rejected').length;
+    if (failedCount > 0) {
+      showToast(`${failedCount} part${failedCount === 1 ? '' : 's'} failed to push — try again`, true);
+    }
     // Recompute each unique cabinet once.
     const uniqueCabIds = [...new Set(toPush.map((p) => p.cabinet_unit_id))];
     await Promise.all(uniqueCabIds.map((id) => recomputeCabinet(tenantId, id).catch(() => {})));

@@ -155,7 +155,7 @@ export async function POST(req: Request) {
       parts = (partsData as DbPart[] | null) ?? [];
     }
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    return NextResponse.json({ error: 'Classification failed. Please try again.' }, { status: 500 });
   }
   if (units.length === 0) return NextResponse.json({ classified: 0, note: 'No units for job' });
 
@@ -255,6 +255,7 @@ Return ONLY a valid JSON array:
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
+        signal: AbortSignal.timeout(45000),
         headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
         body: JSON.stringify({
           model: MODEL,
