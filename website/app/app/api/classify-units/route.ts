@@ -298,19 +298,19 @@ Return ONLY a valid JSON array:
   }
 
   // ── STEP 3 — apply assignments ──────────────────────────────────────────────
-  // EVERY cabinet and EVERY part starts in production on upload — never craftsman,
-  // never assembly. The classifier's craftsman/production determination is stored
-  // only as a SUGGESTION on cabinet_units.suggested_dept, which the supervisor
-  // reviews in the Craftsman tab. production_status is never written here.
+  // Write the classifier's department straight onto cabinet_units AND parts in the
+  // same operation (the architectural rule: both tables always move together).
+  // suggested_dept is stored as a copy of assigned_dept so the supervisor's
+  // Craftsman suggestion section still works.
   let classified = 0;
   for (const [unitId, c] of decided) {
     try {
-      await db.from('cabinet_units').update({ assigned_dept: 'production', suggested_dept: c.dept }).eq('id', unitId).eq('tenant_id', tenantId);
+      await db.from('cabinet_units').update({ assigned_dept: c.dept, suggested_dept: c.dept }).eq('id', unitId).eq('tenant_id', tenantId);
       classified++;
     } catch { /* skip this unit */ }
-    // Parts always start in production; the classifier's call is a suggestion only.
+    // Parts carry the dept the crew views filter on — move them with the cabinet.
     try {
-      await db.from('parts').update({ assigned_dept: 'production' }).eq('cabinet_unit_id', unitId).eq('tenant_id', tenantId);
+      await db.from('parts').update({ assigned_dept: c.dept }).eq('cabinet_unit_id', unitId).eq('tenant_id', tenantId);
     } catch { /* best-effort */ }
   }
 
