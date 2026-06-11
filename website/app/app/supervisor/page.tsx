@@ -1978,6 +1978,12 @@ export default function SupervisorPage() {
         });
       } catch { /* best-effort */ }
 
+      // Recompute the cabinet's assigned_dept now that a part has moved.
+      try {
+        const { recomputeCabinet } = await import('@/lib/partActions');
+        await recomputeCabinet(tenant.id, part.cabinet_unit_id);
+      } catch { /* best-effort — recompute is non-blocking */ }
+
       // Notify the destination dept's crew.
       sendNotify({
         tenant_id: tenant.id, target: 'crew', dept_target: deptDisplay(destDept),

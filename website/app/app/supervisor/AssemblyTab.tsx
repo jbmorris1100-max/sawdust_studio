@@ -484,9 +484,17 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
     setQcBusy(unit.id);
     try {
       const { error } = await supabase.from('cabinet_units')
-        .update({ status: 'flagged', assigned_dept: deptKey, flagged_reason: notes })
+        .update({ status: 'flagged', assigned_dept: deptKey, flagged_reason: notes, qc_notes: notes })
         .eq('id', unit.id);
       if (error) throw error;
+      // Move all parts to the destination dept and set qc_notes/qc_failed so
+      // crew banners render. This mirrors what QcTab.submitFail does.
+      try {
+        await supabase.from('parts')
+          .update({ assigned_dept: deptKey, status: 'pending', qc_notes: notes, qc_failed: true })
+          .eq('cabinet_unit_id', unit.id)
+          .eq('tenant_id', tenantId);
+      } catch { /* best-effort — parts move is non-blocking */ }
       // Log the kickback as a damage report so it shows in the supervisor's queue.
       try {
         await supabase.from('damage_reports').insert({

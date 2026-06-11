@@ -1196,8 +1196,8 @@ export default function CrewPage() {
     const tenantId = tenant.id;
     const ch = supabase
       .channel('rt-prod-handoff')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, () => { void loadProduction(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'parts', filter: `tenant_id=eq.${tenantId}` }, () => { void loadProduction(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, () => { void loadProduction(false); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parts', filter: `tenant_id=eq.${tenantId}` }, () => { void loadProduction(false); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenant, crewDept, loadProduction]);
@@ -1901,6 +1901,16 @@ export default function CrewPage() {
         ? { status: 'flagged' }
         : { status: 'ready_for_qc', assigned_dept: 'qc' };
       await supabase.from('cabinet_units').update(unitUpdate).eq('id', assemblyScanUnit.id);
+      // Move all parts to qc so the cabinet and its parts agree on dept.
+      // This is the online completion path; the offline path is fixed separately.
+      if (!hasFlagged) {
+        try {
+          await supabase.from('parts')
+            .update({ assigned_dept: 'qc', status: 'pending' })
+            .eq('cabinet_unit_id', assemblyScanUnit.id)
+            .eq('tenant_id', tenant!.id);
+        } catch { /* best-effort — parts sync is non-blocking */ }
+      }
 
       // Notify the supervisor that this cabinet is waiting for QC.
       if (!hasFlagged) {
@@ -2089,9 +2099,13 @@ export default function CrewPage() {
       }
       const pushedParts = tasks.map((t) => ({ partId: t.part.id, cabinetUnitId: t.cid, partName: t.part.part_name, jobNumber: t.jobNumber }));
       // Push all parts in parallel.
-      await Promise.all(tasks.map((t) =>
-        pushPart({ tenantId: tenant!.id, partId: t.part.id, partName: t.part.part_name, cabinetUnitId: t.cid, jobNumber: t.jobNumber, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId }).catch(() => {})
+      const pushResults = await Promise.allSettled(tasks.map((t) =>
+        pushPart({ tenantId: tenant!.id, partId: t.part.id, partName: t.part.part_name, cabinetUnitId: t.cid, jobNumber: t.jobNumber, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId })
       ));
+      const failedCount = pushResults.filter((r) => r.status === 'rejected').length;
+      if (failedCount > 0) {
+        showToast(`${failedCount} part${failedCount === 1 ? '' : 's'} failed to push — try again`, true);
+      }
       // Recompute each unique cabinet once.
       const uniqueCabIds = [...new Set(tasks.map((t) => t.cid))];
       await Promise.all(uniqueCabIds.map((id) => recomputeCabinet(tenant!.id, id).catch(() => {})));
@@ -2126,9 +2140,13 @@ export default function CrewPage() {
     setCutJobBusy(true);
     try {
       // Push all parts in parallel.
-      await Promise.all(items.map(({ part, cabinetId }) =>
-        pushPart({ tenantId: tenant!.id, partId: part.id, partName: part.part_name, cabinetUnitId: cabinetId, jobNumber: cutJob?.jobNumber ?? null, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId }).catch(() => {})
+      const pushResults = await Promise.allSettled(items.map(({ part, cabinetId }) =>
+        pushPart({ tenantId: tenant!.id, partId: part.id, partName: part.part_name, cabinetUnitId: cabinetId, jobNumber: cutJob?.jobNumber ?? null, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId })
       ));
+      const failedCount = pushResults.filter((r) => r.status === 'rejected').length;
+      if (failedCount > 0) {
+        showToast(`${failedCount} part${failedCount === 1 ? '' : 's'} failed to push — try again`, true);
+      }
       // Recompute each unique cabinet once.
       const uniqueCabIds = [...new Set(items.map((it) => it.cabinetId))];
       await Promise.all(uniqueCabIds.map((id) => recomputeCabinet(tenant!.id, id).catch(() => {})));

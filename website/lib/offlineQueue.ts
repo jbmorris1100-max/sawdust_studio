@@ -144,7 +144,18 @@ async function processAction(
       if (p.cabinet_unit_id) {
         const unitUpdate: Record<string, unknown> = { status: p.unit_status };
         if (p.unit_status === 'complete') unitUpdate.completed_at = new Date().toISOString();
+        if (p.unit_status === 'ready_for_qc') unitUpdate.assigned_dept = 'qc';
+        if (p.unit_status === 'flagged') unitUpdate.assigned_dept = 'assembly';
         await supabase.from('cabinet_units').update(unitUpdate).eq('id', p.cabinet_unit_id as string);
+        // Sync parts.assigned_dept so cabinet and parts agree on location.
+        if (p.unit_status === 'ready_for_qc') {
+          try {
+            await supabase.from('parts')
+              .update({ assigned_dept: 'qc', status: 'pending' })
+              .eq('cabinet_unit_id', p.cabinet_unit_id as string)
+              .eq('tenant_id', tenantId);
+          } catch { /* best-effort */ }
+        }
       }
       const reports = (p.damage_reports as Record<string, unknown>[]) ?? [];
       if (reports.length > 0) {
