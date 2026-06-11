@@ -180,7 +180,7 @@ export async function pushPart(opts: {
   }).then(() => {}, () => {});
 
   // 3. Recompute the cabinet's majority dept (+ completion rollup).
-  void recomputeCabinet(opts.tenantId, opts.cabinetUnitId).catch(() => {});
+  await recomputeCabinet(opts.tenantId, opts.cabinetUnitId);
 
   // 4. Learn the push.
   void learnRouting(opts.tenantId, opts.partName, fromDept, toDept).catch(() => {});
