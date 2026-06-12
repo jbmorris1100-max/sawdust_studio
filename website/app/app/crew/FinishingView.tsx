@@ -414,21 +414,20 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
         await supabase.from('notifications').insert({
           tenant_id: tenantId, target_type: 'supervisor',
           title: `${roomLabel(openRoom.roomNumber)} ready for QC`,
-          body: `${roomLabel(openRoom.roomNumber)} from ${openRoom.jobPath.split('/').map((s) => s.trim()).join(' / ')} sent to QC`,
+          body: `${openRoom.jobPath.split('/').map((s) => s.trim()).join(' / ')} — ${roomParts.length} part${roomParts.length === 1 ? '' : 's'}`,
           url: '/app/supervisor',
         });
       } catch { /* best-effort */ }
       sendNotify({
         tenant_id: tenantId, target: 'supervisor',
         title: `${roomLabel(openRoom.roomNumber)} ready for QC`,
-        body: `${roomLabel(openRoom.roomNumber)} from ${openRoom.jobPath.split('/').map((s) => s.trim()).join(' / ')} sent to QC`,
+        body: `${openRoom.jobPath.split('/').map((s) => s.trim()).join(' / ')} — ${roomParts.length} part${roomParts.length === 1 ? '' : 's'}`,
         url: '/app/supervisor',
       });
       // Fire the job-level "ready for QC" notification if this was the last room.
       try {
         await maybeNotifyJobQc(tenantId, openRoom.jobNumber, openRoom.jobPath.split('/').map((s) => s.trim()).join(' / '));
       } catch { /* best-effort */ }
-      sendNotify({ tenant_id: tenantId, target: 'supervisor', title: `${roomLabel(openRoom.roomNumber)} ready for QC`, body: `${roomParts.length} part${roomParts.length === 1 ? '' : 's'} ready for QC`, url: '/app/supervisor' });
       showToast(`${roomLabel(openRoom.roomNumber)} sent to QC`);
       setOpenRoom(null);
       setSelected({});
