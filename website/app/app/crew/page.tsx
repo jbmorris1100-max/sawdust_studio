@@ -3695,7 +3695,7 @@ export default function CrewPage() {
             </div>
             <div style={{ width: 80 }}>
               <Field label="Qty">
-                <input className="form-input" type="number" min={1} placeholder="Qty" value={invQty} onChange={(e) => setInvQty(Math.max(1, parseInt(e.target.value) || 1))} style={{ textAlign: 'center' }} />
+                <input className="form-input" type="number" min={1} placeholder="Qty" value={invQty} onChange={(e) => setInvQty(Math.max(1, parseInt(e.target.value) || 1))} style={{ textAlign: 'center', width: '100%', minWidth: 0 }} />
               </Field>
             </div>
           </div>
