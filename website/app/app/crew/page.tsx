@@ -662,6 +662,7 @@ export default function CrewPage() {
   const [invItem,   setInvItem]   = useState('');
   const [invDept,   setInvDept]   = useState('');
   const [invJobNum, setInvJobNum] = useState('');
+  const [invQty, setInvQty] = useState(1);
 
   // Damage modal
   const [dmgWhat,         setDmgWhat]         = useState('');
@@ -1297,6 +1298,7 @@ export default function CrewPage() {
     setInvItem('');
     setInvDept(crewDept);
     setInvJobNum('');
+    setInvQty(1);
     setModal('inventory');
   }
 
@@ -2664,7 +2666,7 @@ export default function CrewPage() {
 
     // Offline — queue the inventory need.
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      enqueue('inventory_need', { item, dept, qty: 1, job_number: invJobNum.trim() || null });
+      enqueue('inventory_need', { item, dept, qty: invQty, job_number: invJobNum.trim() || null });
       saveIdentity(crewName, dept);
       closeModal();
       showPending('Inventory need saved (pending sync)');
@@ -2676,7 +2678,7 @@ export default function CrewPage() {
       const { error } = await supabase.from('inventory_needs').insert({
         item,
         dept,
-        qty: 1,
+        qty: invQty,
         status: 'pending',
         ...(invJobNum.trim() && { job_number: invJobNum.trim() }),
         tenant_id: tenant!.id,
@@ -3114,7 +3116,7 @@ export default function CrewPage() {
       <div style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
         {/* Nav */}
-        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', minHeight: 64, display: 'flex', alignItems: 'center', padding: '0 32px', paddingTop: 'max(env(safe-area-inset-top), 8px)', justifyContent: 'space-between' }}>
+        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', minHeight: 52, display: 'flex', alignItems: 'center', padding: '0 20px', paddingTop: 'env(safe-area-inset-top)', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <Link href="/app" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--ink-mute)', fontSize: 13 }}>
               <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
@@ -3684,9 +3686,18 @@ export default function CrewPage() {
           <Field label="What do you need? *">
             <input className="form-input" placeholder="e.g. 3/8 bolts, oak panels, glue…" value={invItem} onChange={(e) => setInvItem(e.target.value)} autoFocus />
           </Field>
-          <Field label="Department *">
-            <input className="form-input" placeholder="e.g. Finish, Trim, Install…" value={invDept} onChange={(e) => setInvDept(e.target.value)} />
-          </Field>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <Field label="Department *">
+                <input className="form-input" placeholder="e.g. Finish, Trim, Install…" value={invDept} onChange={(e) => setInvDept(e.target.value)} />
+              </Field>
+            </div>
+            <div style={{ width: 80 }}>
+              <Field label="Qty">
+                <input className="form-input" type="number" min={1} placeholder="Qty" value={invQty} onChange={(e) => setInvQty(Math.max(1, parseInt(e.target.value) || 1))} style={{ textAlign: 'center' }} />
+              </Field>
+            </div>
+          </div>
           <Field label="Job / Project (optional)">
             <input className="form-input" placeholder="e.g. P-26-1001 or Smith Kitchen" value={invJobNum} onChange={(e) => setInvJobNum(e.target.value)} />
           </Field>
@@ -3826,34 +3837,40 @@ export default function CrewPage() {
                     const ver = d.version ?? 1;
                     const superseded = d.is_current === false;
                     return (
-                      <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--line)', opacity: superseded ? 0.5 : 1 }}>
-                        <PlanTypeBadge fileType={d.file_type} fileName={d.file_name} />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{name}</span>
-                            {ver > 1 && !superseded && (
-                              <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 20, background: 'rgba(45,225,201,0.12)', color: '#2DE1C9', flexShrink: 0 }}>v{ver}</span>
-                            )}
-                            {superseded && (
-                              <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 20, background: 'rgba(139,165,160,0.15)', color: '#8BA5A0', flexShrink: 0 }}>Old v{ver}</span>
-                            )}
-                          </div>
-                          <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 2 }}>{d.job_name ? `${d.job_name} · ` : ''}{ver > 1 ? updatedAgo(d.created_at) : (d.uploaded_by ? `${d.uploaded_by} · ${formatDate(d.created_at)}` : formatDate(d.created_at))}</div>
+                      <div key={d.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--line)', opacity: superseded ? 0.5 : 1 }}>
+                        {/* Row 1 — type badge + file name + version badge */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                          <PlanTypeBadge fileType={d.file_type} fileName={d.file_name} />
+                          <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, fontWeight: 700, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                          {ver > 1 && !superseded && (
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(45,225,201,0.12)', color: '#2DE1C9', flexShrink: 0 }}>v{ver}</span>
+                          )}
+                          {superseded && (
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(139,165,160,0.15)', color: '#8BA5A0', flexShrink: 0 }}>Old v{ver}</span>
+                          )}
                         </div>
-                        {isCsv && d.parsed && d.job_number && (
-                          <button
-                            onClick={() => void openPartsList(d.job_number!)}
-                            style={{ fontSize: 12, fontWeight: 700, color: '#2DE1C9', background: 'rgba(45,225,201,0.1)', border: 'none', padding: '5px 12px', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}
-                          >
-                            View Parts List
-                          </button>
-                        )}
-                        {url ? (
-                          <button onClick={() => openPlanFile(d, { url, name, fileType: d.file_type, parsed: !!d.parsed, jobPath: d.job_name ? `${d.job_name}/Drawings` : undefined })}
-                            style={{ fontSize: 12, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.1)', padding: '5px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>Open</button>
-                        ) : (
-                          <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>No link</span>
-                        )}
+                        {/* Row 2 — meta + action buttons */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 11, color: 'var(--ink-mute)', flex: 1, minWidth: 0 }}>
+                            {d.uploaded_by ?? 'Supervisor'} · {formatDate(d.created_at)}
+                          </span>
+                          {isCsv && d.parsed && d.job_number && (
+                            <button
+                              onClick={() => void openPartsList(d.job_number!)}
+                              style={{ fontSize: 12, fontWeight: 700, color: '#2DE1C9', background: 'rgba(45,225,201,0.1)', border: '1px solid rgba(45,225,201,0.25)', padding: '6px 14px', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0, whiteSpace: 'nowrap' }}
+                            >
+                              Parts List
+                            </button>
+                          )}
+                          {url ? (
+                            <button onClick={() => openPlanFile(d, { url, name, fileType: d.file_type, parsed: !!d.parsed, jobPath: d.job_name ? `${d.job_name}/Drawings` : undefined })}
+                              style={{ fontSize: 12, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.25)', padding: '6px 14px', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>
+                              Open
+                            </button>
+                          ) : (
+                            <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>No link</span>
+                          )}
+                        </div>
                       </div>
                     );
                   })}

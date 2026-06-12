@@ -3014,7 +3014,7 @@ export default function SupervisorPage() {
       <div className="app-shell" style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
         {/* Nav */}
-        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', minHeight: 64, display: 'flex', alignItems: 'center', padding: '0 32px', paddingTop: 'max(env(safe-area-inset-top), 8px)', justifyContent: 'space-between' }}>
+        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(5,6,8,0.85)', backdropFilter: 'blur(14px)', borderBottom: '1px solid var(--line)', minHeight: 52, display: 'flex', alignItems: 'center', padding: '0 20px', paddingTop: 'env(safe-area-inset-top)', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <Link href="/app" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--ink-mute)', fontSize: 13 }}>
               <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
@@ -3911,14 +3911,17 @@ export default function SupervisorPage() {
                     <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
-                <input
-                  type="number"
-                  min={1}
-                  value={supInvQty}
-                  onChange={(e) => setSupInvQty(Math.max(1, parseInt(e.target.value) || 1))}
-                  style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
-                  placeholder="Qty"
-                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)' }}>Qty</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={supInvQty}
+                    onChange={(e) => setSupInvQty(Math.max(1, parseInt(e.target.value) || 1))}
+                    style={{ padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)', fontSize: 13 }}
+                    placeholder="Qty"
+                  />
+                </div>
                 <input
                   placeholder="Job / Project (optional)"
                   value={supInvJobNum}

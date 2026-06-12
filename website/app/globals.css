@@ -25,6 +25,11 @@
 html, body {
   overflow-x: hidden !important;
   max-width: 100vw !important;
+  overscroll-behavior-x: none;
+}
+
+*, *::before, *::after {
+  -webkit-overflow-scrolling: auto;
 }
 html {
   scroll-behavior: smooth;
