@@ -267,6 +267,16 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
       if (error) throw error;
       const id = (data as { id: string }).id;
       persistBuilds({ ...builds, [cabinetId]: { timeClockId: id, start: now } });
+      try {
+        await supabase.from('shift_events').insert({
+          tenant_id: tenantId,
+          time_clock_id: id,
+          worker_name: crewName || 'Assembly',
+          event_type: 'assembly_work',
+          dept: 'Assembly',
+          metadata: { unit_label: label, job_number: jobNumber, cabinet_unit_id: cabinetId },
+        });
+      } catch { /* shift event best-effort */ }
       // Track as the worker's active project (one per user, follows them).
       void upsertActiveProject({
         tenantId, workerName: crewName, dept: 'assembly', cabinetUnitId: cabinetId,

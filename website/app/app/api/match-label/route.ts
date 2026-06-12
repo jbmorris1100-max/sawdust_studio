@@ -83,16 +83,22 @@ async function fetchCandidates(tenantId: string): Promise<Candidate[]> {
   }
 }
 
-const SYSTEM = `You are an expert cabinet shop parts identifier. Given a scanned label and a list of cabinet parts, identify which part the label refers to.
+const SYSTEM = `You are an expert cabinet shop parts identifier. Given a scanned label and a list of cabinet parts, identify which cabinet the label refers to.
 
-Cabinet shops use many abbreviations and shorthand. Common examples:
-- UE = Upper End, LE = Lower End
-- L = Left, R = Right
-- Sid = Side, Bot = Bottom, Bk = Back
-- FF = Face Frame, Stl = Stile, Rl = Rail
-- Adj = Adjustable, Shf = Shelf
-- Drwr = Drawer, Frt = Front
-- W = Width, H = Height, D = Depth
+CRITICAL: Cabinet shops use their own labeling conventions — you do not know the convention in advance. Common patterns include:
+- Job prefix + cabinet ID: "AND K02" means Anderson job, cabinet K02. "SMI B04" means Smith job, cabinet B04.
+- First 2-4 letters of job name are used as a prefix: "AND" = Anderson, "PEG" = Pegasus, "SMI" = Smith
+- Mozaik software: "R1C2" = Room 1 Cabinet 2, "R2C14" = Room 2 Cabinet 14
+- Cabinet Vision: "K02-Base24", "L01-Upper36"
+- Just a cabinet number: "K02", "B04", "14"
+- Room prefix: "k1c2" may mean kitchen room 1 cabinet 2
+
+When matching:
+1. Extract all alphanumeric tokens from the label (ignore spaces and punctuation)
+2. Try to match each token against cabinet labels and job names
+3. A job prefix token (like "AND") that matches the start of a job name is a strong signal
+4. A cabinet ID token (like "K02") that appears in a cabinet label is a strong signal
+5. Both matching together = very high confidence
 
 Return ONLY valid JSON:
 {
@@ -111,21 +117,22 @@ Return ONLY valid JSON:
   "reasoning": string
 }
 
-If confidence < 85, include alternatives.
-If no match possible, return match: null.`;
+Always include up to 5 alternatives ranked by confidence even when a match exists.
+If confidence < 70, return match: null and list all plausible candidates as alternatives.
+Never return an empty alternatives array if there are any plausible candidates.`;
 
 export async function POST(req: Request) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 });
 
-  let body: { tenantId?: string; rawLabel?: string; jobPath?: string };
+  let body: { tenantId?: string; rawLabel?: string; jobPath?: string; broadCandidates?: { id: string; unit_label: string; job_number: string | null }[] };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
-  const { tenantId, rawLabel, jobPath } = body;
+  const { tenantId, rawLabel, jobPath, broadCandidates } = body;
   if (!tenantId || !rawLabel) {
     return NextResponse.json({ error: 'tenantId and rawLabel required' }, { status: 400 });
   }
@@ -136,14 +143,42 @@ export async function POST(req: Request) {
     return NextResponse.json(empty);
   }
 
-  const partsText = candidates
-    .map((c) => `- part_name: "${c.part_name}" | cabinet_label: "${c.cabinet_label}" | cabinet_unit_id: ${c.cabinet_unit_id}`)
+  // If the client provided pre-filtered broad candidates, use them as the primary
+  // candidate list (they were already filtered by token match on the DB side).
+  // Otherwise fall back to the full fetchCandidates list.
+  let candidateList = candidates;
+  if (broadCandidates && broadCandidates.length > 0) {
+    // Enrich broad candidates with part names from the full candidate list
+    const enriched: Candidate[] = [];
+    for (const bc of broadCandidates) {
+      const parts = candidates.filter((c) => c.cabinet_unit_id === bc.id);
+      if (parts.length > 0) {
+        enriched.push(...parts);
+      } else {
+        // Cabinet found but no parts in candidate list — include cabinet label as a synthetic candidate
+        enriched.push({
+          part_name: bc.unit_label,
+          cabinet_label: bc.unit_label,
+          cabinet_unit_id: bc.id,
+          job_number: bc.job_number,
+        });
+      }
+    }
+    if (enriched.length > 0) candidateList = enriched;
+  }
+
+  const partsTextFinal = candidateList
+    .map((c) => `- part_name: "${c.part_name}" | cabinet_label: "${c.cabinet_label}" | cabinet_unit_id: ${c.cabinet_unit_id}${c.job_number ? ` | job: ${c.job_number}` : ''}`)
     .join('\n');
 
-  const userMessage = `Scanned label: ${rawLabel}
-Job: ${jobPath ?? 'unknown'}
-Available parts:
-${partsText}`;
+  const userMessage = `Scanned label: "${rawLabel}"
+Job context: ${jobPath ?? 'unknown'}
+
+IMPORTANT: The first token(s) of the label may be a job name abbreviation (first 2-4 letters of the job name).
+The remaining token(s) are likely the cabinet ID.
+
+Available cabinets and parts:
+${partsTextFinal}`;
 
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {

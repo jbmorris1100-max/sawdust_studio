@@ -9,11 +9,17 @@ import { NextResponse } from 'next/server';
 
 const MODEL = 'claude-sonnet-4-6';
 
-const PROMPT = `This image shows a handwritten cabinet label on a piece of wood or tape in a cabinet shop.
-Extract the cabinet label exactly as written. Cabinet labels follow patterns like:
-K01-SinkBase36, L01-Upper36, MB01-Vanity60, CT04-BathTop, FS01-FloatShelf48, K04-Pantry2496
-The label has a prefix (letters), a number, a dash, then a description.
-Return ONLY the label text, nothing else. If you cannot read a label, return "UNREADABLE".`;
+const PROMPT = `This image shows a handwritten or printed cabinet label in a cabinet shop.
+Extract ALL visible text from the label exactly as written. Do not interpret, reformat, or correct it.
+Cabinet shops use many labeling conventions depending on their software:
+- Some use job prefix + cabinet ID: "AND K02", "SMI B04", "PEG K1C2"
+- Some use Mozaik format: "R1C2" (Room 1 Cabinet 2), "R2C14"
+- Some use Cabinet Vision or custom codes: "K02-Base24", "L01-Upper36"
+- Some write just a cabinet number: "K02", "B04", "14"
+- Some include job name abbreviations before the cabinet code
+Return ONLY the exact text visible on the label, preserving spaces, capitalization, and all characters.
+If the image contains no readable text at all, return "UNREADABLE".
+Never return "UNREADABLE" just because the format looks unusual — extract whatever text is visible.`;
 
 export async function POST(req: Request) {
   const apiKey = process.env.ANTHROPIC_API_KEY;

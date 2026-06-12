@@ -1726,41 +1726,29 @@ export default function CrewPage() {
         if (lmId) { await routeScanToFlow(lmId); return; }
       } catch (_) { /* table may not exist pre-migration */ }
 
-      // Step 2-3: exact / fuzzy string strategies
+      // Step 2 — exact scan_value match
       let cabinetUnitId: string | null = null;
-
-      const { data: sv } = await supabase
-        .from('parts').select('cabinet_unit_id')
-        .eq('tenant_id', tenant.id).eq('scan_value', input)
-        .limit(1).maybeSingle();
-      if (sv) cabinetUnitId = (sv as { cabinet_unit_id: string }).cabinet_unit_id;
-
-      if (!cabinetUnitId) {
-        const { data: pn } = await supabase
+      try {
+        const { data: sv } = await supabase
           .from('parts').select('cabinet_unit_id')
-          .eq('tenant_id', tenant.id).ilike('part_name', `%${input}%`)
+          .eq('tenant_id', tenant.id).eq('scan_value', input)
           .limit(1).maybeSingle();
-        if (pn) cabinetUnitId = (pn as { cabinet_unit_id: string }).cabinet_unit_id;
-      }
+        if (sv) cabinetUnitId = (sv as { cabinet_unit_id: string }).cabinet_unit_id;
+      } catch { /* best-effort */ }
 
-      if (!cabinetUnitId) {
-        const { data: ul } = await supabase
-          .from('cabinet_units').select('id')
-          .eq('tenant_id', tenant.id).ilike('unit_label', `%${input}%`)
-          .limit(1).maybeSingle();
-        if (ul) cabinetUnitId = (ul as { id: string }).id;
-      }
-
+      // Step 3 — slash-format job/room/cabinet
       if (!cabinetUnitId) {
         const segs = input.split('/').map((s) => s.trim()).filter(Boolean);
         if (segs.length >= 3) {
           const [job, room, cabinet] = segs;
-          const { data: fmt } = await supabase
-            .from('cabinet_units').select('id')
-            .eq('tenant_id', tenant.id)
-            .eq('job_number', job).eq('room_number', room).eq('cabinet_number', cabinet)
-            .limit(1).maybeSingle();
-          if (fmt) cabinetUnitId = (fmt as { id: string }).id;
+          try {
+            const { data: fmt } = await supabase
+              .from('cabinet_units').select('id')
+              .eq('tenant_id', tenant.id)
+              .eq('job_number', job).eq('room_number', room).eq('cabinet_number', cabinet)
+              .limit(1).maybeSingle();
+            if (fmt) cabinetUnitId = (fmt as { id: string }).id;
+          } catch { /* best-effort */ }
         }
       }
 
@@ -1770,29 +1758,69 @@ export default function CrewPage() {
         return;
       }
 
-      // Step 4: AI fuzzy match
+      // Step 4 — broad token search: extract alphanumeric tokens from the scan,
+      // search cabinets/parts for ANY token match (case-insensitive partial).
+      // This handles "AND K02", "R1C2", "and kit02" and any shop convention.
+      const tokens = input
+        .replace(/[^a-zA-Z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 2);
+
+      // Common job/filler words to skip — only skip if other tokens exist
+      const SKIP_WORDS = new Set(['and', 'the', 'for', 'job', 'lot', 'set']);
+      const meaningfulTokens = tokens.filter((t) => !SKIP_WORDS.has(t.toLowerCase()));
+      const searchTokens = meaningfulTokens.length > 0 ? meaningfulTokens : tokens;
+
+      let broadCandidates: { id: string; unit_label: string; job_number: string | null }[] = [];
+      if (searchTokens.length > 0) {
+        try {
+          // Search cabinet_units for any token match on unit_label
+          const cabResults = await Promise.all(
+            searchTokens.map((tok) =>
+              supabase.from('cabinet_units')
+                .select('id, unit_label, job_number')
+                .eq('tenant_id', tenant.id)
+                .ilike('unit_label', `%${tok}%`)
+                .limit(20)
+            )
+          );
+          const seen = new Set<string>();
+          for (const res of cabResults) {
+            for (const row of (res.data as { id: string; unit_label: string; job_number: string | null }[] | null) ?? []) {
+              if (!seen.has(row.id)) { seen.add(row.id); broadCandidates.push(row); }
+            }
+          }
+        } catch { /* best-effort */ }
+      }
+
+      // Step 5 — pass raw scan + all broad candidates to Claude.
+      // Claude knows common conventions and will rank by likelihood.
       try {
         const res = await fetch('/app/api/match-label', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ tenantId: tenant.id, rawLabel: input, jobPath: null }),
+          body: JSON.stringify({
+            tenantId: tenant.id,
+            rawLabel: input,
+            jobPath: null,
+            broadCandidates: broadCandidates.length > 0 ? broadCandidates : undefined,
+          }),
         });
         if (res.ok) {
           const ai = (await res.json()) as ScanAiResult;
-          // >= 95 → auto-load, no confirmation
           if (ai.match && ai.match.confidence >= 95) {
             await routeScanToFlow(ai.match.cabinet_unit_id);
             void saveLabelMapping(lower, ai.match.cabinet_unit_id, ai.match.part_name, ai.match.confidence);
             return;
           }
-          // 85-94 → confirm; < 85 or no single match → show alternatives
           if (ai.match || (ai.alternatives && ai.alternatives.length > 0)) {
             setScanAiResult(ai);
             setScanShowAlts(!ai.match || ai.match.confidence < 85);
             return;
           }
         }
-      } catch (_) { /* AI unavailable — fall through to manual */ }
+      } catch { /* AI unavailable — fall through to not found */ }
 
       setAssemblyScanNotFound(true);
     } catch (err: unknown) {

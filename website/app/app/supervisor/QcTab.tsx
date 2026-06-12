@@ -123,8 +123,8 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
     setBusy(cab.id);
     const now = new Date().toISOString();
     try {
-      await supabase.from('parts').update({ status: 'complete', assigned_dept: 'complete' }).eq('cabinet_unit_id', cab.id).eq('tenant_id', tenantId);
-      const { error } = await supabase.from('cabinet_units').update({ status: 'complete', assigned_dept: 'complete', completed_at: now }).eq('id', cab.id).eq('tenant_id', tenantId);
+      await supabase.from('parts').update({ status: 'complete', assigned_dept: 'complete', qc_failed: false, qc_notes: null }).eq('cabinet_unit_id', cab.id).eq('tenant_id', tenantId);
+      const { error } = await supabase.from('cabinet_units').update({ status: 'complete', assigned_dept: 'complete', completed_at: now, qc_notes: null }).eq('id', cab.id).eq('tenant_id', tenantId);
       if (error) throw error;
 
       // Job rollup — if every cabinet in the job is complete, complete the job.
@@ -187,8 +187,16 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
     const partsToHold = isPartial ? allParts.filter((p) => !selectedIds.includes(p.id)) : [];
     try {
       if (partsToFail.length > 0) {
+        const isGoingToProduction = destLower === 'production';
         await supabase.from('parts')
-          .update({ assigned_dept: destLower, status: 'pending', qc_notes: failNotes.trim(), qc_failed: true })
+          .update({
+            assigned_dept: destLower,
+            status: 'pending',
+            qc_notes: failNotes.trim(),
+            qc_failed: true,
+            // Reset cut state so rework parts appear as uncut in the production cut list
+            ...(isGoingToProduction ? { checked: false, production_status: 'not_cut' } : {}),
+          })
           .in('id', partsToFail.map((p) => p.id))
           .eq('tenant_id', tenantId);
       }
@@ -220,7 +228,7 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
       sendNotify({
         tenant_id: tenantId, target: 'crew', dept_target: deptDisplay(destLower),
         title: `QC kickback to ${deptDisplay(destLower)}`,
-        body: `${failCab.unit_label}${failCab.job_number ? ` — Job ${failCab.job_number}` : ''}: ${failNotes.trim()}`,
+        body: `${failCab.unit_label}${failCab.job_number ? ` — ${jobLabel(failCab.job_number)}` : ''}: ${failNotes.trim()}`,
         url: '/app/crew',
       });
       if (!isPartial) {
