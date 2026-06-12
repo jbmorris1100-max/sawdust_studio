@@ -127,8 +127,58 @@ export default function CabinetScanner({ tenantId, onClose, onNavigate }: Props)
   }, [phase]);
 
   const resolveMatch = useCallback(async (label: string) => {
-    const m = matchCabinet(label, units);
     setExtracted(label);
+    // Step 1 — fast local match (exact/partial/prefix-strip)
+    let m = matchCabinet(label, units);
+
+    // Step 2 — broad token + AI match when local fails
+    if (!m) {
+      try {
+        // Build broadCandidates from local units using token search
+        const tokens = label
+          .replace(/[^a-zA-Z0-9\s]/g, ' ')
+          .split(/\s+/)
+          .map((t) => t.trim())
+          .filter((t) => t.length >= 2);
+        const SKIP_WORDS = new Set(['and', 'the', 'for', 'job', 'lot', 'set']);
+        const meaningfulTokens = tokens.filter((t) => !SKIP_WORDS.has(t.toLowerCase()));
+        const searchTokens = meaningfulTokens.length > 0 ? meaningfulTokens : tokens;
+
+        const broadCandidates = units.filter((u) =>
+          searchTokens.some((tok) =>
+            (u.unit_label ?? '').toLowerCase().includes(tok.toLowerCase()) ||
+            (u.cabinet_number ?? '').toLowerCase().includes(tok.toLowerCase())
+          )
+        ).map((u) => ({ id: u.id, unit_label: u.unit_label ?? '', job_number: u.job_number }));
+
+        const res = await fetch('/app/api/match-label', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            tenantId,
+            rawLabel: label,
+            jobPath: null,
+            broadCandidates: broadCandidates.length > 0 ? broadCandidates : undefined,
+          }),
+        });
+        if (res.ok) {
+          const ai = (await res.json()) as {
+            match: { cabinet_unit_id: string; confidence: number } | null;
+            alternatives: { cabinet_unit_id: string; confidence: number }[];
+          };
+          // Use AI match if confidence >= 70
+          const bestId = ai.match && ai.match.confidence >= 70
+            ? ai.match.cabinet_unit_id
+            : ai.alternatives?.[0]?.confidence >= 70
+              ? ai.alternatives[0].cabinet_unit_id
+              : null;
+          if (bestId) {
+            m = units.find((u) => u.id === bestId) ?? null;
+          }
+        }
+      } catch { /* AI unavailable — stay with null match */ }
+    }
+
     setMatch(m);
     setJobPath(null);
     if (m?.job_number) {

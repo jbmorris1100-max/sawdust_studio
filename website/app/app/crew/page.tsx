@@ -1615,7 +1615,7 @@ export default function CrewPage() {
   // generic part log / QC modal.
   function openScan() {
     if (!requireClockIn()) return;
-    if (crewDept === 'Assembly' || crewDept === 'Production') {
+    if (crewDept === 'Assembly' || crewDept === 'Production' || crewDept === 'Finishing') {
       openAssemblyScan();
     } else {
       void openParts();
@@ -4375,7 +4375,7 @@ export default function CrewPage() {
                   </button>
                 )}
                 <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--ink)' }}>
-                  {assemblyScanStep === 'scan' ? 'Assembly Scan' : assemblyScanUnit
+                  {assemblyScanStep === 'scan' ? `${crewDept || 'Cabinet'} Scan` : assemblyScanUnit
                     ? `${assemblyScanUnit.room_number ? `Room ${assemblyScanUnit.room_number} — ` : ''}${assemblyScanUnit.cabinet_number ? `Cabinet ${assemblyScanUnit.cabinet_number}` : assemblyScanUnit.unit_label}`
                     : 'Assembly Scan'
                   }
