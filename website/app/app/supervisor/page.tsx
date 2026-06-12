@@ -3026,10 +3026,7 @@ export default function SupervisorPage() {
               inline<b style={{ color: 'var(--teal)' }}>IQ</b>
             </Link>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <span style={{ fontSize: 13, color: 'var(--ink-mute)' }}>{email}</span>
-            <button onClick={handleSignOut} className="btn btn-ghost" style={{ fontSize: 13, padding: '8px 16px' }}>Sign out</button>
-          </div>
+          <button onClick={handleSignOut} className="btn btn-ghost" style={{ fontSize: 13, padding: '8px 16px' }}>Sign out</button>
         </div>
 
         {isTrial && !partnerActive && <TrialBanner days={days} />}

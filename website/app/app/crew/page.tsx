@@ -583,7 +583,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function CrewPage() {
-  const { loading: sessionLoading, tenant, email } = useCrewTenant();
+  const { loading: sessionLoading, tenant } = useCrewTenant();
   // Department list for every crew dropdown — from tenant, falling back to defaults.
   const deptOptions = getDepartments(tenant);
   // Push destinations from the production cutlist — every tenant dept except
@@ -3104,10 +3104,7 @@ export default function CrewPage() {
               inline<b style={{ color: 'var(--teal)' }}>IQ</b>
             </Link>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <span style={{ fontSize: 13, color: 'var(--ink-mute)' }}>{email}</span>
-            <button onClick={handleSignOut} className="btn btn-ghost" style={{ fontSize: 13, padding: '8px 16px' }}>Sign out</button>
-          </div>
+          <button onClick={handleSignOut} className="btn btn-ghost" style={{ fontSize: 13, padding: '8px 16px' }}>Sign out</button>
         </div>
 
         {isTrial && <TrialBanner days={days} />}
