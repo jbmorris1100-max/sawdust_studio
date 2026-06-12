@@ -803,7 +803,6 @@ export default function CrewPage() {
   const [destForCabs,    setDestForCabs]    = useState<string[] | null>(null);
   const [pushGroupOpen,  setPushGroupOpen]  = useState(false);
   const [groupSel,       setGroupSel]       = useState<Record<string, boolean>>({});
-  const [longPressPart,  setLongPressPart]  = useState<{ part: CutJobPart; cabinetId: string } | null>(null);
   const [cutJobBusy,     setCutJobBusy]     = useState(false);
   // Cutlist multi-select: tap selects parts (instead of checking them as cut) so
   // a batch can be pushed to one dept at once.
@@ -817,8 +816,6 @@ export default function CrewPage() {
     parts: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[];
     timer: ReturnType<typeof setTimeout>;
   } | null>(null);
-  const longPressTimerCut = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressFired = useRef(false);
 
   // Camera (shared between damage + parts modals — only one open at a time)
   const videoRef         = useRef<HTMLVideoElement>(null);
@@ -2034,7 +2031,7 @@ export default function CrewPage() {
   }
   function closeCutJob() {
     setCutJob(null); setCutJobCabs([]); setCutCabExpanded({}); setHeldCabs({});
-    setFullyCutCab(null); setDestForCabs(null); setPushGroupOpen(false); setLongPressPart(null);
+    setFullyCutCab(null); setDestForCabs(null); setPushGroupOpen(false);
     setSelectMode(false); setSelectedParts({});
     void loadProduction();
   }
@@ -2118,19 +2115,6 @@ export default function CrewPage() {
     } finally {
       setCutJobBusy(false);
       setDestForCabs(null);
-    }
-  }
-
-  // Push a single part to a dept (from the long-press sheet). Part leaves the cutlist.
-  async function pushSingleCutPart(cabinetId: string, part: CutJobPart, toDept: string) {
-    setLongPressPart(null);
-    try {
-      await pushPart({ tenantId: tenant!.id, partId: part.id, partName: part.part_name, cabinetUnitId: cabinetId, jobNumber: cutJob?.jobNumber ?? null, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId });
-      setCutJobCabs((cabs) => cabs.map((c) => c.cabinetId !== cabinetId ? c : { ...c, parts: c.parts.filter((p) => p.id !== part.id) }).filter((c) => c.parts.length > 0));
-      showUndoToast(part.part_name, toDept, 'production', [{ partId: part.id, cabinetUnitId: cabinetId, partName: part.part_name, jobNumber: cutJob?.jobNumber ?? null }]);
-      void loadProduction();
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Push failed', true);
     }
   }
 
@@ -4908,12 +4892,7 @@ export default function CrewPage() {
                               const boxOn = selectMode ? selected : p.checked;
                               return (
                               <div key={p.id}
-                                onPointerDown={() => { longPressFired.current = false; longPressTimerCut.current = setTimeout(() => { longPressFired.current = true; setLongPressPart({ part: p, cabinetId: c.cabinetId }); }, 500); }}
-                                onPointerUp={() => { if (longPressTimerCut.current) clearTimeout(longPressTimerCut.current); }}
-                                onPointerLeave={() => { if (longPressTimerCut.current) clearTimeout(longPressTimerCut.current); }}
-                                onPointerCancel={() => { if (longPressTimerCut.current) clearTimeout(longPressTimerCut.current); }}
                                 onClick={() => {
-                                  if (longPressFired.current) { longPressFired.current = false; return; }
                                   if (selectMode) {
                                     setSelectedParts((s) => { const n = { ...s }; if (n[p.id]) delete n[p.id]; else n[p.id] = { part: p, cabinetId: c.cabinetId }; return n; });
                                   } else {
@@ -5087,27 +5066,6 @@ export default function CrewPage() {
         />
       )}
 
-      {/* Long-press part action sheet */}
-      {longPressPart && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 1700, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
-          onClick={(e) => { if (e.target === e.currentTarget) setLongPressPart(null); }}>
-          <div style={{ width: '100%', maxWidth: 480, background: '#0a0d10', borderTopLeftRadius: 20, borderTopRightRadius: 20, border: '1px solid var(--line-strong)', padding: '22px 20px calc(22px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)', marginBottom: 2 }}>{longPressPart.part.part_name}</div>
-            {pushDeptKeys.map((d) => (
-              <button key={d} onClick={() => void pushSingleCutPart(longPressPart.cabinetId, longPressPart.part, d)}
-                style={{ width: '100%', justifyContent: 'space-between', display: 'flex', alignItems: 'center', padding: '14px 16px', borderRadius: 12, fontSize: 15, fontWeight: 700, fontFamily: 'inherit', background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', cursor: 'pointer' }}>
-                Push to {deptDisplay(d)}
-                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-              </button>
-            ))}
-            <button onClick={() => { setLongPressPart(null); openDamageForPart(longPressPart.part.part_name); }}
-              style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '14px 16px', borderRadius: 12, fontSize: 15, fontWeight: 700, fontFamily: 'inherit', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', color: '#F87171', cursor: 'pointer' }}>
-              <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-              Mark Damaged
-            </button>
-          </div>
-        </div>
-      )}
     </>
   );
 }
