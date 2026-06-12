@@ -428,8 +428,7 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
       try {
         await maybeNotifyJobQc(tenantId, openRoom.jobNumber, openRoom.jobPath.split('/').map((s) => s.trim()).join(' / '));
       } catch { /* best-effort */ }
-      // Notify QC crew that new work has arrived.
-      notifyDeptWork(tenantId, 'qc', openRoom.jobNumber, roomParts.length);
+      sendNotify({ tenant_id: tenantId, target: 'supervisor', title: `${roomLabel(openRoom.roomNumber)} ready for QC`, body: `${roomParts.length} part${roomParts.length === 1 ? '' : 's'} ready for QC`, url: '/app/supervisor' });
       showToast(`${roomLabel(openRoom.roomNumber)} sent to QC`);
       setOpenRoom(null);
       setSelected({});

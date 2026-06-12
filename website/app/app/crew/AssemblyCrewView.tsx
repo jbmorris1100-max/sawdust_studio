@@ -1,12 +1,13 @@
 'use client';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
+import { sendNotify } from '@/lib/notify';
 import {
   getWorkerProject, upsertActiveProject, startProjectSession, pauseWorkerProject,
   clearProject, fmtAccumulated, type ActiveProject,
 } from '@/lib/activeProject';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
-import { pushPart, deptDisplay, PART_DEPTS, recomputeCabinet, maybeNotifyJobQc, notifyDeptWork } from '@/lib/partActions';
+import { pushPart, deptDisplay, PART_DEPTS, recomputeCabinet, maybeNotifyJobQc } from '@/lib/partActions';
 
 // The Assembly department's home view. Parts pushed to assembly, grouped by
 // job -> cabinet (folder accordion). Each cabinet has START and MARK COMPLETE.
@@ -338,7 +339,7 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
           await maybeNotifyJobQc(tenantId, jobNumber, jobLabel(jobNumber));
         } catch { /* best-effort */ }
       }
-      notifyDeptWork(tenantId, 'qc', jobNumber, 1);
+      sendNotify({ tenant_id: tenantId, target: 'supervisor', title: 'Cabinet ready for QC', body: `${label}${jobNumber ? ` — Job ${jobNumber}` : ''} is ready for QC`, url: '/app/supervisor' });
       setParts((prev) => prev.filter((p) => p.cabinet_unit_id !== cabinetId));
       showToast(`${label} sent to QC`);
       void load();
