@@ -220,18 +220,6 @@ export async function pushPart(opts: {
       job_number: opts.jobNumber ?? null,
     },
   }).then(() => {}, () => {});
-
-  // 8. Notify the destination dept's crew.
-  if (toDept !== 'complete') {
-    sendNotify({
-      tenant_id: opts.tenantId,
-      target: 'crew',
-      dept_target: deptDisplay(toDept),
-      title: `New work in ${deptDisplay(toDept)}`,
-      body: `${opts.partName}${opts.jobNumber ? ` — Job ${opts.jobNumber}` : ''}`,
-      url: '/app/crew',
-    });
-  }
 }
 
 // Legacy wrapper kept so existing PartPushButton callers keep compiling. Delegates
@@ -302,6 +290,29 @@ export async function maybeNotifyJobQc(tenantId: string, jobNumber: string | nul
     });
   } catch { /* bell log best-effort */ }
   return true;
+}
+
+// One-shot notification to a destination dept's crew after a batch push.
+// Call this once after all parts in a batch have been pushed — never per-part.
+export function notifyDeptWork(
+  tenantId: string,
+  toDept: string,
+  jobNumber: string | null,
+  partCount: number,
+): void {
+  if (toDept === 'complete') return;
+  const deptName = deptDisplay(toDept);
+  const body = partCount === 1
+    ? `1 part ready${jobNumber ? ` — Job ${jobNumber}` : ''}`
+    : `${partCount} parts ready${jobNumber ? ` — Job ${jobNumber}` : ''}`;
+  sendNotify({
+    tenant_id: tenantId,
+    target: 'crew',
+    dept_target: deptName,
+    title: `New work in ${deptName}`,
+    body,
+    url: '/app/crew',
+  });
 }
 
 // ── Color parsing ───────────────────────────────────────────────────────────

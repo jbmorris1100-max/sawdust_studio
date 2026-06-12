@@ -1,13 +1,12 @@
 'use client';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import { sendNotify } from '@/lib/notify';
 import {
   getWorkerProject, upsertActiveProject, startProjectSession, pauseWorkerProject,
   clearProject, fmtAccumulated, type ActiveProject,
 } from '@/lib/activeProject';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
-import { pushPart, deptDisplay, PART_DEPTS, recomputeCabinet } from '@/lib/partActions';
+import { pushPart, deptDisplay, PART_DEPTS, recomputeCabinet, maybeNotifyJobQc, notifyDeptWork } from '@/lib/partActions';
 
 // The Assembly department's home view. Parts pushed to assembly, grouped by
 // job -> cabinet (folder accordion). Each cabinet has START and MARK COMPLETE.
@@ -333,19 +332,13 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
         if (proj && proj.cabinet_unit_id === cabinetId) await clearProject(tenantId, crewName);
       } catch { /* best-effort */ }
 
-      // If every cabinet in the job is now ready_for_qc / complete, notify once.
+      // Use the canonical parts-table gate so the predicate matches jobFullyAccounted().
       if (jobNumber) {
         try {
-          const { data } = await supabase.from('cabinet_units').select('status').eq('tenant_id', tenantId).eq('job_number', jobNumber);
-          const rows = (data as { status: string | null }[] | null) ?? [];
-          const allReady = rows.length > 0 && rows.every((r) => ['ready_for_qc', 'complete'].includes((r.status || '').toLowerCase()));
-          if (allReady) {
-            const body = `Job ${jobLabel(jobNumber)} is ready for QC`;
-            sendNotify({ tenant_id: tenantId, target: 'supervisor', title: 'Job ready for QC', body, url: '/app/supervisor' });
-            try { await supabase.from('notifications').insert({ tenant_id: tenantId, target_type: 'supervisor', title: 'Job ready for QC', body, url: '/app/supervisor' }); } catch { /* bell best-effort */ }
-          }
+          await maybeNotifyJobQc(tenantId, jobNumber, jobLabel(jobNumber));
         } catch { /* best-effort */ }
       }
+      notifyDeptWork(tenantId, 'qc', jobNumber, 1);
       setParts((prev) => prev.filter((p) => p.cabinet_unit_id !== cabinetId));
       showToast(`${label} sent to QC`);
       void load();

@@ -14,7 +14,7 @@ import FinishingView from './FinishingView';
 import AssemblyCrewView from './AssemblyCrewView';
 import CabinetScanner from '../scan/CabinetScanner';
 import PushPicker from '@/components/PushPicker';
-import { pushPart, deptDisplay, recomputeCabinet } from '@/lib/partActions';
+import { pushPart, deptDisplay, recomputeCabinet, notifyDeptWork } from '@/lib/partActions';
 import {
   getWorkerProject, pauseWorkerProject, startProjectSession, fmtAccumulated,
   deptLabel as projDeptLabel, type ActiveProject,
@@ -2111,6 +2111,7 @@ export default function CrewPage() {
       setCutJobCabs((cabs) => cabs.filter((c) => !cabinetIds.includes(c.cabinetId)));
       setHeldCabs((h) => { const n = { ...h }; cabinetIds.forEach((id) => delete n[id]); return n; });
       showUndoToast(`${cabinetIds.length} cabinet${cabinetIds.length === 1 ? '' : 's'}`, toDept, 'production', pushedParts);
+      notifyDeptWork(tenant!.id, toDept, cutJob?.jobNumber ?? null, pushedParts.length);
       void loadProduction();
     } finally {
       setCutJobBusy(false);
@@ -2144,6 +2145,7 @@ export default function CrewPage() {
         'production',
         items.map((it) => ({ partId: it.part.id, cabinetUnitId: it.cabinetId, partName: it.part.part_name, jobNumber: cutJob?.jobNumber ?? null })),
       );
+      notifyDeptWork(tenant!.id, toDept, cutJob?.jobNumber ?? null, items.length);
       setSelectedParts({});
       setSelectMode(false);
       void loadProduction();

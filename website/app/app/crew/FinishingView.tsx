@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import { colorToHex, pushPart, deptDisplay, PART_DEPTS, recomputeCabinet } from '@/lib/partActions';
+import { colorToHex, pushPart, deptDisplay, PART_DEPTS, recomputeCabinet, maybeNotifyJobQc, notifyDeptWork } from '@/lib/partActions';
 import { sendNotify } from '@/lib/notify';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
@@ -370,6 +370,7 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
       const pushedIds = new Set(items.map((p) => p.id));
       setParts((prev) => prev.filter((p) => !pushedIds.has(p.id)));
       setSelected((s) => { const n = { ...s }; pushedIds.forEach((id) => delete n[id]); return n; });
+      notifyDeptWork(tenantId, toDept, openRoom.jobNumber, items.length - failed);
       showToast(`${items.length - failed} part${items.length - failed === 1 ? '' : 's'} sent to ${deptDisplay(toDept)}`);
       // If no parts remain in this room, close
       const remaining = parts.filter((p) =>
@@ -408,7 +409,27 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
           .eq('id', cabId).eq('tenant_id', tenantId);
       }));
       await stopRoomTimer(openRoom.jobNumber, openRoom.roomNumber);
-      sendNotify({ tenant_id: tenantId, target: 'supervisor', title: `${roomLabel(openRoom.roomNumber)} finished`, body: `${roomLabel(openRoom.roomNumber)} from ${openRoom.jobPath.split('/').map((s) => s.trim()).join(' / ')} sent to QC`, url: '/app/supervisor' });
+      // Bell-log so supervisor has a record even if they miss the push.
+      try {
+        await supabase.from('notifications').insert({
+          tenant_id: tenantId, target_type: 'supervisor',
+          title: `${roomLabel(openRoom.roomNumber)} ready for QC`,
+          body: `${roomLabel(openRoom.roomNumber)} from ${openRoom.jobPath.split('/').map((s) => s.trim()).join(' / ')} sent to QC`,
+          url: '/app/supervisor',
+        });
+      } catch { /* best-effort */ }
+      sendNotify({
+        tenant_id: tenantId, target: 'supervisor',
+        title: `${roomLabel(openRoom.roomNumber)} ready for QC`,
+        body: `${roomLabel(openRoom.roomNumber)} from ${openRoom.jobPath.split('/').map((s) => s.trim()).join(' / ')} sent to QC`,
+        url: '/app/supervisor',
+      });
+      // Fire the job-level "ready for QC" notification if this was the last room.
+      try {
+        await maybeNotifyJobQc(tenantId, openRoom.jobNumber, openRoom.jobPath.split('/').map((s) => s.trim()).join(' / '));
+      } catch { /* best-effort */ }
+      // Notify QC crew that new work has arrived.
+      notifyDeptWork(tenantId, 'qc', openRoom.jobNumber, roomParts.length);
       showToast(`${roomLabel(openRoom.roomNumber)} sent to QC`);
       setOpenRoom(null);
       setSelected({});
