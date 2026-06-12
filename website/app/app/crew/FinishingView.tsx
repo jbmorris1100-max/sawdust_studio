@@ -5,7 +5,6 @@ import { colorToHex, pushPart, deptDisplay, PART_DEPTS, recomputeCabinet, maybeN
 import { sendNotify } from '@/lib/notify';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
-import PushPicker, { type AiMode } from '@/components/PushPicker';
 
 // ── Finishing department view ─────────────────────────────────────────────────
 // Production-style UX: Job → Room → Cabinet → Parts hierarchy.
@@ -58,10 +57,11 @@ interface Props {
   crewName?: string;
   isClockedIn?: boolean;
   onRequireClock?: () => void;
-  aiMode?: AiMode;
 }
 
 const PUSH_DEPTS = PART_DEPTS.filter((d) => d.toLowerCase() !== 'finishing');
+
+const FINISH_TIMERS_KEY = 'finishing_room_timers';
 
 const card: React.CSSProperties = { padding: '16px 18px', borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)' };
 const rowLabel: React.CSSProperties = { fontSize: 11, color: 'var(--ink-mute)', fontWeight: 600 };
@@ -84,7 +84,7 @@ function roomLabel(roomNumber: string | null): string {
   return `Room ${roomNumber}`;
 }
 
-export default function FinishingView({ tenantId, showToast, crewName = '', isClockedIn = true, onRequireClock, aiMode = 'learn' }: Props) {
+export default function FinishingView({ tenantId, showToast, crewName = '', isClockedIn = true, onRequireClock }: Props) {
   const [specs, setSpecs] = useState<FinishSpec[]>([]);
   const [parts, setParts] = useState<FinishPart[]>([]);
   const [loading, setLoading] = useState(true);
@@ -100,9 +100,37 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
   const [openRoom, setOpenRoom] = useState<{ jobNumber: string | null; roomNumber: string | null; jobPath: string } | null>(null);
 
   // Active timers per room: roomKey → RoomTimer
-  const [roomTimers, setRoomTimers] = useState<Record<string, RoomTimer>>({});
+  const [roomTimers, setRoomTimers] = useState<Record<string, RoomTimer>>(() => {
+    try {
+      const stored = localStorage.getItem(FINISH_TIMERS_KEY);
+      return stored ? (JSON.parse(stored) as Record<string, RoomTimer>) : {};
+    } catch { return {}; }
+  });
   const roomTimersRef = useRef<Record<string, RoomTimer>>({});
   useEffect(() => { roomTimersRef.current = roomTimers; }, [roomTimers]);
+
+  // On mount: close any orphaned time_clock rows from a previous session.
+  // If the crew reloads mid-spray the timer state is restored from localStorage
+  // but the time_clock rows may still be open. Close them now with the real
+  // elapsed time so supervisor hour reports stay accurate.
+  useEffect(() => {
+    const stored = roomTimersRef.current;
+    if (Object.keys(stored).length === 0) return;
+    void (async () => {
+      const now = new Date().toISOString();
+      for (const timer of Object.values(stored)) {
+        if (!timer.timeClockId) continue;
+        try {
+          const totalHours = Math.max(0, (new Date(now).getTime() - new Date(timer.start).getTime()) / 3600000);
+          await supabase.from('time_clock')
+            .update({ clock_out: now, total_hours: Math.round(totalHours * 100) / 100 })
+            .eq('id', timer.timeClockId)
+            .is('clock_out', null);
+        } catch { /* best-effort */ }
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Selection: partId → true (works across cabinets/rooms in full-screen view)
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -244,7 +272,25 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
   function effectiveSpec(spec: FinishSpec | null, roomNumber: string | null): FinishSpec | null {
     if (!spec) return null;
     if (!roomNumber || !spec.room_overrides) return spec;
-    const overrides = spec.room_overrides[roomNumber] ?? spec.room_overrides[`Room ${roomNumber}`] ?? {};
+    // Match the supervisor's free-text room key against the cabinet's room_number.
+    // Try: exact match, "Room N" format, then case-insensitive on either.
+    const candidates = [
+      roomNumber,
+      `Room ${roomNumber}`,
+    ];
+    const overrideEntries = Object.entries(spec.room_overrides);
+    let overrides: Record<string, string> = {};
+    // First pass: exact match
+    for (const c of candidates) {
+      if (spec.room_overrides[c]) { overrides = spec.room_overrides[c]; break; }
+    }
+    // Second pass: case-insensitive match
+    if (Object.keys(overrides).length === 0) {
+      const lower = candidates.map((c) => c.toLowerCase());
+      for (const [key, val] of overrideEntries) {
+        if (lower.includes(key.trim().toLowerCase())) { overrides = val; break; }
+      }
+    }
     if (Object.keys(overrides).length === 0) return spec;
     return {
       ...spec,
@@ -272,9 +318,11 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
       const id = (data as { id: string } | null)?.id ?? null;
       const next = { ...roomTimersRef.current, [rk]: { timeClockId: id, start: now } };
       setRoomTimers(next);
+      try { localStorage.setItem(FINISH_TIMERS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
     } catch {
       const next = { ...roomTimersRef.current, [rk]: { timeClockId: null, start: now } };
       setRoomTimers(next);
+      try { localStorage.setItem(FINISH_TIMERS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
     }
   }
 
@@ -285,6 +333,7 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
     const next = { ...roomTimersRef.current };
     delete next[rk];
     setRoomTimers(next);
+    try { localStorage.setItem(FINISH_TIMERS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
     if (!timer.timeClockId) return;
     try {
       const now = new Date().toISOString();
@@ -327,15 +376,6 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
     setSelected((s) => {
       const n = { ...s };
       cabParts.forEach((p) => { n[p.id] = !allOn; });
-      return n;
-    });
-  }
-
-  function toggleRoom(roomParts: FinishPart[]) {
-    const allOn = roomParts.every((p) => selected[p.id]);
-    setSelected((s) => {
-      const n = { ...s };
-      roomParts.forEach((p) => { n[p.id] = !allOn; });
       return n;
     });
   }

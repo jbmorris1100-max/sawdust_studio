@@ -381,16 +381,6 @@ function ClockTimePicker({ value, base, onHold, onRelease }: {
   );
 }
 
-// "Updated 2 days ago" style label for plan version timestamps.
-function updatedAgo(iso: string): string {
-  const days  = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
-  const hours = Math.floor((Date.now() - new Date(iso).getTime()) / 3600000);
-  if (hours < 1)  return 'Updated just now';
-  if (hours < 24) return `Updated ${hours} hour${hours !== 1 ? 's' : ''} ago`;
-  if (days === 1) return 'Updated yesterday';
-  if (days < 30)  return `Updated ${days} days ago`;
-  return `Updated ${new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
-}
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
@@ -513,7 +503,7 @@ function Spinner() {
 
 function TrialBanner({ days }: { days: number }) {
   return (
-    <div style={{ position: 'sticky', top: 64, zIndex: 50, background: 'rgba(251,191,36,0.06)', borderBottom: '1px solid rgba(251,191,36,0.25)', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+    <div style={{ position: 'sticky', top: 52, zIndex: 50, background: 'rgba(251,191,36,0.06)', borderBottom: '1px solid rgba(251,191,36,0.25)', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
       <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinecap="round"><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
       <span style={{ fontSize: 13, color: '#FBBF24' }}><b>{days} day{days !== 1 ? 's' : ''}</b> left in trial —</span>
       <Link href="/pricing" style={{ fontSize: 13, fontWeight: 700, color: '#FBBF24', textDecoration: 'underline' }}>Upgrade</Link>
@@ -524,7 +514,7 @@ function TrialBanner({ days }: { days: number }) {
 function NewMsgBanner({ preview, onDismiss }: { preview: string; onDismiss: () => void }) {
   return (
     <div style={{
-      position: 'sticky', top: 64, zIndex: 49,
+      position: 'sticky', top: 52, zIndex: 49,
       background: 'rgba(94,234,212,0.07)',
       borderBottom: '1px solid rgba(94,234,212,0.22)',
       padding: '10px 24px',
@@ -3202,7 +3192,7 @@ export default function CrewPage() {
           {crewDept === 'Craftsman' && tenant ? (
             <CraftsmanBuilds tenantId={tenant.id} crewName={crewName} timeClockId={activeTimeClockId} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} aiMode={aiMode} />
           ) : crewDept === 'Finishing' && tenant ? (
-            <FinishingView tenantId={tenant.id} showToast={showToast} crewName={crewName} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} aiMode={aiMode} />
+            <FinishingView tenantId={tenant.id} showToast={showToast} crewName={crewName} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} />
           ) : crewDept === 'Assembly' && tenant ? (
             <AssemblyCrewView tenantId={tenant.id} crewName={crewName} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} />
           ) : null}

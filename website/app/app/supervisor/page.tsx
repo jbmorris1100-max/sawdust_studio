@@ -447,7 +447,7 @@ function TrialBanner({ days }: { days: number }) {
   // In the last stretch of the trial, switch to a stronger upgrade prompt.
   const urgent = days <= 5;
   return (
-    <div style={{ position: 'sticky', top: 64, zIndex: 50, background: 'rgba(251,191,36,0.06)', borderBottom: '1px solid rgba(251,191,36,0.25)', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
+    <div style={{ position: 'sticky', top: 52, zIndex: 50, background: 'rgba(251,191,36,0.06)', borderBottom: '1px solid rgba(251,191,36,0.25)', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
       <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinecap="round"><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
       <span style={{ fontSize: 13, color: '#FBBF24' }}>
         <b>{days} day{days !== 1 ? 's' : ''}</b> left in trial{urgent ? ' — upgrade now to keep your shop running' : ' —'}
@@ -463,7 +463,7 @@ function TrialBanner({ days }: { days: number }) {
 // their lifetime discount is now active. Teal, not amber/red.
 function PartnerEndedBanner({ discount }: { discount: number }) {
   return (
-    <div style={{ position: 'sticky', top: 64, zIndex: 50, background: 'rgba(45,225,201,0.06)', borderBottom: '1px solid rgba(45,225,201,0.25)', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
+    <div style={{ position: 'sticky', top: 52, zIndex: 50, background: 'rgba(45,225,201,0.06)', borderBottom: '1px solid rgba(45,225,201,0.25)', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
       <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
       <span style={{ fontSize: 13, color: 'var(--teal)' }}>
         Your partner trial has ended — your lifetime {discount}% discount is now active
@@ -475,7 +475,7 @@ function PartnerEndedBanner({ discount }: { discount: number }) {
 
 function PastDueBanner({ onManage, busy }: { onManage: () => void; busy: boolean }) {
   return (
-    <div style={{ position: 'sticky', top: 64, zIndex: 50, background: 'rgba(248,113,113,0.08)', borderBottom: '1px solid rgba(248,113,113,0.3)', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
+    <div style={{ position: 'sticky', top: 52, zIndex: 50, background: 'rgba(248,113,113,0.08)', borderBottom: '1px solid rgba(248,113,113,0.3)', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
       <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
       <span style={{ fontSize: 13, color: '#F87171' }}>Payment failed — update billing to continue using InlineIQ</span>
       <button onClick={onManage} disabled={busy} style={{ fontSize: 13, fontWeight: 700, color: '#F87171', background: 'transparent', border: '1px solid rgba(248,113,113,0.4)', borderRadius: 6, padding: '4px 12px', cursor: busy ? 'wait' : 'pointer', fontFamily: 'inherit', opacity: busy ? 0.6 : 1 }}>
@@ -3051,7 +3051,7 @@ export default function SupervisorPage() {
         <div style={{ display: 'flex', flex: 1, minWidth: 0 }}>
 
           {/* ── Left sidebar (desktop only) ── */}
-          <aside className="sup-sidebar" style={{ position: 'fixed', top: 64, left: 0, bottom: 0, width: 220, zIndex: 40, background: 'rgba(5,6,8,0.95)', borderRight: '1px solid var(--line)', backdropFilter: 'blur(14px)', overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', paddingTop: 8, paddingBottom: 24 }}>
+          <aside className="sup-sidebar" style={{ position: 'fixed', top: 52, left: 0, bottom: 0, width: 220, zIndex: 40, background: 'rgba(5,6,8,0.95)', borderRight: '1px solid var(--line)', backdropFilter: 'blur(14px)', overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', paddingTop: 8, paddingBottom: 24 }}>
             {navGroups.map((group, gi) => (
               <div key={gi}>
                 {group.label && (
