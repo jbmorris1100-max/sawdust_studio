@@ -575,13 +575,13 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                             <div style={{ display: 'flex', gap: 8, width: '100%' }}>
                               <button
                                 onClick={() => void startBuild(c.cabinetId, jobNumber, info.label)}
-                                disabled={!!build || blockedByPaused}
-                                title={blockedByPaused ? 'Resume your paused project first' : undefined}
+                                disabled={!!build}
+                                title={undefined}
                                 style={{ ...btnBase, flex: 1, minWidth: 0,
-                                  background: (build || blockedByPaused) ? 'var(--bg-1)' : 'rgba(96,165,250,0.14)',
-                                  border: `1px solid ${(build || blockedByPaused) ? 'var(--line)' : 'rgba(96,165,250,0.4)'}`,
-                                  color: (build || blockedByPaused) ? 'var(--ink-mute)' : '#60A5FA',
-                                  cursor: (build || blockedByPaused) ? 'not-allowed' : 'pointer',
+                                  background: build ? 'var(--bg-1)' : 'rgba(96,165,250,0.14)',
+                                  border: `1px solid ${build ? 'var(--line)' : 'rgba(96,165,250,0.4)'}`,
+                                  color: build ? 'var(--ink-mute)' : '#60A5FA',
+                                  cursor: build ? 'not-allowed' : 'pointer',
                                 }}
                               >
                                 <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
