@@ -675,7 +675,8 @@ export default function SupervisorPage() {
             window.location.replace('/app/supervisor-pin');
             return;
           }
-        } else if (!tenantId) {
+        } else {
+          // No tenant id, no token, or token check failed — always redirect to PIN
           window.location.replace('/app/supervisor-pin');
           return;
         }
