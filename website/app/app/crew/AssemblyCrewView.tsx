@@ -255,8 +255,6 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
   async function startBuild(cabinetId: string, jobNumber: string | null, label: string) {
     if (!isClockedIn) { onRequireClock?.(); return; }
     if (builds[cabinetId]) return;
-    // One project per user — a paused project must be resumed before starting new work.
-    if (pausedProject) { showToast('Resume your paused project first', true); return; }
     const now = new Date().toISOString();
     try {
       const { data, error } = await supabase.from('time_clock').insert({

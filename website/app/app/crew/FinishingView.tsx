@@ -57,6 +57,7 @@ interface Props {
   crewName?: string;
   isClockedIn?: boolean;
   onRequireClock?: () => void;
+  onActiveTimerCount?: (count: number) => void;
 }
 
 const PUSH_DEPTS = PART_DEPTS.filter((d) => d.toLowerCase() !== 'finishing');
@@ -84,7 +85,7 @@ function roomLabel(roomNumber: string | null): string {
   return `Room ${roomNumber}`;
 }
 
-export default function FinishingView({ tenantId, showToast, crewName = '', isClockedIn = true, onRequireClock }: Props) {
+export default function FinishingView({ tenantId, showToast, crewName = '', isClockedIn = true, onRequireClock, onActiveTimerCount }: Props) {
   const [specs, setSpecs] = useState<FinishSpec[]>([]);
   const [parts, setParts] = useState<FinishPart[]>([]);
   const [loading, setLoading] = useState(true);
@@ -108,6 +109,10 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
   });
   const roomTimersRef = useRef<Record<string, RoomTimer>>({});
   useEffect(() => { roomTimersRef.current = roomTimers; }, [roomTimers]);
+
+  useEffect(() => {
+    onActiveTimerCount?.(Object.keys(roomTimers).length);
+  }, [roomTimers, onActiveTimerCount]);
 
   // On mount: close any orphaned time_clock rows from a previous session.
   // If the crew reloads mid-spray the timer state is restored from localStorage
@@ -356,7 +361,17 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
     void startRoomTimer(jobNumber, roomNumber, jobPath);
   }
 
-  async function closeRoomView() {
+  // Collapse the full-screen room view back to the queue WITHOUT stopping
+  // the timer. The timer keeps running in the background — crew can navigate
+  // freely while finishing work continues. Timer only stops on Push or QC.
+  function collapseRoomView() {
+    setOpenRoom(null);
+    setSelected({});
+    setSelectMode(false);
+  }
+
+  // Exit the room view AND stop the timer. Called only from Push and QC paths.
+  async function exitRoomView() {
     if (!openRoom) return;
     await stopRoomTimer(openRoom.jobNumber, openRoom.roomNumber);
     setOpenRoom(null);
@@ -418,7 +433,7 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
         (p.job_number ?? '__nojob__') === (openRoom.jobNumber ?? '__nojob__') &&
         (p.roomNumber ?? '__noroom__') === (openRoom.roomNumber ?? '__noroom__')
       );
-      if (remaining.length === 0) await closeRoomView();
+      if (remaining.length === 0) await exitRoomView();
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Push failed', true);
     } finally {
@@ -434,7 +449,7 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
       (p.job_number ?? '__nojob__') === (openRoom.jobNumber ?? '__nojob__') &&
       (p.roomNumber ?? '__noroom__') === (openRoom.roomNumber ?? '__noroom__')
     );
-    if (roomParts.length === 0) { await closeRoomView(); return; }
+    if (roomParts.length === 0) { await exitRoomView(); return; }
     setQcBusy(true);
     const now = new Date().toISOString();
     try {
@@ -469,8 +484,7 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
         await maybeNotifyJobQc(tenantId, openRoom.jobNumber, openRoom.jobPath.split('/').map((s) => s.trim()).join(' / '));
       } catch { /* best-effort */ }
       showToast(`${roomLabel(openRoom.roomNumber)} sent to QC`);
-      setOpenRoom(null);
-      setSelected({});
+      await exitRoomView();
       void load();
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Could not send to QC', true);
@@ -501,7 +515,7 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
       <div style={{ position: 'fixed', inset: 0, zIndex: 300, background: '#070a0c', display: 'flex', flexDirection: 'column' }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 18px', borderBottom: '1px solid var(--line)', flexShrink: 0 }}>
-          <button onClick={() => void closeRoomView()} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }} aria-label="Back">
+          <button onClick={collapseRoomView} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }} aria-label="Back">
             <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
           </button>
           <div style={{ minWidth: 0, flex: 1 }}>

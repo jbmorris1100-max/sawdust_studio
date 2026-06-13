@@ -50,6 +50,12 @@ interface Props {
   isClockedIn?: boolean;
   onRequireClock?: () => void;
   aiMode?: AiMode;
+  // Reports the active build up to the crew home so it can show a "build running"
+  // banner while the full-screen work order is collapsed. null = nothing running.
+  onActiveBuild?: (info: { label: string; job: string | null } | null) => void;
+  // Parent bumps this counter (via the banner "Return" button) to re-open the
+  // active build's full-screen work order.
+  reopenSignal?: number;
 }
 
 const BUILD_KEY = 'craftsman_active_build';
@@ -78,7 +84,7 @@ const IcoCraft = () => (
   </svg>
 );
 
-export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showToast, isClockedIn = true, onRequireClock, aiMode = 'learn' }: Props) {
+export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showToast, isClockedIn = true, onRequireClock, aiMode = 'learn', onActiveBuild, reopenSignal }: Props) {
   const [parts, setParts] = useState<CPart[]>([]);
   const [cabInfo, setCabInfo] = useState<Record<string, CabInfo>>({});
   const [jobPaths, setJobPaths] = useState<Record<string, string>>({});
@@ -205,6 +211,26 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   }, []);
   useEffect(() => { buildRef.current = build; }, [build]);
 
+  // Report the active build up to the crew home (banner) while collapsed.
+  useEffect(() => {
+    if (!onActiveBuild) return;
+    if (build && !openUnitId) {
+      const label = cabInfo[build.unitId]?.label ?? 'Craftsman build';
+      const job = parts.find((p) => p.cabinet_unit_id === build.unitId)?.job_number ?? null;
+      onActiveBuild({ label, job });
+    } else {
+      onActiveBuild(null);
+    }
+  }, [build, openUnitId, cabInfo, parts, onActiveBuild]);
+
+  // Re-open the active build's work order when the parent bumps reopenSignal.
+  const reopenSeen = useRef(reopenSignal);
+  useEffect(() => {
+    if (reopenSignal === undefined || reopenSignal === reopenSeen.current) return;
+    reopenSeen.current = reopenSignal;
+    if (buildRef.current?.unitId) setOpenUnitId(buildRef.current.unitId);
+  }, [reopenSignal]);
+
   useEffect(() => {
     if (!build || build.stop) return;
     const iv = setInterval(() => setTick((n) => n + 1), 1000);
@@ -259,6 +285,15 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         .eq('id', cabinetId)
         .eq('tenant_id', tenantId);
     } catch { /* best-effort */ }
+  }
+
+  // Collapse the full-screen work order back to the queue WITHOUT pausing.
+  // The timer and active project keep running — crew can navigate freely.
+  // Only the Pause button pauses; clock-out and dept-switch pause via page.tsx.
+  function collapseToQueue() {
+    setOpenUnitId(null);
+    setPushSel({});
+    void load();
   }
 
   // PAUSE — close the live session (logging its hours), fold it into the project's
@@ -488,8 +523,8 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         {/* Header — sits below the safe area; back + label/job on the left, View Drawings on the right */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-            <button onClick={() => setOpenUnitId(null)} disabled={isBuilding} title={isBuilding ? 'Finish or push the build first' : undefined}
-              style={{ background: 'none', border: 'none', cursor: isBuilding ? 'not-allowed' : 'pointer', color: isBuilding ? 'var(--line-strong)' : 'var(--ink-mute)', padding: 4, display: 'flex', flexShrink: 0 }} aria-label="Back">
+            <button onClick={collapseToQueue} title={undefined}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex', flexShrink: 0 }} aria-label="Back">
               <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
             </button>
             <div style={{ minWidth: 0 }}>

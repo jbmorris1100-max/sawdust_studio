@@ -770,6 +770,10 @@ export default function CrewPage() {
   // ── Production handoff (cut tracking) ──────────────────────────────────────
   const [prodUnits,    setProdUnits]    = useState<ProdUnit[]>([]);
   const [prodLoading,  setProdLoading]  = useState(false);
+  // Active work surfaced from the dept child views for the crew-home banner.
+  const [finishingActiveTimers, setFinishingActiveTimers] = useState(0);
+  const [craftsmanActiveBuild, setCraftsmanActiveBuild] = useState<{ label: string; job: string | null } | null>(null);
+  const [craftsmanReopen, setCraftsmanReopen] = useState(0);
 
   // Production job folder — the currently selected job in the cut list.
   const [prodSelectedJob, setProdSelectedJob] = useState<string>('');
@@ -3215,12 +3219,44 @@ export default function CrewPage() {
               parts.assigned_dept. Production uses the Cut List accordion below;
               Craftsman, Finishing and Assembly each get their own folder view. */}
           {crewDept === 'Craftsman' && tenant ? (
-            <CraftsmanBuilds tenantId={tenant.id} crewName={crewName} timeClockId={activeTimeClockId} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} aiMode={aiMode} />
+            <CraftsmanBuilds tenantId={tenant.id} crewName={crewName} timeClockId={activeTimeClockId} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} aiMode={aiMode} onActiveBuild={setCraftsmanActiveBuild} reopenSignal={craftsmanReopen} />
           ) : crewDept === 'Finishing' && tenant ? (
-            <FinishingView tenantId={tenant.id} showToast={showToast} crewName={crewName} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} />
+            <FinishingView tenantId={tenant.id} showToast={showToast} crewName={crewName} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} onActiveTimerCount={setFinishingActiveTimers} />
           ) : crewDept === 'Assembly' && tenant ? (
             <AssemblyCrewView tenantId={tenant.id} crewName={crewName} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} />
           ) : null}
+
+          {/* ── Active work banner ─────────────────────────────────────────
+              Shown when a Craftsman build or Finishing room timer is running.
+              Lets crew know their timer is still tracked while they navigate. */}
+          <style>{`@keyframes finishPulse{0%,100%{opacity:1}50%{opacity:0.25}}@keyframes craftsPulse{0%,100%{opacity:1}50%{opacity:0.3}}`}</style>
+          {crewDept === 'Craftsman' && craftsmanActiveBuild && (
+            <div style={{ marginBottom: 20, padding: '14px 16px', borderRadius: 12, background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.3)', display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#60A5FA', flexShrink: 0, animation: 'craftsPulse 1.4s ease-in-out infinite' }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#60A5FA' }}>Build timer running</div>
+                <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{craftsmanActiveBuild.label}{craftsmanActiveBuild.job ? ` · Job ${craftsmanActiveBuild.job}` : ''}</div>
+              </div>
+              <button
+                onClick={() => setCraftsmanReopen((n) => n + 1)}
+                style={{ fontSize: 12, fontWeight: 700, color: '#60A5FA', background: 'rgba(96,165,250,0.12)', border: '1px solid rgba(96,165,250,0.3)', borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}
+              >
+                Return
+              </button>
+            </div>
+          )}
+          {crewDept === 'Finishing' && finishingActiveTimers > 0 && (
+            <div style={{ marginBottom: 20, padding: '14px 16px', borderRadius: 12, background: 'rgba(45,225,201,0.08)', border: '1px solid rgba(45,225,201,0.3)', display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#2DE1C9', flexShrink: 0, animation: 'finishPulse 1.4s ease-in-out infinite' }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--teal)' }}>
+                  {finishingActiveTimers} room{finishingActiveTimers === 1 ? '' : 's'} in progress
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>Timer running — scroll up to continue</div>
+              </div>
+              <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="m18 15-6-6-6 6"/></svg>
+            </div>
+          )}
 
           {/* Quick actions */}
           <div style={{ marginBottom: 40 }}>
