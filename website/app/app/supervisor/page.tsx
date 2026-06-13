@@ -2179,6 +2179,20 @@ export default function SupervisorPage() {
       const room   = toTitleCase(planNewRoom.trim());
       if (!client) { showToast('Client name is required for a new job', true); return null; }
       const jobPath = room ? `${client}/${room}` : client;
+      // A job with this path already exists (unique index is on lower(job_path)) —
+      // reuse it instead of throwing a duplicate-key 409. Matched case-insensitively
+      // so "Anderson" resolves to an existing "anderson".
+      const { data: existingJob } = await supabase
+        .from('jobs')
+        .select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, install_date')
+        .eq('tenant_id', tenant.id)
+        .ilike('job_path', jobPath)
+        .maybeSingle();
+      if (existingJob) {
+        const ex = existingJob as Job;
+        setJobs((prev) => prev.some((j) => j.id === ex.id) ? prev : [ex, ...prev]);
+        return { jobNumber: ex.job_number, jobPath: ex.job_path ?? jobPath };
+      }
       try {
         const insert: Record<string, unknown> = {
           job_number:  jobPath,

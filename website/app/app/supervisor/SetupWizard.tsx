@@ -87,10 +87,10 @@ const CopyIcon = () => (
 
 // ── Dot progress indicator ────────────────────────────────────────────────────
 
-function Dots({ step }: { step: 1 | 2 | 3 | 4 }) {
+function Dots({ step }: { step: number }) {
   return (
     <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginBottom: 28 }}>
-      {([1, 2, 3, 4] as const).map((n) => (
+      {([1, 2, 3] as const).map((n) => (
         <div
           key={n}
           style={{
@@ -115,16 +115,13 @@ interface Props {
 }
 
 export default function SetupWizard({ tenant, onComplete }: Props) {
-  const [step,      setStep]      = useState<1 | 2 | 3 | 4>(1);
+  const [step,      setStep]      = useState<1 | 2 | 4>(1);
   const [shopName,  setShopName]  = useState(tenant.shop_name ?? '');
   const [depts,     setDepts]     = useState<string[]>([]);
   const [deptError, setDeptError] = useState(false);
   const [showCustom,  setShowCustom]  = useState(false);
   const [customInput, setCustomInput] = useState('');
   const [customErr,   setCustomErr]   = useState('');
-  const [jobClient, setJobClient] = useState('');
-  const [jobRoom,   setJobRoom]   = useState('');
-  const [jobDue,    setJobDue]    = useState('');
   const [saving,    setSaving]    = useState(false);
   const [copied,    setCopied]    = useState(false);
 
@@ -169,39 +166,6 @@ export default function SetupWizard({ tenant, onComplete }: Props) {
     try { await supabase.from('tenants').update({ departments: depts }).eq('id', tenant.id); }
     catch (_) {}
     finally { setSaving(false); }
-    setStep(3);
-  }
-
-  // Step 3 → 4 (insert first job unless skipped)
-  async function goStep4(skip: boolean) {
-    if (saving) return;
-    if (!skip) {
-      const client = jobClient.trim();
-      if (!client) return;
-      const room = jobRoom.trim();
-      const jobPath = room ? `${client}/${room}` : client;
-      const jobName = room ? `${client} ${room}` : client;
-      setSaving(true);
-      const full: Record<string, unknown> = {
-        job_number:  client,
-        job_name:    jobName,
-        status:      'active',
-        tenant_id:   tenant.id,
-        source:      'manual',
-        client_name: client,
-        room_name:   room || null,
-        job_path:    jobPath,
-      };
-      if (jobDue) full.due_date = jobDue;
-      try {
-        const { error } = await supabase.from('jobs').insert(full);
-        if (error) throw error;
-      } catch (_) {
-        // Fallback for shops that haven't run the job_path migration yet
-        try { await supabase.from('jobs').insert({ job_number: client, job_name: jobName, status: 'active', tenant_id: tenant.id, source: 'manual' }); }
-        catch (_) {}
-      } finally { setSaving(false); }
-    }
     setStep(4);
   }
 
@@ -229,7 +193,7 @@ export default function SetupWizard({ tenant, onComplete }: Props) {
                 inline<b style={{ color: '#2DE1C9' }}>IQ</b>
               </div>
             </div>
-            <div style={S.stepLabel}>Step 1 of 4</div>
+            <div style={S.stepLabel}>Step 1 of 3</div>
             <h2 style={S.h2}>Welcome to InlineIQ</h2>
             <p style={S.sub}>Let&apos;s get your shop set up in under 2 minutes.</p>
 
@@ -254,7 +218,7 @@ export default function SetupWizard({ tenant, onComplete }: Props) {
         {/* ── STEP 2 — Departments ─────────────────────────────────── */}
         {step === 2 && (
           <div style={{ animation: 'wizFade 0.25s ease' }}>
-            <div style={S.stepLabel}>Step 2 of 4</div>
+            <div style={S.stepLabel}>Step 2 of 3</div>
             <h2 style={S.h2}>Which departments does your shop have?</h2>
             <p style={S.sub}>Select all that apply — you can change this later.</p>
 
@@ -368,54 +332,10 @@ export default function SetupWizard({ tenant, onComplete }: Props) {
           </div>
         )}
 
-        {/* ── STEP 3 — First job ───────────────────────────────────── */}
-        {step === 3 && (
-          <div style={{ animation: 'wizFade 0.25s ease' }}>
-            <div style={S.stepLabel}>Step 3 of 4</div>
-            <h2 style={S.h2}>Add your first job</h2>
-            <p style={S.sub}>You can add more from the supervisor dashboard anytime.</p>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 12 }}>
-              <div>
-                <label style={S.label} htmlFor="wiz-client">Client name <span style={{ color: '#F87171' }}>*</span></label>
-                <input id="wiz-client" style={S.input} value={jobClient} onChange={(e) => setJobClient(e.target.value)} placeholder="e.g. Smith, Johnson" />
-              </div>
-              <div>
-                <label style={S.label} htmlFor="wiz-room">Room / Area <span style={{ color: '#8BA5A0', fontWeight: 400 }}>(optional)</span></label>
-                <input id="wiz-room" style={S.input} value={jobRoom} onChange={(e) => setJobRoom(e.target.value)} placeholder="e.g. Kitchen, Master Bath" />
-              </div>
-              <div>
-                <label style={S.label} htmlFor="wiz-due">Due date <span style={{ color: '#8BA5A0', fontWeight: 400 }}>(optional)</span></label>
-                <input id="wiz-due" type="date" style={S.input} value={jobDue} onChange={(e) => setJobDue(e.target.value)} />
-              </div>
-            </div>
-
-            {jobClient.trim() && (
-              <div style={{ fontSize: 13, color: '#8BA5A0', marginBottom: 16 }}>
-                Job path: <b style={{ color: '#5EEAD4' }}>{jobClient.trim()}{jobRoom.trim() ? `/${jobRoom.trim()}` : ''}</b>
-              </div>
-            )}
-
-            <button style={S.btnPrimary(!jobClient.trim() || saving)} onClick={() => goStep4(false)} disabled={!jobClient.trim() || saving}>
-              {saving ? 'Saving…' : 'Next'}
-            </button>
-
-            <div style={{ textAlign: 'center', marginTop: 12 }}>
-              <button style={{ background: 'none', border: 'none', color: '#8BA5A0', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline', padding: 6 }} onClick={() => goStep4(true)}>
-                Skip for now
-              </button>
-            </div>
-
-            <div style={{ marginTop: 4 }}>
-              <button style={{ ...S.btnGhost, width: '100%' }} onClick={() => setStep(2)}>← Back</button>
-            </div>
-          </div>
-        )}
-
-        {/* ── STEP 4 — Invite crew ─────────────────────────────────── */}
+        {/* ── STEP 3 — Invite crew ─────────────────────────────────── */}
         {step === 4 && (
           <div style={{ animation: 'wizFade 0.25s ease' }}>
-            <div style={S.stepLabel}>Step 4 of 4</div>
+            <div style={S.stepLabel}>Step 3 of 3</div>
             <h2 style={S.h2}>Your crew joins with one link</h2>
             <p style={S.sub}>Share this with your crew — they tap it and they&apos;re straight in. No account needed.</p>
 
@@ -452,7 +372,7 @@ export default function SetupWizard({ tenant, onComplete }: Props) {
             </button>
 
             <div style={{ textAlign: 'center', marginTop: 12 }}>
-              <button style={{ background: 'none', border: 'none', color: '#8BA5A0', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', padding: 6 }} onClick={() => setStep(3)}>← Back</button>
+              <button style={{ background: 'none', border: 'none', color: '#8BA5A0', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', padding: 6 }} onClick={() => setStep(2)}>← Back</button>
             </div>
           </div>
         )}
