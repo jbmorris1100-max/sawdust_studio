@@ -663,7 +663,9 @@ export default function SupervisorPage() {
         const tenantId = localStorage.getItem('sup_last_tenant');
         const deviceId = localStorage.getItem('sup_device_id');
         const trustKey = tenantId ? `sup_trust_${tenantId}` : null;
-        const token = trustKey ? localStorage.getItem(trustKey) : null;
+        const sessionKey = tenantId ? `sup_session_${tenantId}` : null;
+        const token = (trustKey ? localStorage.getItem(trustKey) : null)
+          ?? (sessionKey ? sessionStorage.getItem(sessionKey) : null);
         if (tenantId && deviceId && token) {
           const res = await fetch('/app/api/supervisor-auth', {
             method: 'POST',
@@ -672,6 +674,9 @@ export default function SupervisorPage() {
           });
           const { ok } = await res.json() as { ok: boolean };
           if (!ok) {
+            // Clear both storage locations on invalid token
+            if (trustKey) localStorage.removeItem(trustKey);
+            if (sessionKey) sessionStorage.removeItem(sessionKey);
             window.location.replace('/app/supervisor-pin');
             return;
           }

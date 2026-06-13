@@ -9,6 +9,7 @@ import { isTenantExpired } from '@/lib/auth';
 const MAX_ATTEMPTS = 3;
 const LOCKOUT_SECONDS = 30;
 const TRUST_KEY = (tenantId: string) => `sup_trust_${tenantId}`;
+const SESSION_KEY = (tenantId: string) => `sup_session_${tenantId}`;
 const DEVICE_KEY = 'sup_device_id';
 
 function getOrCreateDeviceId(): string {
@@ -70,9 +71,10 @@ export default function SupervisorPinPage() {
     // token key on the next navigation (prevents a PIN ↔ supervisor redirect loop).
     try { localStorage.setItem('sup_last_tenant', t.id); } catch { /* ignore */ }
 
-    // Check trusted device first
+    // Check trusted device (localStorage) first, then session token (sessionStorage)
     try {
       const deviceId = getOrCreateDeviceId();
+      // 30-day trust token
       const stored = localStorage.getItem(TRUST_KEY(t.id));
       if (stored) {
         const res = await fetch('/app/api/supervisor-auth', {
@@ -82,8 +84,19 @@ export default function SupervisorPinPage() {
         });
         const { ok } = await res.json() as { ok: boolean };
         if (ok) { router.replace('/app/supervisor'); return; }
-        // Token invalid/expired — clear it
         localStorage.removeItem(TRUST_KEY(t.id));
+      }
+      // Session token (no-trust path — valid for this browser session only)
+      const sessionToken = sessionStorage.getItem(SESSION_KEY(t.id));
+      if (sessionToken) {
+        const res = await fetch('/app/api/supervisor-auth', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ tenantId: t.id, action: 'check-token', token: sessionToken, deviceId }),
+        });
+        const { ok } = await res.json() as { ok: boolean };
+        if (ok) { router.replace('/app/supervisor'); return; }
+        sessionStorage.removeItem(SESSION_KEY(t.id));
       }
     } catch { /* fall through to PIN entry */ }
 
@@ -135,6 +148,10 @@ export default function SupervisorPinPage() {
       if (data.ok && data.token) {
         if (trustDevice) {
           try { localStorage.setItem(TRUST_KEY(tenant.id), data.token); } catch { /* ignore */ }
+        } else {
+          // No long-term trust — store in sessionStorage so this browser
+          // session can pass the gate without re-entering the PIN
+          try { sessionStorage.setItem(SESSION_KEY(tenant.id), data.token); } catch { /* ignore */ }
         }
         router.replace('/app/supervisor');
       } else {
