@@ -28,6 +28,8 @@ export type Tenant = {
   stripe_price_id: string | null;
   current_period_end: string | null;
   cancel_at_period_end: boolean | null;
+  // ── Supervisor PIN (hashed, set in Settings) ──
+  supervisor_pin?: string | null;
   // ── Partner accounts (created via /admin/partners) ──
   is_partner?: boolean;
   partner_discount?: number;

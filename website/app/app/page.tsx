@@ -152,7 +152,7 @@ export default function AppPage() {
               </a>
 
               <a
-                href="/app/supervisor"
+                href="/app/supervisor-pin"
                 className="app-role-card"
                 style={{ borderColor: 'rgba(167,139,250,0.2)' }}
               >

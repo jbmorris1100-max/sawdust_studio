@@ -654,6 +654,42 @@ function ShiftTimeline({ events, clockRow, loading }: { events: ShiftEvent[] | u
 export default function SupervisorPage() {
   const { loading: sessionLoading, tenant, email } = useSession();
 
+  // Trust token gate — redirect to PIN if device is not trusted. Runs on mount,
+  // before the rest of the dashboard hydrates. The "I'm Supervisor" card already
+  // routes through the PIN page; this guards direct navigation / bookmarks.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const tenantId = localStorage.getItem('sup_last_tenant');
+        const deviceId = localStorage.getItem('sup_device_id');
+        const trustKey = tenantId ? `sup_trust_${tenantId}` : null;
+        const token = trustKey ? localStorage.getItem(trustKey) : null;
+        if (tenantId && deviceId && token) {
+          const res = await fetch('/app/api/supervisor-auth', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ tenantId, action: 'check-token', token, deviceId }),
+          });
+          const { ok } = await res.json() as { ok: boolean };
+          if (!ok) {
+            window.location.replace('/app/supervisor-pin');
+            return;
+          }
+        } else if (!tenantId) {
+          window.location.replace('/app/supervisor-pin');
+          return;
+        }
+      } catch { /* fall through — let normal auth handle it */ }
+    })();
+  }, []);
+
+  // Persist the tenant id so the trust gate (above) can resolve the trust-token
+  // key on future loads / direct navigation.
+  useEffect(() => {
+    if (!tenant) return;
+    try { localStorage.setItem('sup_last_tenant', tenant.id); } catch { /* ignore */ }
+  }, [tenant]);
+
   const [tab,         setTab]         = useState<Tab>('overview');
   const [activeCrew,  setActiveCrew]  = useState<CrewRow[]>([]);
   // Paused projects keyed by worker_name — amber indicator under each active crew row.
