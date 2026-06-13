@@ -44,7 +44,7 @@ function useCrewTenant() {
       try { inviteId = localStorage.getItem('crew_tenant_id') || localStorage.getItem('@inline_join_tenant_id') || ''; } catch (_) {}
       if (inviteId) {
         try {
-          const { data } = await supabase.from('tenants').select('*').eq('id', inviteId).single();
+          const { data } = await supabase.from('tenants').select('id, shop_name, subscription_status, trial_ends_at, departments, ai_mode, plan, is_partner, partner_discount, partner_trial_ends_at').eq('id', inviteId).single();
           if (!cancelled && data) {
             try { localStorage.setItem('crew_tenant_id', inviteId); } catch (_) {}
             setTenant(data as Tenant); setEmail(''); setLoading(false);
@@ -57,7 +57,7 @@ function useCrewTenant() {
         const { data: { session } } = await supabase.auth.getSession();
         if (session) {
           if (!cancelled) setEmail(session.user.email ?? '');
-          const { data } = await supabase.from('tenants').select('*').eq('owner_user_id', session.user.id).single();
+          const { data } = await supabase.from('tenants').select('id, shop_name, subscription_status, trial_ends_at, departments, ai_mode, plan, is_partner, partner_discount, partner_trial_ends_at').eq('owner_user_id', session.user.id).single();
           if (!cancelled && data) { setTenant(data as Tenant); setLoading(false); return; }
         }
       } catch (_) {}

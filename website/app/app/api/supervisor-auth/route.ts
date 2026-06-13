@@ -12,7 +12,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 // verified server-side without storing it.
 
 const TRUST_DAYS = 30;
-const APP_SECRET = process.env.SUPERVISOR_PIN_SECRET ?? 'inlineiq-pin-secret-change-me';
+const APP_SECRET = process.env.SUPERVISOR_PIN_SECRET;
 
 function admin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -22,7 +22,7 @@ function admin() {
 }
 
 function hashPin(pin: string, tenantId: string): string {
-  return createHmac('sha256', APP_SECRET)
+  return createHmac('sha256', APP_SECRET!)
     .update(`${tenantId}:${pin}`)
     .digest('hex');
 }
@@ -30,7 +30,7 @@ function hashPin(pin: string, tenantId: string): string {
 function makeToken(tenantId: string, deviceId: string): string {
   const expiry = Date.now() + TRUST_DAYS * 86400000;
   const payload = `${tenantId}:${deviceId}:${expiry}`;
-  const sig = createHmac('sha256', APP_SECRET).update(payload).digest('hex');
+  const sig = createHmac('sha256', APP_SECRET!).update(payload).digest('hex');
   return Buffer.from(`${payload}:${sig}`).toString('base64');
 }
 
@@ -43,7 +43,7 @@ function verifyToken(token: string, tenantId: string): boolean {
     if (tid !== tenantId) return false;
     if (Date.now() > parseInt(expiry)) return false;
     const payload = `${tid}:${deviceId}:${expiry}`;
-    const expected = createHmac('sha256', APP_SECRET).update(payload).digest('hex');
+    const expected = createHmac('sha256', APP_SECRET!).update(payload).digest('hex');
     return timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
   } catch {
     return false;
@@ -51,6 +51,10 @@ function verifyToken(token: string, tenantId: string): boolean {
 }
 
 export async function POST(req: Request) {
+  if (!process.env.SUPERVISOR_PIN_SECRET) {
+    console.error('[supervisor-auth] SUPERVISOR_PIN_SECRET is not set — refusing all requests');
+    return NextResponse.json({ ok: false, error: 'Auth not configured' }, { status: 500 });
+  }
   const db = admin();
   if (!db) return NextResponse.json({ ok: false, error: 'Server error' }, { status: 500 });
 
@@ -100,10 +104,36 @@ export async function POST(req: Request) {
   // ── verify ────────────────────────────────────────────────────────────────
   if (action === 'verify') {
     if (!pin) return NextResponse.json({ ok: false, error: 'PIN required' }, { status: 400 });
-    // No PIN set yet — first entry creates the PIN
+    // No PIN set yet — only the authenticated tenant owner can create it.
+    // Verify the request carries a valid Supabase session for this tenant.
     if (!stored) {
       if (pin.length < 4) {
         return NextResponse.json({ ok: false, error: 'PIN must be at least 4 digits' }, { status: 400 });
+      }
+      // Verify Supabase session from Authorization header
+      const authHeader = req.headers.get('authorization') ?? '';
+      const jwt = authHeader.replace(/^Bearer\s+/i, '').trim();
+      if (!jwt) {
+        return NextResponse.json({ ok: false, error: 'Authentication required to set PIN' }, { status: 401 });
+      }
+      // Verify the JWT belongs to the owner of this tenant
+      const { createClient: createAnonClient } = await import('@supabase/supabase-js');
+      const userClient = createAnonClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        { global: { headers: { Authorization: `Bearer ${jwt}` } } }
+      );
+      const { data: { user } } = await userClient.auth.getUser();
+      if (!user) {
+        return NextResponse.json({ ok: false, error: 'Invalid session' }, { status: 401 });
+      }
+      // Confirm this user owns the tenant
+      const { data: tenantRow } = await db.from('tenants')
+        .select('owner_user_id')
+        .eq('id', tenantId)
+        .single();
+      if (!tenantRow || (tenantRow as { owner_user_id: string }).owner_user_id !== user.id) {
+        return NextResponse.json({ ok: false, error: 'Not authorized for this tenant' }, { status: 403 });
       }
       const hash = hashPin(pin, tenantId);
       await db.from('tenants').update({ supervisor_pin: hash }).eq('id', tenantId);

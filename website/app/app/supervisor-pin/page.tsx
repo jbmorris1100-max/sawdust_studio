@@ -134,13 +134,24 @@ export default function SupervisorPinPage() {
     setError('');
     try {
       const deviceId = getOrCreateDeviceId();
+      // Get the current session JWT to send with first-time PIN creation
+      let sessionJwt = '';
+      if (firstTime) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          sessionJwt = session?.access_token ?? '';
+        } catch { /* best-effort */ }
+      }
       const res = await fetch('/app/api/supervisor-auth', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(sessionJwt ? { 'authorization': `Bearer ${sessionJwt}` } : {}),
+        },
         body: JSON.stringify({
           tenantId: tenant.id,
           action: 'verify',
-          pin: firstTime ? pin : pin,
+          pin,
           deviceId,
         }),
       });
