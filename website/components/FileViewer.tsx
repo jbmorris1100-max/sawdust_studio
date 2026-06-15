@@ -316,9 +316,9 @@ function ImageView({ url }: { url: string }) {
   const [zoom, setZoom] = useState(1);
   return (
     <div onDoubleClick={() => setZoom((z) => (z === 1 ? 2.2 : 1))}
-      style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto', background: '#000', touchAction: 'pinch-zoom' }}>
+      style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto', background: '#000', touchAction: 'pinch-zoom pan-x pan-y' }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={url} alt="" style={{ maxWidth: zoom === 1 ? '100%' : 'none', maxHeight: zoom === 1 ? '100%' : 'none', transform: `scale(${zoom})`, transition: 'transform .2s', transformOrigin: 'center' }} />
+      <img src={url} alt="" style={{ maxWidth: zoom === 1 ? '100%' : 'none', maxHeight: zoom === 1 ? '100%' : 'none', transform: `scale(${zoom})`, transition: 'transform .2s', transformOrigin: 'center', touchAction: 'pinch-zoom pan-x pan-y' }} />
     </div>
   );
 }
@@ -330,9 +330,9 @@ function SvgView({ url }: { url: string }) {
   const [zoom, setZoom] = useState(1);
   return (
     <div onDoubleClick={() => setZoom((z) => (z === 1 ? 2.2 : 1))}
-      style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto', background: '#fff', touchAction: 'pinch-zoom' }}>
+      style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto', background: '#fff', touchAction: 'pinch-zoom pan-x pan-y' }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={url} alt="" style={{ maxWidth: zoom === 1 ? '100%' : 'none', maxHeight: zoom === 1 ? '100%' : 'none', transform: `scale(${zoom})`, transition: 'transform .2s', transformOrigin: 'center' }} />
+      <img src={url} alt="" style={{ maxWidth: zoom === 1 ? '100%' : 'none', maxHeight: zoom === 1 ? '100%' : 'none', transform: `scale(${zoom})`, transition: 'transform .2s', transformOrigin: 'center', touchAction: 'pinch-zoom pan-x pan-y' }} />
     </div>
   );
 }
@@ -675,7 +675,10 @@ export default function FileViewer({ file, onClose }: { file: ViewerFile; onClos
 
   return (
     <div role="dialog" aria-modal="true" onClick={onClose}
-      style={{ position: 'fixed', inset: 0, zIndex: 2000, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      style={{ position: 'fixed', inset: 0, zIndex: 2000, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        // Re-enable pinch-to-zoom inside the viewer; the app-wide pan-y lock
+        // (globals.css html/body/.app-shell) otherwise blocks zooming plans.
+        touchAction: 'pinch-zoom pan-x pan-y' }}>
       <div onClick={(e) => e.stopPropagation()} className="fileviewer-shell"
         onTouchStart={(e) => { touchStartY.current = e.touches[0].clientY; touchDeltaY.current = 0; }}
         onTouchMove={(e) => { touchDeltaY.current = e.touches[0].clientY - touchStartY.current; }}
