@@ -137,7 +137,7 @@ export default function AppPage() {
             {/* Launch buttons */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 48 }}>
               <a
-                href="/app/crew"
+                href={`/join?tenant=${tenant?.id ?? ''}`}
                 className="app-role-card"
               >
                 <div className="app-role-icon" style={{ background: 'rgba(45,225,201,0.1)', color: '#2DE1C9' }}>
