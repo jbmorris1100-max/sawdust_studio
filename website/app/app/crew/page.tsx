@@ -915,6 +915,10 @@ export default function CrewPage() {
 
   // Messages screen — full-screen overlay that slides up from the bottom.
   const [messagesOpen, setMessagesOpen] = useState(false);
+  // Ref so the realtime closure (subscribed once per tenant) always reads the
+  // current open-state without re-subscribing.
+  const messagesOpenRef = useRef(messagesOpen);
+  useEffect(() => { messagesOpenRef.current = messagesOpen; }, [messagesOpen]);
   const [msgMenuOpen,  setMsgMenuOpen]  = useState(false);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Per-device "Clear conversation" — hides messages older than this timestamp
@@ -1020,8 +1024,13 @@ export default function CrewPage() {
             const currentDept = crewDeptRef.current;
             const isRelevant = msg.dept === null || msg.dept === currentDept;
             if (msg.sender_name === 'Supervisor' && isRelevant) {
-              // Only show banner when crew is NOT already viewing the Supervisor thread
-              if (openThreadRef.current !== 'supervisor') {
+              // If the Messages screen is already open, mark read immediately so
+              // the unread badge never ticks up for a conversation that's on
+              // screen. Otherwise surface the new-message banner (unless they're
+              // already viewing the Supervisor thread).
+              if (messagesOpenRef.current) {
+                markSupRead();
+              } else if (openThreadRef.current !== 'supervisor') {
                 const preview = msg.body.length > 70 ? msg.body.slice(0, 67) + '…' : msg.body;
                 setMsgNotification(preview);
                 if (notifTimer.current) clearTimeout(notifTimer.current);
@@ -1029,7 +1038,14 @@ export default function CrewPage() {
               }
             }
           } else if (payload.eventType === 'UPDATE') {
-            setMessages((prev) => prev.map((m) => m.id === payload.new.id ? (payload.new as Message) : m));
+            // Preserve an optimistic read_at if the DB echo hasn't caught up yet,
+            // so the unread badge doesn't flicker back up.
+            setMessages((prev) => prev.map((m) => {
+              if (m.id !== payload.new.id) return m;
+              const incoming = payload.new as Message;
+              if (m.read_at && !incoming.read_at) return { ...incoming, read_at: m.read_at };
+              return incoming;
+            }));
           } else if (payload.eventType === 'DELETE') {
             setMessages((prev) => prev.filter((m) => m.id !== payload.old.id));
           }
@@ -1677,7 +1693,7 @@ export default function CrewPage() {
   // generic part log / QC modal.
   function openScan() {
     if (!requireClockIn()) return;
-    if (crewDept === 'Assembly' || crewDept === 'Production' || crewDept === 'Finishing') {
+    if (crewDept === 'Assembly' || crewDept === 'Production' || crewDept === 'Finishing' || crewDept === 'Craftsman') {
       openAssemblyScan();
     } else {
       void openParts();
@@ -3099,34 +3115,25 @@ export default function CrewPage() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  // Exactly 6 cards in a fixed order. Slot 2 ("Scan") is replaced by the build
-  // timer for the Craftsman dept; every other dept keeps the unified Scan card.
+  // Exactly 6 cards in a fixed order. Slot 2 is the unified "Scan" card for every
+  // department (opens the cabinet scanner / part-log flow). Craftsman build
+  // tracking lives in the CraftsmanBuilds dept view, not in Quick Actions.
   type QuickAction = { label: string; color: string; bg: string; onClick: () => void; icon: React.ReactNode };
 
-  const scanCard: QuickAction = crewDept === 'Craftsman'
-    ? {
-        label: buildStart ? 'Stop Build Timer' : 'Start Build Timer',
-        color: buildStart ? '#F87171' : '#2DE1C9',
-        bg:    buildStart ? 'rgba(248,113,113,0.08)' : 'rgba(45,225,201,0.08)',
-        onClick: buildStart ? () => { void handleStopTimer(); } : openBuildTimerModal,
-        icon: buildStart
-          ? <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
-          : <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
-      }
-    : {
-        label: 'Scan',
-        color: '#5EEAD4', bg: 'rgba(94,234,212,0.08)',
-        onClick: openScan,
-        icon: (
-          <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M3 7V5a2 2 0 0 1 2-2h2"/>
-            <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
-            <path d="M21 17v2a2 2 0 0 1-2 2h-2"/>
-            <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
-            <line x1="7" y1="12" x2="17" y2="12"/>
-          </svg>
-        ),
-      };
+  const scanCard: QuickAction = {
+    label: 'Scan',
+    color: '#5EEAD4', bg: 'rgba(94,234,212,0.08)',
+    onClick: openScan,
+    icon: (
+      <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 7V5a2 2 0 0 1 2-2h2"/>
+        <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
+        <path d="M21 17v2a2 2 0 0 1-2 2h-2"/>
+        <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
+        <line x1="7" y1="12" x2="17" y2="12"/>
+      </svg>
+    ),
+  };
 
   const quickActions: QuickAction[] = [
     {
@@ -3316,58 +3323,6 @@ export default function CrewPage() {
             </div>
           )}
 
-          {/* Quick actions */}
-          <div style={{ marginBottom: 40 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Quick Actions</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              {quickActions.map(({ label, color, bg, onClick, icon }) => (
-                <button
-                  key={label}
-                  onClick={onClick}
-                  style={{
-                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                    gap: 10, padding: '18px 16px', minHeight: 96,
-                    background: 'var(--bg-1)', border: '1px solid var(--line)',
-                    borderRadius: 14, cursor: 'pointer',
-                    transition: 'border-color 0.15s, background 0.15s',
-                    textAlign: 'center', fontFamily: 'inherit',
-                  }}
-                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line-strong)'; (e.currentTarget as HTMLButtonElement).style.background = '#0e1418'; }}
-                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line)'; (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-1)'; }}
-                >
-                  <div style={{ width: 44, height: 44, borderRadius: 12, background: bg, color, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{icon}</div>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{label}</span>
-                </button>
-              ))}
-            </div>
-
-            {/* Full-width Messages button — always accessible */}
-            <button
-              onClick={openMessages}
-              style={{
-                marginTop: 12, width: '100%', minHeight: 64,
-                display: 'flex', alignItems: 'center', gap: 14, padding: '16px 18px',
-                background: 'var(--bg-1)', border: '1px solid var(--line)', borderRadius: 14,
-                cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
-                transition: 'border-color 0.15s, background 0.15s',
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line-strong)'; (e.currentTarget as HTMLButtonElement).style.background = '#0e1418'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line)'; (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-1)'; }}
-            >
-              <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(45,225,201,0.08)', color: '#2DE1C9', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                </svg>
-              </div>
-              <span style={{ flex: 1, fontSize: 15, fontWeight: 600, color: 'var(--ink)' }}>Messages</span>
-              {supUnread > 0 && (
-                <span style={{ flexShrink: 0, minWidth: 22, textAlign: 'center', fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 12, background: 'var(--teal)', color: '#04201c' }}>
-                  {supUnread}
-                </span>
-              )}
-            </button>
-          </div>
-
           {/* ── Production · Cut List ──────────────────────────────────────────── */}
           {crewDept === 'Production' && (
             <div style={{ marginBottom: 40 }}>
@@ -3420,6 +3375,58 @@ export default function CrewPage() {
               })()}
             </div>
           )}
+
+          {/* Quick actions */}
+          <div style={{ marginBottom: 40 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Quick Actions</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              {quickActions.map(({ label, color, bg, onClick, icon }) => (
+                <button
+                  key={label}
+                  onClick={onClick}
+                  style={{
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    gap: 10, padding: '18px 16px', minHeight: 96,
+                    background: 'var(--bg-1)', border: '1px solid var(--line)',
+                    borderRadius: 14, cursor: 'pointer',
+                    transition: 'border-color 0.15s, background 0.15s',
+                    textAlign: 'center', fontFamily: 'inherit',
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line-strong)'; (e.currentTarget as HTMLButtonElement).style.background = '#0e1418'; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line)'; (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-1)'; }}
+                >
+                  <div style={{ width: 44, height: 44, borderRadius: 12, background: bg, color, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{icon}</div>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{label}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Full-width Messages button — always accessible */}
+            <button
+              onClick={openMessages}
+              style={{
+                marginTop: 12, width: '100%', minHeight: 64,
+                display: 'flex', alignItems: 'center', gap: 14, padding: '16px 18px',
+                background: 'var(--bg-1)', border: '1px solid var(--line)', borderRadius: 14,
+                cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                transition: 'border-color 0.15s, background 0.15s',
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line-strong)'; (e.currentTarget as HTMLButtonElement).style.background = '#0e1418'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--line)'; (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-1)'; }}
+            >
+              <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(45,225,201,0.08)', color: '#2DE1C9', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+              </div>
+              <span style={{ flex: 1, fontSize: 15, fontWeight: 600, color: 'var(--ink)' }}>Messages</span>
+              {supUnread > 0 && (
+                <span style={{ flexShrink: 0, minWidth: 22, textAlign: 'center', fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 12, background: 'var(--teal)', color: '#04201c' }}>
+                  {supUnread}
+                </span>
+              )}
+            </button>
+          </div>
 
           {/* ── Craftsman active build timer bar ───────────────────────────────── */}
           {crewDept === 'Craftsman' && buildStart && (

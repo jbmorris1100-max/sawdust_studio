@@ -899,6 +899,12 @@ export default function SupervisorPage() {
 
   // Message thread view — null = inbox, string = dept key ('__broadcast__' for null-dept)
   const [openThread, setOpenThread] = useState<string | null>(null);
+  // Refs so the realtime closure (subscribed once per tenant) reads the current
+  // open thread + latest markThreadRead without re-subscribing.
+  const openThreadRef = useRef<string | null>(openThread);
+  useEffect(() => { openThreadRef.current = openThread; }, [openThread]);
+  const markThreadReadRef = useRef<(key: string) => void>(() => {});
+  useEffect(() => { markThreadReadRef.current = markThreadRead; });
 
   // ── AI tab ──────────────────────────────────────────────────────────────────
   const [aiMode,       setAiMode]       = useState<AiMode>('learn');
@@ -1563,9 +1569,28 @@ export default function SupervisorPage() {
       .channel('rt-messages')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'messages', filter: `tenant_id=eq.${tenantId}` }, (payload) => {
         if (payload.eventType === 'INSERT') {
-          setMessages((prev) => prev.some((m) => m.id === payload.new.id) ? prev : [payload.new as Message, ...prev]);
+          const incoming = payload.new as Message;
+          const key = incoming.dept ?? '__broadcast__';
+          // If the supervisor is already viewing this thread, mark the incoming
+          // crew message read immediately (local + DB) so the unread badge never
+          // ticks up for a conversation that's already on screen.
+          const openHere = openThreadRef.current === key && incoming.sender_name !== 'Supervisor';
+          if (openHere) {
+            const now = new Date().toISOString();
+            setMessages((prev) => prev.some((m) => m.id === incoming.id) ? prev : [{ ...incoming, read_at: now }, ...prev]);
+            void supabase.from('messages').update({ read_at: now }).eq('id', incoming.id);
+            markThreadReadRef.current(key);
+          } else {
+            setMessages((prev) => prev.some((m) => m.id === incoming.id) ? prev : [incoming, ...prev]);
+          }
         } else if (payload.eventType === 'UPDATE') {
-          setMessages((prev) => prev.map((m) => m.id === payload.new.id ? payload.new as Message : m));
+          // Preserve an optimistic read_at if the DB echo hasn't caught up yet.
+          setMessages((prev) => prev.map((m) => {
+            if (m.id !== payload.new.id) return m;
+            const incoming = payload.new as Message;
+            if (m.read_at && !incoming.read_at) return { ...incoming, read_at: m.read_at };
+            return incoming;
+          }));
         } else if (payload.eventType === 'DELETE') {
           setMessages((prev) => prev.filter((m) => m.id !== payload.old.id));
         }

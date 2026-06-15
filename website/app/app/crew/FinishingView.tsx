@@ -532,7 +532,7 @@ export default function FinishingView({ tenantId, showToast, crewName = '', isCl
           </button>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 18px 120px' }}>
+        <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', maxWidth: '100vw', padding: '16px 18px 120px' }}>
 
           {/* Finish spec */}
           {spec && (

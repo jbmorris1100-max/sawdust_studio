@@ -26,6 +26,7 @@ html, body {
   overflow-x: hidden !important;
   max-width: 100vw !important;
   overscroll-behavior-x: none;
+  touch-action: pan-y;
 }
 
 *, *::before, *::after {
@@ -608,6 +609,8 @@ footer {
   overflow-x: hidden;
   width: 100%;
   max-width: 100vw;
+  touch-action: pan-y;
+  overscroll-behavior-x: none;
 }
 
 /* ── Mobile audit final pass ────────────────────────────────── */
