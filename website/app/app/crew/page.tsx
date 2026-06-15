@@ -66,6 +66,25 @@ function useCrewTenant() {
                   router.replace(`/join?tenant=${inviteId}`);
                   return;
                 }
+                // Bind verified identity → crew_name / crew_dept
+                // This ensures the authenticated crew member's name and dept
+                // are always used for time_clock, messages, etc. — never stale
+                // or manually overridden.
+                try {
+                  const { data: cm } = await supabase
+                    .from('crew_members')
+                    .select('name, department')
+                    .eq('id', crewMemberId)
+                    .eq('tenant_id', inviteId)
+                    .single();
+                  if (cm) {
+                    const member = cm as { name: string; department: string | null };
+                    try {
+                      localStorage.setItem('crew_name', member.name);
+                      localStorage.setItem('crew_dept', member.department ?? '');
+                    } catch { /* ignore */ }
+                  }
+                } catch { /* best-effort — stale values remain if lookup fails */ }
               } else {
                 // No session — redirect to join for PIN + biometric setup
                 router.replace(`/join?tenant=${inviteId}`);
@@ -1254,17 +1273,24 @@ export default function CrewPage() {
   // "Not [name]?" — clear the saved identity so a different crew member can use
   // this same device, then drop straight into the clock-in lookup with a blank name.
   function switchUser() {
+    // Clear the crew session so the join page requires re-authentication.
+    // This prevents crew from switching to a different identity without
+    // going through PIN + Face ID again.
+    const tenantId = tenant?.id;
     try {
       localStorage.removeItem('crew_name');
       localStorage.removeItem('crew_dept');
+      if (tenantId) {
+        localStorage.removeItem(`crew_session_${tenantId}`);
+        localStorage.removeItem(`crew_member_id_${tenantId}`);
+      }
     } catch (_) {}
-    setCrewName('');
-    setCrewDept('');
-    setClockName('');
-    setClockDept('');
-    setOpenEntry(null);
-    setClockStep('lookup');
-    setModal('clock');
+    // Redirect to join page for re-authentication
+    if (tenantId) {
+      window.location.replace(`/join?tenant=${tenantId}`);
+    } else {
+      window.location.replace('/join');
+    }
   }
 
   // Gate any work action behind an open shift. Returns true if the crew member

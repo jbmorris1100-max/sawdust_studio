@@ -326,7 +326,12 @@ function JoinInner() {
               {/* Step: WebAuthn registration */}
               {step === 'webauthn-register' && selected && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16, textAlign: 'center' }}>
-                  <div style={{ fontSize: 40 }}>🔒</div>
+                  <div style={{ display: 'flex', justifyContent: 'center' }}>
+                    <svg width={48} height={48} viewBox="0 0 24 24" fill="none" stroke="#2DE1C9" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                      <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                    </svg>
+                  </div>
                   <div>
                     <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>Set up Face ID</div>
                     <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 6, lineHeight: 1.6 }}>
@@ -347,7 +352,11 @@ function JoinInner() {
               {/* Step: WebAuthn authentication */}
               {step === 'webauthn-auth' && selected && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16, textAlign: 'center' }}>
-                  <div style={{ fontSize: 40 }}>👋</div>
+                  <div style={{ display: 'flex', justifyContent: 'center' }}>
+                    <svg width={48} height={48} viewBox="0 0 24 24" fill="none" stroke="#2DE1C9" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                  </div>
                   <div>
                     <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>Welcome back, {selected.name.split(' ')[0]}</div>
                     <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 6 }}>Use Face ID or Touch ID to sign in</div>
@@ -367,7 +376,12 @@ function JoinInner() {
               {/* Step: done */}
               {step === 'done' && (
                 <div style={{ textAlign: 'center', padding: '20px 0' }}>
-                  <div style={{ fontSize: 40, marginBottom: 12 }}>✓</div>
+                  <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+                    <svg width={48} height={48} viewBox="0 0 24 24" fill="none" stroke="#2DE1C9" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                      <polyline points="22 4 12 14.01 9 11.01"/>
+                    </svg>
+                  </div>
                   <div style={{ fontSize: 16, fontWeight: 800, color: '#2DE1C9' }}>Signed in!</div>
                   <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 6 }}>Taking you to the app…</div>
                 </div>
