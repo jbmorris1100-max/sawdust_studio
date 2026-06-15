@@ -16,6 +16,8 @@ type CrewMember = {
   last_active: string | null;
   notes: string | null;
   hourly_rate: number | null;
+  initial_pin: string | null;
+  pin_set_at: string | null;
 };
 
 interface Props {
@@ -104,6 +106,12 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [actioning, setActioning] = useState<Record<string, boolean>>({});
 
+  // PIN management
+  const [pinMemberId, setPinMemberId] = useState<string | null>(null);
+  const [newPin,      setNewPin]      = useState('');
+  const [pinSaving,   setPinSaving]   = useState(false);
+  const [pinError,    setPinError]    = useState('');
+
   const inviteUrl = `https://inlineiq.app/join?tenant=${tenant.id}`;
 
   // ── Load ────────────────────────────────────────────────────────────────────
@@ -111,7 +119,7 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
     try {
       const { data, error } = await supabase
         .from('crew_members')
-        .select('id, tenant_id, name, department, role, status, joined_at, last_active, notes, hourly_rate')
+        .select('id, tenant_id, name, department, role, status, joined_at, last_active, notes, hourly_rate, initial_pin, pin_set_at')
         .eq('tenant_id', tenant.id)
         .order('name', { ascending: true });
       if (error) throw error;
@@ -201,7 +209,7 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
           hourly_rate: (rate != null && !Number.isNaN(rate)) ? rate : null,
           notes:       addNotes.trim() || null,
         })
-        .select('id, tenant_id, name, department, role, status, joined_at, last_active, notes, hourly_rate')
+        .select('id, tenant_id, name, department, role, status, joined_at, last_active, notes, hourly_rate, initial_pin, pin_set_at')
         .single();
       if (error) throw error;
       // Optimistic insert (realtime will dedupe).
@@ -274,6 +282,32 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
       showToast('Could not remove crew member', true);
     } finally {
       setActioning((p) => ({ ...p, [m.id]: false }));
+    }
+  }
+
+  // ── Set / reset a crew member's sign-in PIN ───────────────────────────────────
+  async function setCrewPin(crewMemberId: string) {
+    if (!newPin || newPin.length < 4 || pinSaving) return;
+    setPinSaving(true);
+    setPinError('');
+    try {
+      const supToken  = localStorage.getItem(`sup_trust_${tenant.id}`) ?? localStorage.getItem(`sup_session_${tenant.id}`) ?? '';
+      const deviceId  = localStorage.getItem('sup_device_id') ?? '';
+      const res = await fetch('/app/api/crew-auth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'set-pin', tenantId: tenant.id, crewMemberId, pin: newPin, supToken, deviceId }),
+      });
+      const data = await res.json() as { ok: boolean; error?: string };
+      if (!data.ok) throw new Error(data.error ?? 'Could not set PIN');
+      setPinMemberId(null);
+      setNewPin('');
+      showToast('PIN set successfully');
+      void load();
+    } catch (e) {
+      setPinError(e instanceof Error ? e.message : 'Could not set PIN');
+    } finally {
+      setPinSaving(false);
     }
   }
 
@@ -388,6 +422,9 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
                               <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: 'rgba(94,234,212,0.1)', color: 'var(--teal)' }}>{m.department}</span>
                             )}
                             <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: roleMeta.bg, color: roleMeta.color }}>{roleMeta.label}</span>
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: m.initial_pin ? 'rgba(52,211,153,0.12)' : 'rgba(251,191,36,0.12)', color: m.initial_pin ? '#34D399' : '#FBBF24' }}>
+                              {m.initial_pin ? 'PIN ✓' : 'No PIN'}
+                            </span>
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: inactive ? '#8BA5A0' : '#34D399', flexShrink: 0 }} />
@@ -472,6 +509,10 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
                           ) : (
                             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingTop: 14 }}>
                               <button className="btn btn-ghost" style={{ fontSize: 12, padding: '7px 14px' }} onClick={() => startEdit(m)}>Edit</button>
+                              <button className="btn btn-ghost" style={{ fontSize: 12, padding: '7px 14px', color: 'var(--teal)', borderColor: 'rgba(45,225,201,0.3)' }}
+                                onClick={() => { setPinMemberId(m.id); setNewPin(''); setPinError(''); }}>
+                                {m.initial_pin ? 'Reset PIN' : 'Set PIN'}
+                              </button>
                               {inactive ? (
                                 <button className="btn btn-ghost" style={{ fontSize: 12, padding: '7px 14px', color: '#34D399', borderColor: 'rgba(52,211,153,0.3)', opacity: busy ? 0.5 : 1 }} onClick={() => void setStatus(m, 'active')} disabled={busy}>
                                   Reactivate
@@ -570,6 +611,48 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
           </div>
         </div>
       )}
+
+      {/* Set PIN modal */}
+      {pinMemberId && (() => {
+        const m = members.find((x) => x.id === pinMemberId);
+        if (!m) return null;
+        return (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 20 }}
+            onClick={() => !pinSaving && setPinMemberId(null)}>
+            <div className="portal-card" style={{ width: '100%', maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 16 }} onClick={(e) => e.stopPropagation()}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: 'var(--ink)' }}>{m.initial_pin ? 'Reset PIN' : 'Set PIN'} — {m.name}</h3>
+                <button onClick={() => !pinSaving && setPinMemberId(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 2, display: 'flex' }}>
+                  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--ink-mute)', lineHeight: 1.6 }}>
+                Set a 4–8 digit PIN for {m.name.split(' ')[0]}. They will use this to sign in on new devices before setting up Face ID.
+              </div>
+              <input
+                type="password"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={8}
+                value={newPin}
+                onChange={(e) => { setNewPin(e.target.value.replace(/\D/g, '')); setPinError(''); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') void setCrewPin(m.id); }}
+                placeholder="4–8 digit PIN"
+                autoFocus
+                style={{ textAlign: 'center', fontSize: 24, letterSpacing: '0.3em', padding: '14px', borderRadius: 12, border: `1px solid ${pinError ? 'rgba(248,113,113,0.5)' : 'var(--line-strong)'}`, background: 'var(--bg-1)', color: 'var(--ink)', fontFamily: 'inherit', outline: 'none' }}
+              />
+              {pinError && <div style={{ fontSize: 12, color: '#F87171', textAlign: 'center' }}>{pinError}</div>}
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setPinMemberId(null)} disabled={pinSaving}>Cancel</button>
+                <button className="btn btn-primary" style={{ flex: 1, justifyContent: 'center', opacity: (newPin.length < 4 || pinSaving) ? 0.5 : 1 }}
+                  onClick={() => void setCrewPin(m.id)} disabled={newPin.length < 4 || pinSaving}>
+                  {pinSaving ? 'Setting…' : 'Set PIN'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

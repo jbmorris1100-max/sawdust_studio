@@ -47,7 +47,32 @@ function useCrewTenant() {
           const { data } = await supabase.from('tenants').select('id, shop_name, subscription_status, trial_ends_at, departments, ai_mode, plan, is_partner, partner_discount, partner_trial_ends_at').eq('id', inviteId).single();
           if (!cancelled && data) {
             try { localStorage.setItem('crew_tenant_id', inviteId); } catch (_) {}
-            setTenant(data as Tenant); setEmail(''); setLoading(false);
+            setTenant(data as Tenant); setEmail('');
+            // Verify crew session is still valid
+            try {
+              const sessionToken  = localStorage.getItem(`crew_session_${inviteId}`);
+              const crewMemberId  = localStorage.getItem(`crew_member_id_${inviteId}`);
+              if (sessionToken && crewMemberId) {
+                const res = await fetch('/app/api/crew-auth', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ action: 'verify-session', tenantId: inviteId, crewMemberId, sessionToken }),
+                });
+                const { ok } = await res.json() as { ok: boolean };
+                if (!ok) {
+                  // Session invalid — clear and redirect to join
+                  localStorage.removeItem(`crew_session_${inviteId}`);
+                  localStorage.removeItem(`crew_member_id_${inviteId}`);
+                  router.replace(`/join?tenant=${inviteId}`);
+                  return;
+                }
+              } else {
+                // No session — redirect to join for PIN + biometric setup
+                router.replace(`/join?tenant=${inviteId}`);
+                return;
+              }
+            } catch { /* network error — allow through, session checked on next action */ }
+            setLoading(false);
             return;
           }
         } catch (_) {}

@@ -1,10 +1,18 @@
 'use client';
-import { useEffect, useState, Suspense } from 'react';
+import { useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
+import {
+  startRegistration,
+  startAuthentication,
+} from '@simplewebauthn/browser';
 
-// ── Spinner ───────────────────────────────────────────────────────────────────
+type CrewMember = { id: string; name: string; department: string | null; initial_pin: string | null };
+type Step = 'pick' | 'pin' | 'webauthn-register' | 'webauthn-auth' | 'done';
+
+const SESSION_KEY = (tenantId: string) => `crew_session_${tenantId}`;
+const CREW_ID_KEY = (tenantId: string) => `crew_member_id_${tenantId}`;
 
 function Spinner() {
   return (
@@ -15,38 +23,209 @@ function Spinner() {
   );
 }
 
-// ── Inner component (uses useSearchParams — must be wrapped in Suspense) ──────
-
 function JoinInner() {
   const searchParams = useSearchParams();
   const router       = useRouter();
-  const tenantId     = searchParams.get('tenant');
+  const tenantId     = searchParams.get('tenant') ?? '';
 
-  const [shopName, setShopName] = useState<string | null>(null);
-  const [notFound, setNotFound] = useState(false);
-  const [loading,  setLoading]  = useState(true);
+  const [shopName,   setShopName]   = useState<string | null>(null);
+  const [notFound,   setNotFound]   = useState(false);
+  const [loading,    setLoading]    = useState(true);
+  const [crew,       setCrew]       = useState<CrewMember[]>([]);
+  const [step,       setStep]       = useState<Step>('pick');
+  const [selected,   setSelected]   = useState<CrewMember | null>(null);
+  const [pin,        setPin]        = useState('');
+  const [pinError,   setPinError]   = useState('');
+  const [shake,      setShake]      = useState(false);
+  const [busy,       setBusy]       = useState(false);
+  const [regToken,   setRegToken]   = useState('');
+  const [deviceName] = useState('');
 
-  useEffect(() => {
-    if (!tenantId) { setNotFound(true); setLoading(false); return; }
-    supabase
-      .from('tenants')
-      .select('id, shop_name')
-      .eq('id', tenantId)
-      .single()
-      .then(({ data }) => {
-        if (!data) { setNotFound(true); }
-        else       { setShopName(data.shop_name); }
-        setLoading(false);
-      });
-  }, [tenantId]);
+  const triggerShake = (msg: string) => {
+    setPinError(msg);
+    setShake(true);
+    setTimeout(() => setShake(false), 500);
+  };
 
-  function enterAsCrew() {
-    if (!tenantId) return;
+  const enterCrew = useCallback((crewMemberId: string, sessionToken: string) => {
     try {
       localStorage.setItem('crew_tenant_id', tenantId);
-      localStorage.setItem('@inline_join_tenant_id', tenantId); // legacy key
-    } catch (_) {}
+      localStorage.setItem('@inline_join_tenant_id', tenantId);
+      localStorage.setItem(SESSION_KEY(tenantId), sessionToken);
+      localStorage.setItem(CREW_ID_KEY(tenantId), crewMemberId);
+    } catch { /* ignore */ }
     router.push('/app/crew');
+  }, [tenantId, router]);
+
+  // Load tenant + check for existing session
+  useEffect(() => {
+    if (!tenantId) { setNotFound(true); setLoading(false); return; }
+    (async () => {
+      const { data } = await supabase.from('tenants')
+        .select('id, shop_name').eq('id', tenantId).single();
+      if (!data) { setNotFound(true); setLoading(false); return; }
+      setShopName(data.shop_name);
+
+      // Check existing session
+      try {
+        const sessionToken  = localStorage.getItem(SESSION_KEY(tenantId));
+        const crewMemberId  = localStorage.getItem(CREW_ID_KEY(tenantId));
+        if (sessionToken && crewMemberId) {
+          const res = await fetch('/app/api/crew-auth', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action: 'verify-session', tenantId, crewMemberId, sessionToken }),
+          });
+          const { ok } = await res.json() as { ok: boolean };
+          if (ok) { router.push('/app/crew'); return; }
+          localStorage.removeItem(SESSION_KEY(tenantId));
+        }
+      } catch { /* fall through to join flow */ }
+
+      // Load active crew members for picker
+      const { data: crewData } = await supabase
+        .from('crew_members')
+        .select('id, name, department, initial_pin')
+        .eq('tenant_id', tenantId)
+        .eq('status', 'active')
+        .order('name');
+      setCrew((crewData as CrewMember[] | null) ?? []);
+      setLoading(false);
+    })();
+  }, [tenantId, router]);
+
+  // User picks their name
+  function selectMember(m: CrewMember) {
+    setSelected(m);
+    setPin('');
+    setPinError('');
+    // Check if this device already has a WebAuthn credential for this member
+    // by attempting auth-options — if credentials exist, go straight to biometric
+    setBusy(true);
+    fetch('/app/api/crew-auth', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'auth-options', tenantId, crewMemberId: m.id }),
+    }).then(async (res) => {
+      const data = await res.json() as { ok?: boolean; error?: string };
+      if (res.ok && !data.error) {
+        // Credentials exist — go to biometric auth
+        setStep('webauthn-auth');
+      } else {
+        // No credentials yet — go to PIN entry for first-time setup
+        setStep('pin');
+      }
+    }).catch(() => { setStep('pin'); })
+    .finally(() => setBusy(false));
+  }
+
+  // PIN submission — verify then get WebAuthn registration options
+  async function submitPin() {
+    if (!selected || !pin || busy) return;
+    if (pin.length < 4) { triggerShake('PIN must be at least 4 digits'); return; }
+    setBusy(true);
+    setPinError('');
+    try {
+      const res = await fetch('/app/api/crew-auth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'verify-pin', tenantId, crewMemberId: selected.id, pin }),
+      });
+      const data = await res.json() as { ok: boolean; registrationToken?: string; error?: string };
+      if (!data.ok) { triggerShake(data.error ?? 'Incorrect PIN'); setPin(''); setBusy(false); return; }
+      setRegToken(data.registrationToken ?? '');
+      setStep('webauthn-register');
+    } catch { triggerShake('Network error — try again'); }
+    finally { setBusy(false); }
+  }
+
+  // WebAuthn registration (first time on this device)
+  async function registerBiometric() {
+    if (!selected || !regToken || busy) return;
+    setBusy(true);
+    try {
+      // Get registration options from server
+      const optRes = await fetch('/app/api/crew-auth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'reg-options', tenantId, crewMemberId: selected.id, registrationToken: regToken }),
+      });
+      if (!optRes.ok) throw new Error('Could not get registration options');
+      const options = await optRes.json();
+
+      // Start WebAuthn registration (triggers Face ID / Touch ID)
+      const credential = await startRegistration({ optionsJSON: options });
+
+      // Verify with server and get session token
+      const verRes = await fetch('/app/api/crew-auth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          action: 'reg-verify',
+          tenantId,
+          crewMemberId: selected.id,
+          registrationToken: regToken,
+          credential: JSON.stringify(credential),
+          deviceName: deviceName || navigator.userAgent.slice(0, 50),
+        }),
+      });
+      const verData = await verRes.json() as { ok: boolean; sessionToken?: string; error?: string };
+      if (!verData.ok || !verData.sessionToken) throw new Error(verData.error ?? 'Registration failed');
+      setStep('done');
+      setTimeout(() => enterCrew(selected.id, verData.sessionToken!), 800);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Registration failed';
+      if (msg.includes('NotAllowedError') || msg.includes('cancelled')) {
+        setPinError('Face ID was cancelled — try again');
+      } else {
+        setPinError(msg);
+      }
+      setStep('pin'); // fall back to PIN
+    } finally { setBusy(false); }
+  }
+
+  // WebAuthn authentication (returning device)
+  async function authenticateBiometric() {
+    if (!selected || busy) return;
+    setBusy(true);
+    try {
+      const optRes = await fetch('/app/api/crew-auth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'auth-options', tenantId, crewMemberId: selected.id }),
+      });
+      if (!optRes.ok) throw new Error('Could not get auth options');
+      const options = await optRes.json();
+
+      const credential = await startAuthentication({ optionsJSON: options });
+
+      const verRes = await fetch('/app/api/crew-auth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          action: 'auth-verify',
+          tenantId,
+          crewMemberId: selected.id,
+          credential: JSON.stringify(credential),
+        }),
+      });
+      const verData = await verRes.json() as { ok: boolean; sessionToken?: string; error?: string };
+      if (!verData.ok || !verData.sessionToken) throw new Error(verData.error ?? 'Authentication failed');
+      setStep('done');
+      setTimeout(() => enterCrew(selected.id, verData.sessionToken!), 800);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Authentication failed';
+      if (msg.includes('NotAllowedError') || msg.includes('cancelled')) {
+        // User cancelled — offer PIN fallback
+        setStep('pin');
+        setPinError('Face ID cancelled — enter your PIN instead');
+      } else if (msg.includes('inactive')) {
+        setPinError('Your account has been deactivated — contact your supervisor');
+      } else {
+        setPinError(msg);
+        setStep('pin');
+      }
+    } finally { setBusy(false); }
   }
 
   if (loading) return <Spinner />;
@@ -54,62 +233,145 @@ function JoinInner() {
   return (
     <>
       <BgLayers />
+      <style>{`
+        @keyframes spin{to{transform:rotate(360deg)}}
+        @keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}
+      `}</style>
       <div style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 24px' }}>
-
-        <LogoMark size={48} />
-        <div style={{ marginTop: 8, fontSize: 18, fontWeight: 700, color: 'var(--ink)' }}>
+        <LogoMark size={44} />
+        <div style={{ marginTop: 6, fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>
           inline<b style={{ color: 'var(--teal)' }}>IQ</b>
         </div>
 
         {notFound ? (
           <div style={{ marginTop: 48, textAlign: 'center', maxWidth: 400 }}>
-            <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
-              <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="1.6" strokeLinecap="round">
-                <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
-              </svg>
-            </div>
             <h2 style={{ fontSize: 22, fontWeight: 800, color: 'var(--ink)', marginBottom: 10 }}>Invalid invite link</h2>
             <p style={{ fontSize: 14, color: 'var(--ink-mute)', lineHeight: 1.6 }}>
-              This link may have expired or been revoked. Ask your supervisor to share a new one.
+              This link may have expired or been revoked. Ask your supervisor for a new one.
             </p>
           </div>
         ) : (
-          <div style={{ marginTop: 48, width: '100%', maxWidth: 400, textAlign: 'center' }}>
-            <div style={{ background: '#0a0d10', border: '1px solid rgba(94,234,212,0.14)', borderRadius: 20, padding: '36px 28px' }}>
-              <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(45,225,201,0.1)', border: '1px solid rgba(45,225,201,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
-                <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="#2DE1C9" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                  <circle cx="9" cy="7" r="4"/>
-                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-                  <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                </svg>
+          <div style={{ marginTop: 40, width: '100%', maxWidth: 380 }}>
+            <div style={{ background: '#0a0d10', border: '1px solid rgba(94,234,212,0.14)', borderRadius: 20, padding: '32px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+              {/* Shop name */}
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 14, color: 'var(--ink-mute)', marginBottom: 4 }}>Signing in to</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: '#2DE1C9' }}>{shopName}</div>
               </div>
 
-              <h2 style={{ fontSize: 22, fontWeight: 800, color: 'var(--ink)', letterSpacing: '-0.3px', marginBottom: 10 }}>
-                You&apos;ve been invited to join
-              </h2>
-              <p style={{ fontSize: 20, fontWeight: 700, color: '#2DE1C9', marginBottom: 8 }}>
-                {shopName}
-              </p>
-              <p style={{ fontSize: 14, color: 'var(--ink-mute)', lineHeight: 1.6, marginBottom: 32 }}>
-                on InlineIQ — your shop&apos;s crew operations platform.
-              </p>
+              {/* Step: pick name */}
+              {step === 'pick' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)', textAlign: 'center' }}>Who are you?</div>
+                  {crew.length === 0 ? (
+                    <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--ink-mute)', padding: '20px 0' }}>
+                      No crew members set up yet. Ask your supervisor to add you.
+                    </div>
+                  ) : (
+                    crew.map((m) => (
+                      <button key={m.id} onClick={() => !busy && selectMember(m)} disabled={busy}
+                        style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', borderRadius: 12, background: 'var(--bg-1)', border: '1px solid var(--line)', cursor: busy ? 'wait' : 'pointer', fontFamily: 'inherit', textAlign: 'left', opacity: busy ? 0.7 : 1 }}>
+                        <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'rgba(45,225,201,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 15, fontWeight: 700, color: '#2DE1C9' }}>
+                          {m.name.charAt(0).toUpperCase()}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{m.name}</div>
+                          {m.department && <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{m.department}</div>}
+                        </div>
+                        {!m.initial_pin && (
+                          <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(251,191,36,0.14)', color: '#FBBF24', flexShrink: 0 }}>No PIN</span>
+                        )}
+                        {busy && <div style={{ marginLeft: 'auto', width: 16, height: 16, borderRadius: '50%', border: '2px solid rgba(45,225,201,0.2)', borderTopColor: '#2DE1C9', animation: 'spin 0.7s linear infinite' }} />}
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
 
-              <button
-                onClick={enterAsCrew}
-                style={{
-                  width: '100%', background: '#2DE1C9', color: '#001917',
-                  border: 'none', borderRadius: 12, padding: '16px',
-                  fontSize: 16, fontWeight: 700, cursor: 'pointer',
-                  fontFamily: 'inherit',
-                }}
-              >
-                Enter as Crew →
-              </button>
+              {/* Step: PIN entry */}
+              {(step === 'pin') && selected && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <button onClick={() => { setStep('pick'); setSelected(null); setPinError(''); }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', fontSize: 13, fontFamily: 'inherit', padding: 0, alignSelf: 'flex-start' }}>
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+                    Back
+                  </button>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>Hi, {selected.name.split(' ')[0]}</div>
+                    <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 4 }}>Enter your PIN to continue</div>
+                  </div>
+                  <div style={{ animation: shake ? 'shake 0.4s ease-in-out' : 'none' }}>
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={8}
+                      value={pin}
+                      onChange={(e) => { setPin(e.target.value.replace(/\D/g, '')); setPinError(''); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') void submitPin(); }}
+                      placeholder="••••"
+                      autoFocus
+                      style={{ width: '100%', textAlign: 'center', fontSize: 28, letterSpacing: '0.3em', padding: '16px', borderRadius: 12, border: `1px solid ${pinError ? 'rgba(248,113,113,0.5)' : 'var(--line-strong)'}`, background: 'var(--bg-1)', color: 'var(--ink)', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
+                    />
+                    {pinError && <div style={{ marginTop: 8, fontSize: 12, color: '#F87171', textAlign: 'center' }}>{pinError}</div>}
+                  </div>
+                  <button onClick={() => void submitPin()} disabled={pin.length < 4 || busy}
+                    style={{ width: '100%', padding: '15px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', border: 'none', background: pin.length < 4 || busy ? 'var(--bg-1)' : '#2DE1C9', color: pin.length < 4 || busy ? 'var(--ink-mute)' : '#04201c', cursor: pin.length < 4 || busy ? 'not-allowed' : 'pointer' }}>
+                    {busy ? 'Checking…' : 'Continue'}
+                  </button>
+                </div>
+              )}
 
-              <p style={{ marginTop: 16, fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.5 }}>
-                No account needed. Your supervisor has already set everything up.
-              </p>
+              {/* Step: WebAuthn registration */}
+              {step === 'webauthn-register' && selected && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16, textAlign: 'center' }}>
+                  <div style={{ fontSize: 40 }}>🔒</div>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>Set up Face ID</div>
+                    <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 6, lineHeight: 1.6 }}>
+                      Register your face or fingerprint so you can sign in instantly next time — no PIN needed.
+                    </div>
+                  </div>
+                  {pinError && <div style={{ fontSize: 12, color: '#F87171' }}>{pinError}</div>}
+                  <button onClick={() => void registerBiometric()} disabled={busy}
+                    style={{ width: '100%', padding: '15px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', border: 'none', background: busy ? 'var(--bg-1)' : '#2DE1C9', color: busy ? 'var(--ink-mute)' : '#04201c', cursor: busy ? 'wait' : 'pointer' }}>
+                    {busy ? 'Setting up…' : 'Set Up Face ID / Touch ID'}
+                  </button>
+                  <button onClick={() => enterCrew(selected.id, '')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--ink-mute)', fontFamily: 'inherit', padding: 0 }}>
+                    Skip for now
+                  </button>
+                </div>
+              )}
+
+              {/* Step: WebAuthn authentication */}
+              {step === 'webauthn-auth' && selected && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16, textAlign: 'center' }}>
+                  <div style={{ fontSize: 40 }}>👋</div>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>Welcome back, {selected.name.split(' ')[0]}</div>
+                    <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 6 }}>Use Face ID or Touch ID to sign in</div>
+                  </div>
+                  {pinError && <div style={{ fontSize: 12, color: '#F87171' }}>{pinError}</div>}
+                  <button onClick={() => void authenticateBiometric()} disabled={busy}
+                    style={{ width: '100%', padding: '15px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', border: 'none', background: busy ? 'var(--bg-1)' : '#2DE1C9', color: busy ? 'var(--ink-mute)' : '#04201c', cursor: busy ? 'wait' : 'pointer' }}>
+                    {busy ? 'Verifying…' : 'Sign In with Face ID'}
+                  </button>
+                  <button onClick={() => { setStep('pin'); setPinError(''); }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--ink-mute)', fontFamily: 'inherit', padding: 0 }}>
+                    Use PIN instead
+                  </button>
+                </div>
+              )}
+
+              {/* Step: done */}
+              {step === 'done' && (
+                <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                  <div style={{ fontSize: 40, marginBottom: 12 }}>✓</div>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: '#2DE1C9' }}>Signed in!</div>
+                  <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 6 }}>Taking you to the app…</div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -117,8 +379,6 @@ function JoinInner() {
     </>
   );
 }
-
-// ── Page export (Suspense boundary required for useSearchParams) ──────────────
 
 export default function JoinPage() {
   return (

@@ -10,6 +10,8 @@
     "seed": "node scripts/seed-test-user.js"
   },
   "dependencies": {
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.1",
     "@stripe/stripe-js": "^9.7.0",
     "@supabase/supabase-js": "^2.105.3",
     "@zxing/library": "^0.23.0",
