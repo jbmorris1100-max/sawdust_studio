@@ -35,6 +35,8 @@ function useCrewTenant() {
   const [loading, setLoading] = useState(true);
   const [tenant,  setTenant]  = useState<Tenant | null>(null);
   const [email,   setEmail]   = useState('');
+  const [boundName, setBoundName] = useState('');
+  const [boundDept, setBoundDept] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -83,6 +85,8 @@ function useCrewTenant() {
                       localStorage.setItem('crew_name', member.name);
                       localStorage.setItem('crew_dept', member.department ?? '');
                     } catch { /* ignore */ }
+                    setBoundName(member.name);
+                    setBoundDept(member.department ?? '');
                   }
                 } catch { /* best-effort — stale values remain if lookup fails */ }
               } else {
@@ -111,7 +115,7 @@ function useCrewTenant() {
     return () => { cancelled = true; };
   }, [router]);
 
-  return { loading, tenant, email };
+  return { loading, tenant, email, boundName, boundDept };
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -627,7 +631,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function CrewPage() {
-  const { loading: sessionLoading, tenant } = useCrewTenant();
+  const { loading: sessionLoading, tenant, boundName, boundDept } = useCrewTenant();
   // Department list for every crew dropdown — from tenant, falling back to defaults.
   const deptOptions = getDepartments(tenant);
   // Push destinations from the production cutlist — every tenant dept except
@@ -934,10 +938,13 @@ export default function CrewPage() {
     showToast('Conversation cleared');
   }
 
-  // Load localStorage identity + restore in-progress timers
+  // Load localStorage identity + restore in-progress timers.
+  // Prefer the authenticated identity (boundName/boundDept) from useCrewTenant
+  // over localStorage so the verified name/dept apply immediately on first
+  // paint — no refresh needed after WebAuthn auth.
   useEffect(() => {
-    const n = localStorage.getItem('crew_name') ?? '';
-    const d = localStorage.getItem('crew_dept') ?? '';
+    const n = boundName || localStorage.getItem('crew_name') || '';
+    const d = boundDept || localStorage.getItem('crew_dept') || '';
     setCrewName(n);
     setCrewDept(d);
     const id    = localStorage.getItem('craftsman_build_id');
@@ -961,7 +968,7 @@ export default function CrewPage() {
       setOnBreak(true);
       setBreakStartTime(breakStart);
     }
-  }, []);
+  }, [boundName, boundDept]);
 
   // Tick every second while a build timer is running
   useEffect(() => {
