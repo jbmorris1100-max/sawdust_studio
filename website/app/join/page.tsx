@@ -131,9 +131,18 @@ function JoinInner() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ action: 'verify-pin', tenantId, crewMemberId: selected.id, pin }),
       });
-      const data = await res.json() as { ok: boolean; registrationToken?: string; error?: string };
+      const data = await res.json() as { ok: boolean; registrationToken?: string; sessionToken?: string; error?: string };
       if (!data.ok) { triggerShake(data.error ?? 'Incorrect PIN'); setPin(''); setBusy(false); return; }
       setRegToken(data.registrationToken ?? '');
+      // Store the PIN session token now — used if crew skip biometric setup
+      if (data.sessionToken) {
+        try {
+          localStorage.setItem(SESSION_KEY(tenantId), data.sessionToken);
+          localStorage.setItem(CREW_ID_KEY(tenantId), selected.id);
+          localStorage.setItem('crew_tenant_id', tenantId);
+          localStorage.setItem('@inline_join_tenant_id', tenantId);
+        } catch { /* ignore */ }
+      }
       setStep('webauthn-register');
     } catch { triggerShake('Network error — try again'); }
     finally { setBusy(false); }
@@ -343,8 +352,10 @@ function JoinInner() {
                     style={{ width: '100%', padding: '15px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', border: 'none', background: busy ? 'var(--bg-1)' : '#2DE1C9', color: busy ? 'var(--ink-mute)' : '#04201c', cursor: busy ? 'wait' : 'pointer' }}>
                     {busy ? 'Setting up…' : 'Set Up Face ID / Touch ID'}
                   </button>
-                  <button onClick={() => enterCrew(selected.id, '')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--ink-mute)', fontFamily: 'inherit', padding: 0 }}>
-                    Skip for now
+                  <button
+                    onClick={() => router.push('/app/crew')}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--ink-mute)', fontFamily: 'inherit', padding: 0 }}>
+                    Skip — use PIN every time
                   </button>
                 </div>
               )}

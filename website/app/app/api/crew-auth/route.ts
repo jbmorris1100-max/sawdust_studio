@@ -17,7 +17,7 @@ import type {
 //
 // Actions:
 //   set-pin        { tenantId, crewMemberId, pin, supToken, deviceId } → { ok }
-//   verify-pin     { tenantId, crewMemberId, pin } → { ok, registrationToken? }
+//   verify-pin     { tenantId, crewMemberId, pin } → { ok, registrationToken?, sessionToken? }
 //   reg-options    { tenantId, crewMemberId, registrationToken } → WebAuthn options
 //   reg-verify     { tenantId, crewMemberId, registrationToken, credential, deviceName } → { ok, sessionToken }
 //   auth-options   { tenantId, crewMemberId } → WebAuthn options
@@ -180,7 +180,14 @@ export async function POST(req: Request) {
       type:           'pin-verified',
       expires_at:     new Date(Date.now() + 10 * 60000).toISOString(),
     });
-    return NextResponse.json({ ok: true, registrationToken: regToken });
+    // Issue both a registration token (for WebAuthn setup) and a PIN-only
+    // session token so crew who skip biometrics can still enter the app.
+    const pinSessionToken = makeSessionToken(tenantId, crewMemberId, 'pin-only');
+    return NextResponse.json({
+      ok: true,
+      registrationToken: regToken,
+      sessionToken: pinSessionToken,
+    });
   }
 
   // ── reg-options ────────────────────────────────────────────────────────────
