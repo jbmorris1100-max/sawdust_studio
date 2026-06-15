@@ -90,6 +90,7 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
   const [addName,  setAddName]  = useState('');
   const [addDept,  setAddDept]  = useState('');
   const [addRole,  setAddRole]  = useState('crew');
+  const [addRate,  setAddRate]  = useState('');
   const [addNotes, setAddNotes] = useState('');
   const [addSaving, setAddSaving] = useState(false);
 
@@ -179,7 +180,7 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
 
   // ── Add member ────────────────────────────────────────────────────────────────
   function openAdd() {
-    setAddName(''); setAddDept(departments[0] ?? ''); setAddRole('crew'); setAddNotes('');
+    setAddName(''); setAddDept(departments[0] ?? ''); setAddRole('crew'); setAddRate(''); setAddNotes('');
     setShowAdd(true);
   }
 
@@ -188,15 +189,17 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
     if (!name || addSaving) return;
     setAddSaving(true);
     try {
+      const rate = addRate.trim() === '' ? null : Number(addRate);
       const { data, error } = await supabase
         .from('crew_members')
         .insert({
-          tenant_id:  tenant.id,
+          tenant_id:   tenant.id,
           name,
-          department: addDept || null,
-          role:       addRole,
-          status:     'active',
-          notes:      addNotes.trim() || null,
+          department:  addDept || null,
+          role:        addRole,
+          status:      'active',
+          hourly_rate: (rate != null && !Number.isNaN(rate)) ? rate : null,
+          notes:       addNotes.trim() || null,
         })
         .select('id, tenant_id, name, department, role, status, joined_at, last_active, notes, hourly_rate')
         .single();
@@ -530,6 +533,25 @@ export default function CrewTab({ tenant, departments, showToast }: Props) {
               <select className="form-input" value={addRole} onChange={(e) => setAddRole(e.target.value)} style={{ cursor: 'pointer' }}>
                 {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
               </select>
+            </div>
+
+            {/* Hourly Rate — supervisor only, never sent to crew-facing queries */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)' }}>Hourly Rate <span style={{ color: 'var(--ink-mute)', fontWeight: 400 }}>(supervisor only)</span></label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 15, color: 'var(--ink-dim)', fontWeight: 600 }}>$</span>
+                <input
+                  className="form-input"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="0.00"
+                  value={addRate}
+                  onChange={(e) => setAddRate(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--ink-mute)' }}>Never visible to crew members</div>
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

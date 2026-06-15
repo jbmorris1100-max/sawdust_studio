@@ -1028,6 +1028,51 @@ export default function SupervisorPage() {
     }
   }
 
+  // ── Supervisor PIN (Settings tab) ─────────────────────────────────────────────
+  // Changes the shared dashboard PIN via the supervisor-auth API (action 'set',
+  // which requires the current PIN). The dashboard is already behind the PIN gate,
+  // so a PIN always exists here — the current PIN is always required.
+  const [curPin,     setCurPin]     = useState('');
+  const [newPin,     setNewPin]     = useState('');
+  const [confPin,    setConfPin]    = useState('');
+  const [pinErr,     setPinErr]     = useState('');
+  const [pinSaving,  setPinSaving]  = useState(false);
+
+  async function saveSupervisorPin() {
+    if (!tenant || pinSaving) return;
+    setPinErr('');
+    if (newPin.length < 4)     { setPinErr('New PIN must be at least 4 digits'); return; }
+    if (newPin !== confPin)    { setPinErr('New PINs do not match'); return; }
+    if (!curPin)               { setPinErr('Enter your current PIN'); return; }
+    setPinSaving(true);
+    try {
+      // Attach the owner's session JWT — mirrors supervisor-pin/page.tsx. The
+      // 'set' action gates on the current PIN server-side; the header is sent for
+      // consistency and future-proofing if 'set' ever requires owner auth.
+      let sessionJwt = '';
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        sessionJwt = session?.access_token ?? '';
+      } catch { /* best-effort */ }
+      const res = await fetch('/app/api/supervisor-auth', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(sessionJwt ? { 'authorization': `Bearer ${sessionJwt}` } : {}),
+        },
+        body: JSON.stringify({ tenantId: tenant.id, action: 'set', pin: curPin, newPin }),
+      });
+      const data = await res.json() as { ok: boolean; error?: string };
+      if (!data.ok) { setPinErr(data.error ?? 'Could not change PIN'); return; }
+      setCurPin(''); setNewPin(''); setConfPin('');
+      showToast('Supervisor PIN updated');
+    } catch (_) {
+      setPinErr('Network error — try again');
+    } finally {
+      setPinSaving(false);
+    }
+  }
+
   // ── Data load ───────────────────────────────────────────────────────────────
 
   const loadAll = useCallback(async () => {
@@ -5407,6 +5452,70 @@ export default function SupervisorPage() {
                   {deptDirty && !deptSaving && (
                     <span style={{ fontSize: 12.5, color: 'var(--ink-mute)' }}>Unsaved changes</span>
                   )}
+                </div>
+              </div>
+
+              {/* ── Supervisor PIN ─────────────────────────────────────────── */}
+              <div className="portal-card">
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 6 }}>Supervisor PIN</div>
+                <p style={{ fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6, marginBottom: 16 }}>
+                  This PIN protects the supervisor dashboard. Anyone you share it with can access this screen — change it whenever a lead or manager leaves.
+                </p>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 320 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)' }}>Current PIN</label>
+                    <input
+                      className="form-input"
+                      type="password"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      maxLength={8}
+                      placeholder="••••"
+                      value={curPin}
+                      onChange={(e) => { setCurPin(e.target.value.replace(/\D/g, '')); setPinErr(''); }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)' }}>New PIN</label>
+                    <input
+                      className="form-input"
+                      type="password"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      maxLength={8}
+                      placeholder="At least 4 digits"
+                      value={newPin}
+                      onChange={(e) => { setNewPin(e.target.value.replace(/\D/g, '')); setPinErr(''); }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)' }}>Confirm New PIN</label>
+                    <input
+                      className="form-input"
+                      type="password"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      maxLength={8}
+                      placeholder="••••"
+                      value={confPin}
+                      onChange={(e) => { setConfPin(e.target.value.replace(/\D/g, '')); setPinErr(''); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') void saveSupervisorPin(); }}
+                    />
+                  </div>
+                </div>
+
+                {pinErr && <div style={{ fontSize: 12.5, color: 'var(--danger)', marginTop: 12 }}>{pinErr}</div>}
+
+                <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
+                  <button
+                    onClick={() => void saveSupervisorPin()}
+                    disabled={pinSaving || !curPin || newPin.length < 4 || !confPin}
+                    className="btn btn-primary"
+                    style={{ padding: '0 22px', opacity: (pinSaving || !curPin || newPin.length < 4 || !confPin) ? 0.5 : 1, cursor: (pinSaving || !curPin || newPin.length < 4 || !confPin) ? 'not-allowed' : 'pointer' }}
+                  >
+                    {pinSaving ? 'Updating…' : 'Change PIN'}
+                  </button>
                 </div>
               </div>
             </div>
