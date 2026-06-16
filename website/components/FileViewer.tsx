@@ -12,6 +12,7 @@
  *               onClose={() => setOpen(false)} />
  * ========================================================================== */
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 
 /* ---- types --------------------------------------------------------------- */
 export type ViewerPart = {
@@ -316,9 +317,9 @@ function ImageView({ url }: { url: string }) {
   const [zoom, setZoom] = useState(1);
   return (
     <div onDoubleClick={() => setZoom((z) => (z === 1 ? 2.2 : 1))}
-      style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto', background: '#000', touchAction: 'pinch-zoom pan-x pan-y' }}>
+      style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto', background: '#000', touchAction: 'pinch-zoom' }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={url} alt="" style={{ maxWidth: zoom === 1 ? '100%' : 'none', maxHeight: zoom === 1 ? '100%' : 'none', transform: `scale(${zoom})`, transition: 'transform .2s', transformOrigin: 'center', touchAction: 'pinch-zoom pan-x pan-y' }} />
+      <img src={url} alt="" style={{ maxWidth: zoom === 1 ? '100%' : 'none', maxHeight: zoom === 1 ? '100%' : 'none', transform: `scale(${zoom})`, transition: 'transform .2s', transformOrigin: 'center' }} />
     </div>
   );
 }
@@ -330,9 +331,9 @@ function SvgView({ url }: { url: string }) {
   const [zoom, setZoom] = useState(1);
   return (
     <div onDoubleClick={() => setZoom((z) => (z === 1 ? 2.2 : 1))}
-      style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto', background: '#fff', touchAction: 'pinch-zoom pan-x pan-y' }}>
+      style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto', background: '#fff', touchAction: 'pinch-zoom' }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={url} alt="" style={{ maxWidth: zoom === 1 ? '100%' : 'none', maxHeight: zoom === 1 ? '100%' : 'none', transform: `scale(${zoom})`, transition: 'transform .2s', transformOrigin: 'center', touchAction: 'pinch-zoom pan-x pan-y' }} />
+      <img src={url} alt="" style={{ maxWidth: zoom === 1 ? '100%' : 'none', maxHeight: zoom === 1 ? '100%' : 'none', transform: `scale(${zoom})`, transition: 'transform .2s', transformOrigin: 'center' }} />
     </div>
   );
 }
@@ -618,6 +619,25 @@ export default function FileViewer({ file, onClose }: { file: ViewerFile; onClos
     return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = prev; };
   }, [onClose]);
 
+  // Render through a dedicated portal root appended to <body> with its own
+  // touch-action so the viewer escapes the app shell's pan-y restriction and
+  // native pinch-to-zoom works on plans/drawings.
+  const [portalEl, setPortalEl] = useState<Element | null>(null);
+  useEffect(() => {
+    let el = document.getElementById('file-viewer-portal');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'file-viewer-portal';
+      (el as HTMLElement).style.touchAction = 'pinch-zoom pan-x pan-y';
+      document.body.appendChild(el);
+    }
+    setPortalEl(el);
+    return () => {
+      // Only remove the node if we created it and nothing else is mounted in it.
+      if (el && el.childNodes.length === 0) el.remove();
+    };
+  }, []);
+
   const prettyPath = file.jobPath ? file.jobPath.split('/').join(' / ') : null;
 
   const body = useCallback(() => {
@@ -673,12 +693,10 @@ export default function FileViewer({ file, onClose }: { file: ViewerFile; onClos
     }
   }, [kind, file]);
 
-  return (
+  if (!portalEl) return null;
+  return createPortal((
     <div role="dialog" aria-modal="true" onClick={onClose}
-      style={{ position: 'fixed', inset: 0, zIndex: 2000, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        // Re-enable pinch-to-zoom inside the viewer; the app-wide pan-y lock
-        // (globals.css html/body/.app-shell) otherwise blocks zooming plans.
-        touchAction: 'pinch-zoom pan-x pan-y' }}>
+      style={{ position: 'fixed', inset: 0, zIndex: 2000, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div onClick={(e) => e.stopPropagation()} className="fileviewer-shell"
         onTouchStart={(e) => { touchStartY.current = e.touches[0].clientY; touchDeltaY.current = 0; }}
         onTouchMove={(e) => { touchDeltaY.current = e.touches[0].clientY - touchStartY.current; }}
@@ -719,5 +737,5 @@ export default function FileViewer({ file, onClose }: { file: ViewerFile; onClos
         @keyframes fv-sheet { from { transform: translateY(100%) } to { transform: translateY(0) } }
       `}</style>
     </div>
-  );
+  ), portalEl);
 }
