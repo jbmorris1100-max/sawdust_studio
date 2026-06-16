@@ -3099,6 +3099,25 @@ export default function CrewPage() {
   const supervisorLastMsg = supervisorMsgs[0] ?? null;
   const supUnread = relevantMsgs.filter((m) => m.sender_name === 'Supervisor' && !m.read_at && !isClockRequestMsg(m)).length;
 
+  // Opening the messages screen clears the supervisor badge immediately.
+  useEffect(() => {
+    if (messagesOpen) markSupRead();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messagesOpen]);
+
+  // New supervisor messages arriving while the screen is already open get
+  // marked read too. Gated on hasUnread so the resulting state update doesn't
+  // re-trigger this effect into an infinite loop.
+  useEffect(() => {
+    if (!messagesOpen) return;
+    const hasUnread = relevantMsgs.some(
+      (m) => m.sender_name === 'Supervisor' && !m.read_at && !isClockRequestMsg(m)
+    );
+    if (!hasUnread) return;
+    markSupRead();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messagesOpen, messages]);
+
   // Conversation messages sorted oldest-first for display
   const openThreadMsgs = openThread === 'supervisor' ? [...supervisorMsgs].reverse() : [];
 

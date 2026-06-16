@@ -802,7 +802,7 @@ export default function SupervisorPage() {
   // Mark every unread crew message in a thread as read in Supabase (persists across
   // devices/sessions). Optimistically clears them locally so the counter drops instantly;
   // realtime UPDATE events keep other open sessions in sync.
-  async function markThreadRead(key: string) {
+  const markThreadRead = useCallback(async (key: string) => {
     const dept = key === '__broadcast__' ? null : key;
     const unread = messages.filter(
       (m) => (m.dept ?? '__broadcast__') === key && m.sender_name !== 'Supervisor' && !m.read_at,
@@ -822,7 +822,7 @@ export default function SupervisorPage() {
       q = dept === null ? q.is('dept', null) : q.eq('dept', dept);
       await q;
     } catch { /* optimistic update already applied; realtime will reconcile */ }
-  }
+  }, [messages, tenant]);
 
   // ── Clock-in/out request resolution ─────────────────────────────────────────
   // Approve/deny a crew clock adjustment request (topic = clock_*_request).
@@ -904,7 +904,27 @@ export default function SupervisorPage() {
   const openThreadRef = useRef<string | null>(openThread);
   useEffect(() => { openThreadRef.current = openThread; }, [openThread]);
   const markThreadReadRef = useRef<(key: string) => void>(() => {});
-  useEffect(() => { markThreadReadRef.current = markThreadRead; });
+  useEffect(() => { markThreadReadRef.current = markThreadRead; }, [markThreadRead]);
+
+  // Opening the Messages tab clears every unread crew message — catches threads
+  // that still carry a badge but were never individually opened. `messages` is
+  // intentionally left out of the deps: this should fire only when the tab
+  // changes, not on every incoming message (which would loop).
+  useEffect(() => {
+    if (tab !== 'messages' || !tenant) return;
+    const unread = messages.filter(isUnreadChat);
+    if (unread.length === 0) return;
+    const now = new Date().toISOString();
+    const ids = new Set(unread.map((m) => m.id));
+    setMessages((prev) => prev.map((m) => (ids.has(m.id) ? { ...m, read_at: now } : m)));
+    void supabase
+      .from('messages')
+      .update({ read_at: now })
+      .eq('tenant_id', tenant.id)
+      .neq('sender_name', 'Supervisor')
+      .is('read_at', null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, tenant]);
 
   // ── AI tab ──────────────────────────────────────────────────────────────────
   const [aiMode,       setAiMode]       = useState<AiMode>('learn');
