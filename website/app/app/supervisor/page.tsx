@@ -903,6 +903,11 @@ export default function SupervisorPage() {
   // open thread + latest markThreadRead without re-subscribing.
   const openThreadRef = useRef<string | null>(openThread);
   useEffect(() => { openThreadRef.current = openThread; }, [openThread]);
+  // Mirror of `tab` for the realtime closure so an incoming crew message can be
+  // marked read immediately whenever the Messages tab is open — not just when a
+  // specific thread is open.
+  const tabRef = useRef<Tab>(tab);
+  useEffect(() => { tabRef.current = tab; }, [tab]);
   const markThreadReadRef = useRef<(key: string) => void>(() => {});
   useEffect(() => { markThreadReadRef.current = markThreadRead; }, [markThreadRead]);
 
@@ -1591,10 +1596,15 @@ export default function SupervisorPage() {
         if (payload.eventType === 'INSERT') {
           const incoming = payload.new as Message;
           const key = incoming.dept ?? '__broadcast__';
-          // If the supervisor is already viewing this thread, mark the incoming
-          // crew message read immediately (local + DB) so the unread badge never
-          // ticks up for a conversation that's already on screen.
-          const openHere = openThreadRef.current === key && incoming.sender_name !== 'Supervisor';
+          // If the supervisor is already viewing this thread — OR has the Messages
+          // tab open — mark the incoming crew message read immediately (local + DB)
+          // so the unread badge never ticks up for a conversation that's already on
+          // screen. Clock-in/out requests are action items, not chat, so they're
+          // excluded and keep their action-card badge.
+          const isCrewMsg = incoming.sender_name !== 'Supervisor' && !isClockRequest(incoming);
+          const threadOpen = openThreadRef.current === key && isCrewMsg;
+          const tabOpen = tabRef.current === 'messages' && isCrewMsg;
+          const openHere = threadOpen || tabOpen;
           if (openHere) {
             const now = new Date().toISOString();
             setMessages((prev) => prev.some((m) => m.id === incoming.id) ? prev : [{ ...incoming, read_at: now }, ...prev]);
