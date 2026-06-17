@@ -3162,6 +3162,7 @@ export default function CrewPage() {
         <QcInspectorView
           tenantId={tenant.id}
           qcName={qcDelegateName}
+          jobs={jobs}
           showToast={showToast}
           onExit={() => {
             try { localStorage.removeItem('qc_delegate_name'); } catch { /* ignore */ }
