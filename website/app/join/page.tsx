@@ -71,21 +71,25 @@ function JoinInner() {
       if (!data) { setNotFound(true); setLoading(false); return; }
       setShopName(data.shop_name);
 
-      // Check existing session
-      try {
-        const sessionToken  = localStorage.getItem(SESSION_KEY(tenantId));
-        const crewMemberId  = localStorage.getItem(CREW_ID_KEY(tenantId));
-        if (sessionToken && crewMemberId) {
-          const res = await fetch('/app/api/crew-auth', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ action: 'verify-session', tenantId, crewMemberId, sessionToken }),
-          });
-          const { ok } = await res.json() as { ok: boolean };
-          if (ok) { router.push('/app/crew'); return; }
-          localStorage.removeItem(SESSION_KEY(tenantId));
-        }
-      } catch { /* fall through to join flow */ }
+      // Check existing session — but never auto-resume for QC delegates, who
+      // must always go through the name picker + QC PIN even on a device with a
+      // valid crew session.
+      if (role !== 'qc') {
+        try {
+          const sessionToken  = localStorage.getItem(SESSION_KEY(tenantId));
+          const crewMemberId  = localStorage.getItem(CREW_ID_KEY(tenantId));
+          if (sessionToken && crewMemberId) {
+            const res = await fetch('/app/api/crew-auth', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ action: 'verify-session', tenantId, crewMemberId, sessionToken }),
+            });
+            const { ok } = await res.json() as { ok: boolean };
+            if (ok) { router.push('/app/crew'); return; }
+            localStorage.removeItem(SESSION_KEY(tenantId));
+          }
+        } catch { /* fall through to join flow */ }
+      }
 
       // Load active crew members for picker
       const { data: crewData } = await supabase
@@ -104,7 +108,6 @@ function JoinInner() {
     setSelected(m);
     setPin('');
     setPinError('');
-    console.log('JOIN DEBUG: role=', role, 'tenantId=', tenantId, 'searchParams=', searchParams.toString());
     // QC delegates skip the crew PIN/biometric flow — they authenticate against
     // a delegate PIN issued by the supervisor.
     if (role === 'qc') {
