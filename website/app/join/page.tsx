@@ -104,6 +104,7 @@ function JoinInner() {
     setSelected(m);
     setPin('');
     setPinError('');
+    console.log('JOIN DEBUG: role=', role, 'tenantId=', tenantId, 'searchParams=', searchParams.toString());
     // QC delegates skip the crew PIN/biometric flow — they authenticate against
     // a delegate PIN issued by the supervisor.
     if (role === 'qc') {
