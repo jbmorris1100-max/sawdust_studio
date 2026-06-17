@@ -3272,6 +3272,29 @@ export default function CrewPage() {
     },
   ];
 
+  // Per-dept feature gating. A supervisor can hide individual Quick Actions for
+  // a department via tenant.dept_config (Settings → Departments). Applies to
+  // every dept, fixed or custom. No config entry for the dept = show everything
+  // (back-compat default), so untouched depts behave exactly as before. Clock
+  // In/Out and Messages are never filtered.
+  function isFeatureEnabled(key: string): boolean {
+    const cfg = tenant?.dept_config?.[(crewDept || '').toLowerCase()];
+    if (!cfg) return true;
+    return cfg[key] !== false;
+  }
+  const FEATURE_BY_LABEL: Record<string, string> = {
+    'Scan': 'part_tracking',
+    'Report Damage': 'damage_reporting',
+    'Log Inventory': 'inventory_logging',
+    'View Plans': 'view_plans',
+    'View SOPs': 'view_sops',
+  };
+  const visibleQuickActions = quickActions.filter((a) => {
+    if (a.label === 'Clock In / Out') return true; // always on, never filtered
+    const key = FEATURE_BY_LABEL[a.label];
+    return key ? isFeatureEnabled(key) : true; // unmapped actions stay visible
+  });
+
   return (
     <>
       {/* Brand background graphic — fixed, centered, 30% behind all content.
@@ -3483,7 +3506,7 @@ export default function CrewPage() {
           <div style={{ marginBottom: 40 }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Quick Actions</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              {quickActions.map(({ label, color, bg, onClick, icon }) => (
+              {visibleQuickActions.map(({ label, color, bg, onClick, icon }) => (
                 <button
                   key={label}
                   onClick={onClick}
