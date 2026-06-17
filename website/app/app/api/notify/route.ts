@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import webpush from 'web-push';
+import { verifySessionToken, verifySupervisorToken } from '@/lib/authTokens';
 
 // ── Web Push send endpoint ──────────────────────────────────────────────────
 // POST { tenant_id, target: 'supervisor' | 'crew' | 'all', title, body, url? }
@@ -29,11 +30,6 @@ function configureVapid(): boolean {
 
 export async function POST(req: Request) {
   try {
-    // Env presence — log without ever exposing secret values.
-    console.log('VAPID public key present:', !!process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY);
-    console.log('VAPID private key present:', !!process.env.VAPID_PRIVATE_KEY);
-    console.log('Service role key present:', !!process.env.SUPABASE_SERVICE_ROLE_KEY);
-
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!url || !serviceKey) {
@@ -50,6 +46,12 @@ export async function POST(req: Request) {
       title?: string;
       body?: string;
       url?: string;
+      // Caller credentials, auto-attached by sendNotify (see lib/notify.ts).
+      sessionToken?: string;
+      crewMemberId?: string;
+      supervisorToken?: string;
+      deviceId?: string;
+      qcDelegateName?: string;
     };
     try {
       payload = await req.json();
@@ -57,15 +59,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
     }
 
-    const { tenant_id, target = 'all', dept_target, title, body, url: clickUrl } = payload;
-
-    console.log('Notify route called with:', {
-      tenant_id,
-      target,
-      dept_target,
-      title,
-      body,
-    });
+    const {
+      tenant_id, target = 'all', dept_target, title, body, url: clickUrl,
+      sessionToken, crewMemberId, supervisorToken, deviceId, qcDelegateName,
+    } = payload;
 
     if (!tenant_id || !title || !body) {
       return NextResponse.json({ error: 'tenant_id, title and body required' }, { status: 400 });
@@ -73,6 +70,36 @@ export async function POST(req: Request) {
 
     // Service-role client — reads all subscriptions for the tenant.
     const db = createClient(url, serviceKey, { auth: { persistSession: false } });
+
+    // ── Authorize the caller against the tenant being notified ───────────────
+    // Must hold a valid supervisor trust token, a valid crew session token for
+    // an active crew member, or be a named active QC delegate — all scoped to
+    // tenant_id. Anything else is rejected before any DB write or push send.
+    let authorized = false;
+    if (supervisorToken && deviceId) {
+      authorized = verifySupervisorToken(supervisorToken, tenant_id, deviceId);
+    } else if (sessionToken && crewMemberId) {
+      if (verifySessionToken(sessionToken, tenant_id, crewMemberId)) {
+        // Mirror crew-auth's verify-session: confirm the member belongs to this
+        // tenant and isn't inactive.
+        const { data: cm } = await db.from('crew_members')
+          .select('status').eq('id', crewMemberId).eq('tenant_id', tenant_id).single();
+        if (cm && (cm as { status: string }).status !== 'inactive') {
+          authorized = true;
+        }
+      }
+    } else if (qcDelegateName) {
+      // QC delegates carry only their name — verify an active row exists.
+      const { data: deleg } = await db.from('qc_delegates')
+        .select('id').eq('tenant_id', tenant_id).eq('active', true)
+        .ilike('crew_member_name', qcDelegateName).limit(1);
+      if (deleg && deleg.length > 0) {
+        authorized = true;
+      }
+    }
+    if (!authorized) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+    }
 
     // Permanent notification log (Notification Center). Best-effort — a logging
     // failure must never block push delivery. dept_target narrows crew pushes;

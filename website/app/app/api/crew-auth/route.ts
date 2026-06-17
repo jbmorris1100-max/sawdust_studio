@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createHmac, timingSafeEqual, randomBytes } from 'crypto';
+import { verifySessionToken, verifySupervisorToken, APP_SECRET } from '@/lib/authTokens';
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -28,7 +29,6 @@ import type {
 // Built for @simplewebauthn/server v13: registrationInfo.credential carries
 // { id, publicKey, counter }; verifyAuthenticationResponse takes `credential`.
 
-const APP_SECRET = process.env.SUPERVISOR_PIN_SECRET;
 const RP_NAME    = 'InlineIQ';
 const SESSION_DAYS = 90;
 
@@ -57,38 +57,6 @@ function makeSessionToken(tenantId: string, crewMemberId: string, credentialId: 
   const payload = `${tenantId}:${crewMemberId}:${credentialId}:${expiry}`;
   const sig     = createHmac('sha256', APP_SECRET).update(payload).digest('hex');
   return Buffer.from(`${payload}:${sig}`).toString('base64');
-}
-
-function verifySessionToken(token: string, tenantId: string, crewMemberId: string): boolean {
-  if (!APP_SECRET) return false;
-  try {
-    const decoded = Buffer.from(token, 'base64').toString('utf8');
-    const parts   = decoded.split(':');
-    if (parts.length !== 5) return false;
-    const [tid, mid, credId, expiry, sig] = parts;
-    if (tid !== tenantId || mid !== crewMemberId) return false;
-    if (Date.now() > parseInt(expiry)) return false;
-    const payload  = `${tid}:${mid}:${credId}:${expiry}`;
-    const expected = createHmac('sha256', APP_SECRET).update(payload).digest('hex');
-    return timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
-  } catch { return false; }
-}
-
-// Verify the supervisor trust token so only supervisors can set crew PINs.
-// Mirrors the token shape minted by /app/api/supervisor-auth (tenantId:deviceId:expiry:sig).
-function verifySupervisorToken(token: string, tenantId: string, deviceId: string): boolean {
-  if (!APP_SECRET) return false;
-  try {
-    const decoded = Buffer.from(token, 'base64').toString('utf8');
-    const parts   = decoded.split(':');
-    if (parts.length !== 4) return false;
-    const [tid, did, expiry, sig] = parts;
-    if (tid !== tenantId || did !== deviceId) return false;
-    if (Date.now() > parseInt(expiry)) return false;
-    const payload  = `${tid}:${did}:${expiry}`;
-    const expected = createHmac('sha256', APP_SECRET).update(payload).digest('hex');
-    return timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
-  } catch { return false; }
 }
 
 export async function POST(req: Request) {
