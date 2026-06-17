@@ -19,6 +19,7 @@ import JobDrillDown from './JobDrillDown';
 import FinishSpecsModal from './FinishSpecsModal';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import JobSearch, { type SearchTarget } from '@/components/JobSearch';
+import CabinetDetailPanel from '@/components/CabinetDetailPanel';
 import PushPrompt from '@/components/PushPrompt';
 import OfflineBanner from '@/components/OfflineBanner';
 import MessageThread from '@/components/MessageThread';
@@ -962,13 +963,14 @@ export default function SupervisorPage() {
 
   // Universal file viewer (Part 2) + job search routing (Part 1)
   const [viewerFile, setViewerFile] = useState<ViewerFile | null>(null);
+  const [searchedCabinetId, setSearchedCabinetId] = useState<string | null>(null);
   const handleSearchSelect = useCallback((t: SearchTarget) => {
     if (t.kind === 'file') {
       setViewerFile({ url: t.url, name: t.name, fileType: t.fileType, parsed: t.parsed, jobPath: t.jobPath ?? undefined });
     } else if (t.kind === 'cutlist' || t.kind === 'drawings' || t.kind === 'job') {
       setTab('plans');
     } else if (t.kind === 'cabinet') {
-      setTab('assembly');
+      setSearchedCabinetId(t.cabinetId);
     }
   }, []);
 
@@ -3435,6 +3437,15 @@ export default function SupervisorPage() {
           {tenant && (
             <div style={{ marginBottom: 24 }}>
               <JobSearch tenantId={tenant.id} onSelect={handleSearchSelect} />
+              {searchedCabinetId && (
+                <div style={{ marginTop: 12 }}>
+                  <CabinetDetailPanel
+                    tenantId={tenant.id}
+                    cabinetId={searchedCabinetId}
+                    onClose={() => setSearchedCabinetId(null)}
+                  />
+                </div>
+              )}
             </div>
           )}
 
