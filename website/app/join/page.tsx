@@ -181,8 +181,11 @@ function JoinInner() {
         .limit(1);
       if (error) throw error;
       if (!data || data.length === 0) { triggerShake('Incorrect PIN'); setQcPin(''); setBusy(false); return; }
+      // Store the stable delegate id (not the free-text name) so /app/crew and
+      // the notify route can authorize against qc_delegates by primary key.
+      const delegateId = (data[0] as { id: string }).id;
       try {
-        localStorage.setItem('qc_delegate_name', selected.name);
+        localStorage.setItem('qc_delegate_id', delegateId);
         localStorage.setItem('crew_tenant_id', tenantId);
       } catch { /* ignore */ }
       setStep('done');

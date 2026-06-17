@@ -51,8 +51,8 @@ function useCrewTenant() {
       let isQcMode = false;
       try {
         const params = new URLSearchParams(window.location.search);
-        const qcName = localStorage.getItem('qc_delegate_name') || '';
-        isQcMode = params.get('qc') === '1' && !!qcName;
+        const qcDelegateId = localStorage.getItem('qc_delegate_id') || '';
+        isQcMode = params.get('qc') === '1' && !!qcDelegateId;
       } catch { /* ignore */ }
 
       // 1. Invite-link tenant (no login required)
@@ -663,11 +663,29 @@ export default function CrewPage() {
   const [qcMode, setQcMode] = useState(false);
   const [qcDelegateName, setQcDelegateName] = useState('');
   useEffect(() => {
+    let cancelled = false;
     try {
       const params = new URLSearchParams(window.location.search);
-      const name = localStorage.getItem('qc_delegate_name') || '';
-      if (params.get('qc') === '1' && name) { setQcMode(true); setQcDelegateName(name); }
+      const delegateId = localStorage.getItem('qc_delegate_id') || '';
+      if (params.get('qc') === '1' && delegateId) {
+        setQcMode(true);
+        // The display name (also stamped into cabinet_units.qc_by) is no longer
+        // stored client-side — resolve it from the delegate row by id on load.
+        void (async () => {
+          try {
+            const { data } = await supabase
+              .from('qc_delegates')
+              .select('crew_member_name')
+              .eq('id', delegateId)
+              .single();
+            if (!cancelled && data) {
+              setQcDelegateName((data as { crew_member_name: string }).crew_member_name || '');
+            }
+          } catch { /* best-effort — name stays blank if the lookup fails */ }
+        })();
+      }
     } catch { /* ignore */ }
+    return () => { cancelled = true; };
   }, []);
 
   // Page data
@@ -3165,7 +3183,7 @@ export default function CrewPage() {
           jobs={jobs}
           showToast={showToast}
           onExit={() => {
-            try { localStorage.removeItem('qc_delegate_name'); } catch { /* ignore */ }
+            try { localStorage.removeItem('qc_delegate_id'); } catch { /* ignore */ }
             window.location.replace('/app');
           }}
         />

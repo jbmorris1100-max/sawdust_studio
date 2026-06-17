@@ -51,7 +51,7 @@ export async function POST(req: Request) {
       crewMemberId?: string;
       supervisorToken?: string;
       deviceId?: string;
-      qcDelegateName?: string;
+      qcDelegateId?: string;
     };
     try {
       payload = await req.json();
@@ -61,7 +61,7 @@ export async function POST(req: Request) {
 
     const {
       tenant_id, target = 'all', dept_target, title, body, url: clickUrl,
-      sessionToken, crewMemberId, supervisorToken, deviceId, qcDelegateName,
+      sessionToken, crewMemberId, supervisorToken, deviceId, qcDelegateId,
     } = payload;
 
     if (!tenant_id || !title || !body) {
@@ -88,11 +88,11 @@ export async function POST(req: Request) {
           authorized = true;
         }
       }
-    } else if (qcDelegateName) {
-      // QC delegates carry only their name — verify an active row exists.
+    } else if (qcDelegateId) {
+      // QC delegates carry only their id — verify an active row exists.
       const { data: deleg } = await db.from('qc_delegates')
         .select('id').eq('tenant_id', tenant_id).eq('active', true)
-        .ilike('crew_member_name', qcDelegateName).limit(1);
+        .eq('id', qcDelegateId).limit(1);
       if (deleg && deleg.length > 0) {
         authorized = true;
       }

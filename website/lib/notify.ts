@@ -9,7 +9,7 @@ export type NotifyTarget = 'supervisor' | 'crew' | 'all';
 type AttachedCredentials =
   | { supervisorToken: string; deviceId: string }
   | { sessionToken: string; crewMemberId: string }
-  | { qcDelegateName: string };
+  | { qcDelegateId: string };
 
 // Read whatever credential set is available for this tenant from browser
 // storage, in priority order (strongest first). A supervisor previewing the
@@ -35,11 +35,11 @@ function resolveCredentials(tenant_id: string): AttachedCredentials | null {
       return { sessionToken, crewMemberId };
     }
 
-    // 3. QC delegate — no signed token; carries only its name (verified
+    // 3. QC delegate — no signed token; carries only its id (verified
     //    route-side against an active qc_delegates row for this tenant).
-    const qcDelegateName = localStorage.getItem('qc_delegate_name');
-    if (qcDelegateName) {
-      return { qcDelegateName };
+    const qcDelegateId = localStorage.getItem('qc_delegate_id');
+    if (qcDelegateId) {
+      return { qcDelegateId };
     }
   } catch {
     // Private browsing / disabled storage — fall through unauthenticated.
