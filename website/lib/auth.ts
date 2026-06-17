@@ -19,6 +19,11 @@ export type Tenant = {
   created_at: string;
   setup_complete: boolean | null;
   departments: string[] | null;
+  // Per-department feature toggles for CUSTOM departments only (not the fixed
+  // Production/Assembly/Finishing/Craftsman/QC set). Keyed by dept name
+  // lowercased → { time_tracking, part_tracking, qc_access, messaging,
+  // damage_reporting, inventory_logging, view_plans, view_sops }. Null until set.
+  dept_config?: Record<string, Record<string, boolean>> | null;
   // AI push-suggestion mode. Default 'learn' = no suggestions shown to crew.
   ai_mode: 'learn' | 'assist' | 'autonomous' | null;
   // ── Stripe billing (nullable until a subscription exists) ──

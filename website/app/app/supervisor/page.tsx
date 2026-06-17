@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
 import { useSession } from '@/lib/useSession';
-import { trialDaysLeft, getDepartments, planLabel as planLabelFor, isPaidPlan, isPartnerActive, PLAN_DISPLAY } from '@/lib/auth';
+import { trialDaysLeft, getDepartments, DEFAULT_DEPARTMENTS, planLabel as planLabelFor, isPaidPlan, isPartnerActive, PLAN_DISPLAY } from '@/lib/auth';
 import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
 import ReportsTab from './ReportsTab';
 import SetupWizard from './SetupWizard';
@@ -1029,15 +1029,46 @@ export default function SupervisorPage() {
   const [deptInput,   setDeptInput]   = useState('');
   const [deptErr,     setDeptErr]     = useState('');
   const [deptSaving,  setDeptSaving]  = useState(false);
+  // Per-department feature config for CUSTOM departments only. `deptConfig` is
+  // the committed copy, `deptConfigDraft` the editable buffer (keyed lowercase).
+  const [deptConfig,      setDeptConfig]      = useState<Record<string, Record<string, boolean>>>({});
+  const [deptConfigDraft, setDeptConfigDraft] = useState<Record<string, Record<string, boolean>>>({});
+  const [expandedDeptConfig, setExpandedDeptConfig] = useState<string | null>(null);
+
+  // The 8 feature toggles a supervisor can flip for a custom department.
+  const DEPT_FEATURES: { key: string; label: string }[] = [
+    { key: 'time_tracking',     label: 'Crew time tracking' },
+    { key: 'part_tracking',     label: 'Part/cabinet tracking' },
+    { key: 'qc_access',         label: 'QC pass/fail access' },
+    { key: 'messaging',         label: 'Messaging' },
+    { key: 'damage_reporting',  label: 'Damage reporting' },
+    { key: 'inventory_logging', label: 'Inventory logging' },
+    { key: 'view_plans',        label: 'View Plans' },
+    { key: 'view_sops',         label: 'View SOPs' },
+  ];
+
+  // A dept is "custom" if it's neither one of the 4 fixed defaults nor QC.
+  // Only custom depts get a feature-config gear + stored dept_config entry.
+  const isCustomDept = (dept: string) =>
+    !DEFAULT_DEPARTMENTS.some((d) => d.toLowerCase() === dept.toLowerCase())
+    && dept.toLowerCase() !== 'qc';
+
+  const emptyDeptConfig = (): Record<string, boolean> =>
+    Object.fromEntries(DEPT_FEATURES.map((f) => [f.key, false]));
 
   useEffect(() => {
     if (!tenant) return;
     const d = getDepartments(tenant);
     setDepartments(d);
     setDeptDraft(d);
+    const cfg = (tenant.dept_config && typeof tenant.dept_config === 'object') ? tenant.dept_config : {};
+    setDeptConfig(cfg);
+    setDeptConfigDraft(cfg);
   }, [tenant]);
 
-  const deptDirty = JSON.stringify(deptDraft) !== JSON.stringify(departments);
+  const deptDirty =
+    JSON.stringify(deptDraft) !== JSON.stringify(departments) ||
+    JSON.stringify(deptConfigDraft) !== JSON.stringify(deptConfig);
 
   function addDeptToDraft() {
     const v = deptInput.trim();
@@ -1045,19 +1076,44 @@ export default function SupervisorPage() {
     if (v.length > 20) { setDeptErr('Max 20 characters'); return; }
     if (deptDraft.some((d) => d.toLowerCase() === v.toLowerCase())) { setDeptErr('That department already exists'); return; }
     setDeptDraft((prev) => [...prev, v]);
+    // Seed an all-off config entry for a newly-added custom department.
+    if (isCustomDept(v)) {
+      setDeptConfigDraft((prev) => ({ ...prev, [v.toLowerCase()]: emptyDeptConfig() }));
+    }
     setDeptInput(''); setDeptErr('');
+  }
+
+  function removeDeptFromDraft(d: string) {
+    setDeptDraft((prev) => prev.filter((x) => x !== d));
+    setDeptConfigDraft((prev) => {
+      const next = { ...prev };
+      delete next[d.toLowerCase()];
+      return next;
+    });
+    if (expandedDeptConfig === d) setExpandedDeptConfig(null);
+    setDeptErr('');
   }
 
   async function saveDepartments() {
     if (!tenant || deptSaving) return;
     const cleaned = deptDraft.map((d) => d.trim()).filter(Boolean);
     if (cleaned.length === 0) { setDeptErr('Keep at least one department'); return; }
+    // Strip config for any dept no longer present in the cleaned list.
+    const cleanedLower = new Set(cleaned.map((d) => d.toLowerCase()));
+    const cleanedConfig: Record<string, Record<string, boolean>> = {};
+    for (const [k, v] of Object.entries(deptConfigDraft)) {
+      if (cleanedLower.has(k)) cleanedConfig[k] = v;
+    }
     setDeptSaving(true);
     try {
-      const { error } = await supabase.from('tenants').update({ departments: cleaned }).eq('id', tenant.id);
+      const { error } = await supabase.from('tenants')
+        .update({ departments: cleaned, dept_config: cleanedConfig })
+        .eq('id', tenant.id);
       if (error) throw error;
       setDepartments(cleaned);
       setDeptDraft(cleaned);
+      setDeptConfig(cleanedConfig);
+      setDeptConfigDraft(cleanedConfig);
       showToast('Departments saved');
     } catch (_) {
       showToast('Could not save departments', true);
@@ -5627,22 +5683,78 @@ export default function SupervisorPage() {
                 </p>
 
                 {/* Current departments as removable pills */}
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
                   {deptDraft.length === 0 && (
                     <span style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No departments yet — add one below.</span>
                   )}
-                  {deptDraft.map((d) => (
-                    <span key={d} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--teal)', background: 'rgba(94,234,212,0.1)', border: '1px solid var(--line-strong)', borderRadius: 20, padding: '6px 8px 6px 14px' }}>
-                      {d}
-                      <button
-                        onClick={() => { setDeptDraft((prev) => prev.filter((x) => x !== d)); setDeptErr(''); }}
-                        aria-label={`Remove ${d}`}
-                        style={{ width: 20, height: 20, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', border: 'none', color: 'var(--ink-mute)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'inherit' }}
-                      >
-                        <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                      </button>
-                    </span>
-                  ))}
+                  {deptDraft.map((d) => {
+                    const custom = isCustomDept(d);
+                    const expanded = expandedDeptConfig === d;
+                    const cfg = deptConfigDraft[d.toLowerCase()] ?? {};
+                    return (
+                      <div key={d}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--teal)', background: 'rgba(94,234,212,0.1)', border: '1px solid var(--line-strong)', borderRadius: 20, padding: '6px 8px 6px 14px' }}>
+                            {d}
+                            {custom && (
+                              <button
+                                onClick={() => setExpandedDeptConfig((prev) => (prev === d ? null : d))}
+                                aria-label={`Configure ${d}`}
+                                title="Configure features"
+                                style={{ width: 20, height: 20, borderRadius: '50%', background: expanded ? 'rgba(94,234,212,0.25)' : 'rgba(255,255,255,0.06)', border: 'none', color: expanded ? 'var(--teal)' : 'var(--ink-mute)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'inherit' }}
+                              >
+                                <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                              </button>
+                            )}
+                            <button
+                              onClick={() => removeDeptFromDraft(d)}
+                              aria-label={`Remove ${d}`}
+                              style={{ width: 20, height: 20, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', border: 'none', color: 'var(--ink-mute)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'inherit' }}
+                            >
+                              <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                            </button>
+                          </span>
+                        </div>
+
+                        {/* Feature toggles for this custom dept */}
+                        {custom && expanded && (
+                          <div style={{ marginTop: 10, marginBottom: 4, padding: '12px 14px', borderRadius: 10, border: '1px solid var(--line)', background: 'rgba(255,255,255,0.02)' }}>
+                            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 9 }}>Features for {d}</label>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                              {DEPT_FEATURES.map(({ key, label }) => {
+                                const checked = !!cfg[key];
+                                return (
+                                  <label
+                                    key={key}
+                                    style={{
+                                      display: 'inline-flex', alignItems: 'center', gap: 7,
+                                      padding: '7px 12px', borderRadius: 8,
+                                      border: `1px solid ${checked ? 'rgba(94,234,212,0.4)' : 'var(--line)'}`,
+                                      background: checked ? 'rgba(94,234,212,0.08)' : 'transparent',
+                                      color: checked ? 'var(--teal)' : 'var(--ink-dim)',
+                                      fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                                    }}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => setDeptConfigDraft((prev) => {
+                                        const lk = d.toLowerCase();
+                                        const cur = prev[lk] ?? emptyDeptConfig();
+                                        return { ...prev, [lk]: { ...cur, [key]: !cur[key] } };
+                                      })}
+                                      style={{ accentColor: '#2DE1C9', cursor: 'pointer' }}
+                                    />
+                                    {label}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
 
                 {/* Add department input */}
