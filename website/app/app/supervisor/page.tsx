@@ -738,6 +738,8 @@ export default function SupervisorPage() {
   const [craftsmanCount, setCraftsmanCount] = useState(0);
   const [qcCount, setQcCount] = useState(0);
   const [productionCount, setProductionCount] = useState(0);
+  const [assemblyCount, setAssemblyCount] = useState(0);
+  const [finishingCount, setFinishingCount] = useState(0);
 
   // Notification center (header bell)
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
@@ -1398,6 +1400,44 @@ export default function SupervisorPage() {
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenant, loadProductionCount]);
+
+  const loadAssemblyCount = useCallback(async () => {
+    if (!tenant) return;
+    try {
+      const { count } = await supabase.from('cabinet_units')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenant.id).eq('assigned_dept', 'assembly').neq('status', 'complete');
+      setAssemblyCount(count ?? 0);
+    } catch { /* best-effort */ }
+  }, [tenant]);
+  useEffect(() => {
+    if (!tenant) return;
+    void loadAssemblyCount();
+    const ch = supabase
+      .channel('rt-sup-assembly-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenant.id}` }, () => { void loadAssemblyCount(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [tenant, loadAssemblyCount]);
+
+  const loadFinishingCount = useCallback(async () => {
+    if (!tenant) return;
+    try {
+      const { count } = await supabase.from('cabinet_units')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenant.id).eq('assigned_dept', 'finishing').neq('status', 'complete');
+      setFinishingCount(count ?? 0);
+    } catch { /* best-effort */ }
+  }, [tenant]);
+  useEffect(() => {
+    if (!tenant) return;
+    void loadFinishingCount();
+    const ch = supabase
+      .channel('rt-sup-finishing-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenant.id}` }, () => { void loadFinishingCount(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [tenant, loadFinishingCount]);
 
   // ── Notification center ─────────────────────────────────────────────────────
   const loadNotifications = useCallback(async () => {
@@ -3178,9 +3218,9 @@ export default function SupervisorPage() {
     { key: 'overview',      label: 'Overview' },
     { key: 'crew',          label: 'Crew' },
     { key: 'production',    label: 'Production',  count: productionCount > 0 ? productionCount : undefined },
-    { key: 'assembly',      label: 'Assembly' },
+    { key: 'assembly',      label: 'Assembly',    count: assemblyCount > 0 ? assemblyCount : undefined },
     { key: 'craftsman',     label: 'Craftsman',   count: craftsmanCount > 0 ? craftsmanCount : undefined },
-    { key: 'finishing',     label: 'Finishing' },
+    { key: 'finishing',     label: 'Finishing',   count: finishingCount > 0 ? finishingCount : undefined },
     { key: 'qc',            label: 'QC',          count: qcCount > 0 ? qcCount : undefined },
     { key: 'messages',      label: 'Messages',    count: unreadMessages > 0 ? unreadMessages : undefined },
     { key: 'needs',         label: 'Inventory',   count: activeNeeds.length },
