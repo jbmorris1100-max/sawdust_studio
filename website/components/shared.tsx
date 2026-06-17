@@ -125,7 +125,7 @@ export function Footer() {
   );
 }
 
-export function BgLayers() {
+export function BgLayers({ showLogo = true }: { showLogo?: boolean } = {}) {
   return (
     <>
       <div style={{
@@ -139,15 +139,17 @@ export function BgLayers() {
         WebkitMaskImage: 'radial-gradient(ellipse 70% 70% at 50% 20%, black 30%, transparent 100%)',
         maskImage: 'radial-gradient(ellipse 70% 70% at 50% 20%, black 30%, transparent 100%)',
       }} />
-      <div style={{
-        position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        opacity: 0.18,
-        WebkitMaskImage: 'radial-gradient(ellipse 55% 55% at 50% 50%, black 20%, transparent 75%)',
-        maskImage: 'radial-gradient(ellipse 55% 55% at 50% 50%, black 20%, transparent 75%)',
-      }}>
-        <LogoMark size={360} />
-      </div>
+      {showLogo && (
+        <div style={{
+          position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          opacity: 0.18,
+          WebkitMaskImage: 'radial-gradient(ellipse 55% 55% at 50% 50%, black 20%, transparent 75%)',
+          maskImage: 'radial-gradient(ellipse 55% 55% at 50% 50%, black 20%, transparent 75%)',
+        }}>
+          <LogoMark size={360} />
+        </div>
+      )}
     </>
   );
 }

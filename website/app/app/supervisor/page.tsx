@@ -3308,7 +3308,7 @@ export default function SupervisorPage() {
         zIndex: 0,
         pointerEvents: 'none',
       }} />
-      <BgLayers />
+      <BgLayers showLogo={false} />
       <div className="app-shell" style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
         {/* Nav */}

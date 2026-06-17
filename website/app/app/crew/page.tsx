@@ -3253,7 +3253,7 @@ export default function CrewPage() {
         zIndex: 0,
         pointerEvents: 'none',
       }} />
-      <BgLayers />
+      <BgLayers showLogo={false} />
       <div style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
         {/* Nav */}
