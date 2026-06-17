@@ -2690,6 +2690,23 @@ export default function CrewPage() {
       const totalBreakMins = (openEntry.total_break_minutes ?? 0) + extraBreakMins;
       const netHours   = totalHours - totalBreakMins / 60;
 
+      // Safety net: AssemblyCrewView / FinishingView / CraftsmanBuilds each open
+      // their own per-task time_clock rows when a work session starts. If any
+      // are still open, they'd keep reloadClock() seeing an open row and leave
+      // the clocked-in indicator stuck on after this clock-out. Close every
+      // other open row for this worker (clock_out only — we don't have reliable
+      // context to compute total_hours for these per-task sessions). Best-effort:
+      // a failure here must never block the primary clock-out below.
+      try {
+        await supabase
+          .from('time_clock')
+          .update({ clock_out: now })
+          .eq('tenant_id', tenant!.id)
+          .eq('worker_name', openEntry.worker_name)
+          .is('clock_out', null)
+          .neq('id', openEntry.id);
+      } catch { /* best-effort cleanup of orphaned per-task sessions */ }
+
       const { error } = await supabase.from('time_clock').update({
         clock_out: now, on_break: false,
         total_hours: Math.round(netHours * 10000) / 10000,
