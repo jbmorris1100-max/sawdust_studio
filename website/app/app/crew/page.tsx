@@ -42,6 +42,19 @@ function useCrewTenant() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // QC delegates reach /app/crew?qc=1 via a PIN at /join — they never go
+      // through the normal crew session flow, so they have no crew_session_*
+      // token. Detect QC mode the same way the QC effect below does, then skip
+      // the crew-session verification + redirect-to-/join block (which would
+      // otherwise bounce them back to the picker before QC mode takes over).
+      // The tenant still gets resolved/set so QcInspectorView has its tenantId.
+      let isQcMode = false;
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const qcName = localStorage.getItem('qc_delegate_name') || '';
+        isQcMode = params.get('qc') === '1' && !!qcName;
+      } catch { /* ignore */ }
+
       // 1. Invite-link tenant (no login required)
       let inviteId = '';
       try { inviteId = localStorage.getItem('crew_tenant_id') || localStorage.getItem('@inline_join_tenant_id') || ''; } catch (_) {}
@@ -51,6 +64,10 @@ function useCrewTenant() {
           if (!cancelled && data) {
             try { localStorage.setItem('crew_tenant_id', inviteId); } catch (_) {}
             setTenant(data as Tenant); setEmail('');
+            // QC delegates authenticate via PIN at /join, not the normal crew
+            // session flow — skip the session-token verification + redirect
+            // entirely and let the QC mode effect render the inspector view.
+            if (isQcMode) { setLoading(false); return; }
             // Verify crew session is still valid
             try {
               const sessionToken  = localStorage.getItem(`crew_session_${inviteId}`);
