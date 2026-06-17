@@ -3,7 +3,7 @@
 /* ============================================================================
  * Cache configuration
  * ------------------------------------------------------------------------- */
-const SW_VERSION = 'v1';
+const SW_VERSION = 'v2';
 const STATIC_CACHE = `inlineiq-static-${SW_VERSION}`;
 const PLANS_CACHE  = 'plans-cache';
 const JOB_CACHE    = 'job-data-cache';
@@ -245,7 +245,7 @@ async function dataStrategy(req, cacheName, ttl) {
 
 async function navigationStrategy(req) {
   try {
-    const res = await fetch(req);
+    const res = await fetch(req, { cache: 'no-store' });
     if (res && res.ok) {
       try { const cache = await caches.open(STATIC_CACHE); await cache.put(req, res.clone()); } catch (e) {}
     }
