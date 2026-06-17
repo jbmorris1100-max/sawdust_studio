@@ -13,6 +13,7 @@ import CraftsmanBuilds from './CraftsmanBuilds';
 import FinishingView from './FinishingView';
 import AssemblyCrewView from './AssemblyCrewView';
 import CabinetScanner from '../scan/CabinetScanner';
+import QcInspectorView from './QcInspectorView';
 import PushPicker from '@/components/PushPicker';
 import { pushPart, deptDisplay, recomputeCabinet, notifyDeptWork } from '@/lib/partActions';
 import {
@@ -639,6 +640,18 @@ export default function CrewPage() {
   const pushDeptKeys = deptOptions.map((d) => d.toLowerCase()).filter((d) => d !== 'production');
   // AI push-suggestion mode (shared via the tenant row). 'learn' = no suggestions.
   const aiMode = (tenant?.ai_mode ?? 'learn') as 'learn' | 'assist' | 'autonomous';
+
+  // QC delegate mode — entered via /app/crew?qc=1 after a delegate PIN at /join.
+  // Renders the QC inspector instead of the normal crew view.
+  const [qcMode, setQcMode] = useState(false);
+  const [qcDelegateName, setQcDelegateName] = useState('');
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const name = localStorage.getItem('qc_delegate_name') || '';
+      if (params.get('qc') === '1' && name) { setQcMode(true); setQcDelegateName(name); }
+    } catch { /* ignore */ }
+  }, []);
 
   // Page data
   const [messages,     setMessages]     = useState<Message[]>([]);
@@ -3106,6 +3119,29 @@ export default function CrewPage() {
   };
 
   if (sessionLoading) return <Spinner />;
+
+  // QC delegate inspector — replaces the entire crew view.
+  if (qcMode && tenant) {
+    return (
+      <>
+        <BgLayers />
+        <QcInspectorView
+          tenantId={tenant.id}
+          qcName={qcDelegateName}
+          showToast={showToast}
+          onExit={() => {
+            try { localStorage.removeItem('qc_delegate_name'); } catch { /* ignore */ }
+            window.location.replace('/app');
+          }}
+        />
+        {toast && (
+          <div style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 4000, padding: '12px 20px', borderRadius: 10, background: toast.error ? 'rgba(248,113,113,0.95)' : 'rgba(45,225,201,0.95)', color: toast.error ? '#1a0606' : '#04201c', fontSize: 14, fontWeight: 700, maxWidth: '90vw' }}>
+            {toast.msg}
+          </div>
+        )}
+      </>
+    );
+  }
 
   const isTrial = tenant?.subscription_status === 'trial';
   const days = trialDaysLeft(tenant?.trial_ends_at ?? null);

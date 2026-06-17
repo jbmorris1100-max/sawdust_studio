@@ -9,6 +9,8 @@ import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
 import ReportsTab from './ReportsTab';
 import SetupWizard from './SetupWizard';
 import AssemblyTab from './AssemblyTab';
+import ProductionTab from './ProductionTab';
+import FinishingTab from './FinishingTab';
 import CraftsmanTab from './CraftsmanTab';
 import CrewTab from './CrewTab';
 import QcTab from './QcTab';
@@ -329,7 +331,7 @@ type NotificationRow = {
   created_at: string;
 };
 
-type Tab = 'overview' | 'crew' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'assembly' | 'craftsman' | 'qc' | 'settings';
+type Tab = 'overview' | 'crew' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'production' | 'assembly' | 'craftsman' | 'finishing' | 'qc' | 'settings';
 
 type AiMode = 'learn' | 'assist' | 'autonomous';
 
@@ -735,6 +737,7 @@ export default function SupervisorPage() {
   // and refreshed in realtime as units are assigned / completed.
   const [craftsmanCount, setCraftsmanCount] = useState(0);
   const [qcCount, setQcCount] = useState(0);
+  const [productionCount, setProductionCount] = useState(0);
 
   // Notification center (header bell)
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
@@ -1104,6 +1107,81 @@ export default function SupervisorPage() {
     }
   }
 
+  // ── QC Delegation (Settings tab) ──────────────────────────────────────────────
+  // A delegate is a named crew member, gated by a 4-digit PIN, who can sign off QC
+  // from the crew app (/app/crew?qc=1). Revoking flips active=false.
+  type QcDelegate = { id: string; crew_member_name: string; dept: string | null; pin: string; created_at: string };
+  const [qcDelegates,  setQcDelegates]  = useState<QcDelegate[]>([]);
+  const [delegName,    setDelegName]    = useState('');
+  const [delegPin,     setDelegPin]     = useState('');   // generated, shown once after Save
+  const [delegSaving,  setDelegSaving]  = useState(false);
+  const [delegEnabling, setDelegEnabling] = useState(false);
+  const hasQcDept = departments.some((d) => d.toLowerCase() === 'qc');
+
+  const loadQcDelegates = useCallback(async () => {
+    if (!tenant) return;
+    try {
+      const { data } = await supabase
+        .from('qc_delegates')
+        .select('id, crew_member_name, dept, pin, created_at')
+        .eq('tenant_id', tenant.id)
+        .eq('active', true)
+        .order('created_at', { ascending: false });
+      setQcDelegates((data as QcDelegate[] | null) ?? []);
+    } catch { /* table optional until migration runs */ }
+  }, [tenant]);
+  useEffect(() => { void loadQcDelegates(); }, [loadQcDelegates]);
+
+  async function addDelegate() {
+    if (!tenant || delegSaving) return;
+    const name = delegName.trim();
+    if (!name) { showToast('Enter a crew member name', true); return; }
+    setDelegSaving(true);
+    const pin = String(Math.floor(1000 + Math.random() * 9000));
+    try {
+      const { error } = await supabase.from('qc_delegates').insert({
+        tenant_id: tenant.id, crew_member_name: name, pin, active: true, created_by: 'Supervisor',
+      });
+      if (error) throw error;
+      setDelegPin(pin);     // surfaced once with a copy button
+      setDelegName('');
+      void loadQcDelegates();
+      showToast('QC delegate added');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Could not add delegate', true);
+    } finally {
+      setDelegSaving(false);
+    }
+  }
+
+  async function revokeDelegate(id: string) {
+    try {
+      const { error } = await supabase.from('qc_delegates').update({ active: false }).eq('id', id);
+      if (error) throw error;
+      setQcDelegates((prev) => prev.filter((d) => d.id !== id));
+      showToast('Delegate revoked');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Could not revoke', true);
+    }
+  }
+
+  async function enableQcDept() {
+    if (!tenant || delegEnabling || hasQcDept) return;
+    setDelegEnabling(true);
+    const next = [...departments, 'QC'];
+    try {
+      const { error } = await supabase.from('tenants').update({ departments: next }).eq('id', tenant.id);
+      if (error) throw error;
+      setDepartments(next);
+      setDeptDraft((prev) => (prev.some((d) => d.toLowerCase() === 'qc') ? prev : [...prev, 'QC']));
+      showToast('QC department enabled');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Could not enable QC', true);
+    } finally {
+      setDelegEnabling(false);
+    }
+  }
+
   // ── Data load ───────────────────────────────────────────────────────────────
 
   const loadAll = useCallback(async () => {
@@ -1300,6 +1378,26 @@ export default function SupervisorPage() {
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenant, loadQcCount]);
+
+  // Production queue badge — cabinets still assigned to production.
+  const loadProductionCount = useCallback(async () => {
+    if (!tenant) return;
+    try {
+      const { count } = await supabase.from('cabinet_units')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenant.id).eq('assigned_dept', 'production').neq('status', 'complete');
+      setProductionCount(count ?? 0);
+    } catch { /* best-effort */ }
+  }, [tenant]);
+  useEffect(() => {
+    if (!tenant) return;
+    void loadProductionCount();
+    const ch = supabase
+      .channel('rt-sup-production-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenant.id}` }, () => { void loadProductionCount(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [tenant, loadProductionCount]);
 
   // ── Notification center ─────────────────────────────────────────────────────
   const loadNotifications = useCallback(async () => {
@@ -3079,9 +3177,11 @@ export default function SupervisorPage() {
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: 'overview',      label: 'Overview' },
     { key: 'crew',          label: 'Crew' },
+    { key: 'production',    label: 'Production',  count: productionCount > 0 ? productionCount : undefined },
     { key: 'assembly',      label: 'Assembly' },
-    { key: 'qc',            label: 'QC',          count: qcCount > 0 ? qcCount : undefined },
     { key: 'craftsman',     label: 'Craftsman',   count: craftsmanCount > 0 ? craftsmanCount : undefined },
+    { key: 'finishing',     label: 'Finishing' },
+    { key: 'qc',            label: 'QC',          count: qcCount > 0 ? qcCount : undefined },
     { key: 'messages',      label: 'Messages',    count: unreadMessages > 0 ? unreadMessages : undefined },
     { key: 'needs',         label: 'Inventory',   count: activeNeeds.length },
     { key: 'damage',        label: 'Damage',      count: openDamage.length },
@@ -3099,7 +3199,9 @@ export default function SupervisorPage() {
   const navIcon: Record<Tab, React.ReactNode> = {
     overview:     (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>),
     crew:         (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>),
+    production:    (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="m7 14 3-3 3 3 5-5"/><path d="M14 9h3v3"/></svg>),
     assembly:     (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>),
+    finishing:    (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M18.37 2.63 14 7l-1.59-1.59a2 2 0 0 0-2.82 0L8 7l9 9 1.59-1.59a2 2 0 0 0 0-2.82L17 10l4.37-4.37a2.12 2.12 0 0 0-3-3z"/><path d="M9 8c-2 3-4 3.5-7 4l8 8c1-.5 3.5-1.5 4-7"/><path d="M14.5 17.5 4.5 15"/></svg>),
     qc:           (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><path d="m9 14 2 2 4-4"/></svg>),
     craftsman:    (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>),
     messages:     (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>),
@@ -3114,7 +3216,7 @@ export default function SupervisorPage() {
   };
   const navGroups: { label: string | null; keys: Tab[] }[] = [
     { label: null,             keys: ['overview'] },
-    { label: 'Shop Floor',     keys: ['crew', 'assembly', 'qc', 'craftsman'] },
+    { label: 'Shop Floor',     keys: ['crew', 'production', 'assembly', 'craftsman', 'finishing', 'qc'] },
     { label: 'Communications', keys: ['messages', 'needs', 'damage'] },
     { label: 'Resources',      keys: ['plans', 'sops'] },
     { label: 'System',         keys: ['ai', 'integrations', 'reports', 'settings'] },
@@ -5325,6 +5427,26 @@ export default function SupervisorPage() {
             />
           )}
 
+          {/* ── Production tab ────────────────────────────────────────────── */}
+          {tab === 'production' && tenant && (
+            <ProductionTab
+              tenantId={tenant.id}
+              showToast={showToast}
+              jobs={jobs}
+              departments={departments}
+            />
+          )}
+
+          {/* ── Finishing tab ────────────────────────────────────────────── */}
+          {tab === 'finishing' && tenant && (
+            <FinishingTab
+              tenantId={tenant.id}
+              showToast={showToast}
+              jobs={jobs}
+              departments={departments}
+            />
+          )}
+
           {/* ── Craftsman tab ────────────────────────────────────────────── */}
           {tab === 'craftsman' && tenant && (
             <CraftsmanTab
@@ -5573,6 +5695,102 @@ export default function SupervisorPage() {
                   </button>
                 </div>
               </div>
+
+              {/* ── QC Delegation ──────────────────────────────────────────── */}
+              <div className="portal-card">
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 6 }}>QC Delegation</div>
+                <p style={{ fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6, marginBottom: 16 }}>
+                  Hand QC sign-off to a trusted crew member. Each delegate gets a 4-digit PIN to inspect cabinets from the crew app — pass completes the cabinet, fail puts it on hold.
+                </p>
+
+                {!hasQcDept ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <p style={{ fontSize: 13, color: 'var(--ink-mute)', lineHeight: 1.6 }}>
+                      Your shop does not run a QC department yet. Enable it to start delegating quality control.
+                    </p>
+                    <button
+                      onClick={() => void enableQcDept()}
+                      disabled={delegEnabling}
+                      className="btn btn-primary"
+                      style={{ alignSelf: 'flex-start', padding: '0 22px', opacity: delegEnabling ? 0.5 : 1, cursor: delegEnabling ? 'not-allowed' : 'pointer' }}
+                    >
+                      {delegEnabling ? 'Enabling…' : 'Enable QC Department'}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {/* Active delegates */}
+                    {qcDelegates.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
+                        {qcDelegates.map((d) => (
+                          <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 10, background: 'var(--bg-1)', border: '1px solid var(--line)' }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{d.crew_member_name}</div>
+                              <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>
+                                {d.dept ? `${d.dept} · ` : ''}PIN ••••  ·  Added {new Date(d.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => void revokeDelegate(d.id)}
+                              style={{ flexShrink: 0, fontSize: 12.5, fontWeight: 700, padding: '7px 14px', borderRadius: 8, background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', color: '#F87171', cursor: 'pointer', fontFamily: 'inherit' }}
+                            >
+                              Revoke
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Newly generated PIN — shown once with a copy button */}
+                    {delegPin && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', borderRadius: 10, background: 'rgba(45,225,201,0.08)', border: '1px solid rgba(45,225,201,0.3)', marginBottom: 16 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>New delegate PIN — share it now, it won&apos;t be shown again</div>
+                          <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: '0.3em', color: '#2DE1C9', marginTop: 4 }}>{delegPin}</div>
+                        </div>
+                        <button
+                          onClick={() => { try { void navigator.clipboard.writeText(delegPin); showToast('PIN copied'); } catch { /* ignore */ } }}
+                          style={{ flexShrink: 0, fontSize: 12.5, fontWeight: 700, padding: '8px 16px', borderRadius: 8, background: '#2DE1C9', border: 'none', color: '#04201c', cursor: 'pointer', fontFamily: 'inherit' }}
+                        >
+                          Copy
+                        </button>
+                        <button
+                          onClick={() => setDelegPin('')}
+                          style={{ flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', padding: 4, display: 'flex' }}
+                          aria-label="Dismiss"
+                        >
+                          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Add delegate form */}
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                      <div style={{ flex: 1, minWidth: 200, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)' }}>Crew member name</label>
+                        <input
+                          className="form-input"
+                          value={delegName}
+                          onChange={(e) => setDelegName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') void addDelegate(); }}
+                          placeholder="e.g. Maria Lopez"
+                        />
+                      </div>
+                      <button
+                        onClick={() => void addDelegate()}
+                        disabled={delegSaving || !delegName.trim()}
+                        className="btn btn-primary"
+                        style={{ padding: '0 22px', opacity: (delegSaving || !delegName.trim()) ? 0.5 : 1, cursor: (delegSaving || !delegName.trim()) ? 'not-allowed' : 'pointer' }}
+                      >
+                        {delegSaving ? 'Adding…' : 'Add Delegate'}
+                      </button>
+                    </div>
+                    <p style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 10 }}>
+                      A random 4-digit PIN is generated when you add a delegate.
+                    </p>
+                  </>
+                )}
+              </div>
             </div>
           )}
 
@@ -5704,6 +5922,11 @@ export default function SupervisorPage() {
                       <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
                     </svg>
                   )},
+                  { key: 'production' as Tab, label: 'Production', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 3v18h18"/><path d="m7 14 3-3 3 3 5-5"/><path d="M14 9h3v3"/>
+                    </svg>
+                  )},
                   { key: 'assembly' as Tab, label: 'Assembly', icon: (
                     <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="2" y="3" width="20" height="14" rx="2"/>
@@ -5714,6 +5937,13 @@ export default function SupervisorPage() {
                   { key: 'craftsman' as Tab, label: 'Craftsman', icon: (
                     <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                    </svg>
+                  )},
+                  { key: 'finishing' as Tab, label: 'Finishing', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18.37 2.63 14 7l-1.59-1.59a2 2 0 0 0-2.82 0L8 7l9 9 1.59-1.59a2 2 0 0 0 0-2.82L17 10l4.37-4.37a2.12 2.12 0 0 0-3-3z"/>
+                      <path d="M9 8c-2 3-4 3.5-7 4l8 8c1-.5 3.5-1.5 4-7"/>
+                      <path d="M14.5 17.5 4.5 15"/>
                     </svg>
                   )},
                   { key: 'qc' as Tab, label: 'QC', icon: (

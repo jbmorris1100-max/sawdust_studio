@@ -86,6 +86,8 @@ export default function AppPage() {
 
   const isTrial = tenant?.subscription_status === 'trial';
   const days    = trialDaysLeft(tenant?.trial_ends_at ?? null);
+  // Show the QC delegate card only when this shop runs a QC department.
+  const hasQcDept = (tenant?.departments ?? []).some((d) => d.toLowerCase() === 'qc');
 
   return (
     <>
@@ -166,6 +168,26 @@ export default function AppPage() {
                   Monitor crew, manage inventory, view reports
                 </div>
               </a>
+
+              {/* QC delegate — only when this shop runs a QC department */}
+              {hasQcDept && (
+                <a
+                  href={`/join?tenant=${tenant?.id ?? ''}&role=qc`}
+                  className="app-role-card"
+                  style={{ gridColumn: '1 / -1', borderColor: 'rgba(45,225,201,0.25)' }}
+                >
+                  <div className="app-role-icon" style={{ background: 'rgba(45,225,201,0.1)', color: '#2DE1C9' }}>
+                    <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M9 11l3 3L22 4"/>
+                      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                    </svg>
+                  </div>
+                  <div style={{ fontWeight: 700, fontSize: 17, color: 'var(--ink)', marginTop: 14 }}>I'm QC</div>
+                  <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 6, lineHeight: 1.5 }}>
+                    Quality control inspection
+                  </div>
+                </a>
+              )}
             </div>
 
             <p style={{ marginTop: 24, fontSize: 13, color: 'var(--ink-mute)' }}>

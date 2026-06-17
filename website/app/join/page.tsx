@@ -9,7 +9,7 @@ import {
 } from '@simplewebauthn/browser';
 
 type CrewMember = { id: string; name: string; department: string | null; initial_pin: string | null };
-type Step = 'pick' | 'pin' | 'webauthn-register' | 'webauthn-auth' | 'done';
+type Step = 'pick' | 'pin' | 'webauthn-register' | 'webauthn-auth' | 'done' | 'qc-pin';
 
 const SESSION_KEY = (tenantId: string) => `crew_session_${tenantId}`;
 const CREW_ID_KEY = (tenantId: string) => `crew_member_id_${tenantId}`;
@@ -27,6 +27,9 @@ function JoinInner() {
   const searchParams = useSearchParams();
   const router       = useRouter();
   const tenantId     = searchParams.get('tenant') ?? '';
+  // When role=qc, the picker leads to a QC-delegate PIN screen instead of the
+  // normal crew PIN/biometric flow — a delegate inspects cabinets at /app/crew?qc=1.
+  const role         = searchParams.get('role') ?? '';
 
   const [shopName,   setShopName]   = useState<string | null>(null);
   const [notFound,   setNotFound]   = useState(false);
@@ -40,6 +43,8 @@ function JoinInner() {
   const [busy,       setBusy]       = useState(false);
   const [regToken,   setRegToken]   = useState('');
   const [deviceName] = useState('');
+  // QC-delegate PIN entry (role=qc).
+  const [qcPin,      setQcPin]      = useState('');
 
   const triggerShake = (msg: string) => {
     setPinError(msg);
@@ -99,6 +104,13 @@ function JoinInner() {
     setSelected(m);
     setPin('');
     setPinError('');
+    // QC delegates skip the crew PIN/biometric flow — they authenticate against
+    // a delegate PIN issued by the supervisor.
+    if (role === 'qc') {
+      setQcPin('');
+      setStep('qc-pin');
+      return;
+    }
     // Check if this device already has a WebAuthn credential for this member
     // by attempting auth-options — if credentials exist, go straight to biometric
     setBusy(true);
@@ -146,6 +158,33 @@ function JoinInner() {
       setStep('webauthn-register');
     } catch { triggerShake('Network error — try again'); }
     finally { setBusy(false); }
+  }
+
+  // QC-delegate PIN — validate against an active qc_delegates row, then enter the
+  // crew app in QC inspector mode.
+  async function submitQcPin() {
+    if (!selected || busy) return;
+    if (qcPin.length < 4) { triggerShake('PIN must be 4 digits'); return; }
+    setBusy(true);
+    setPinError('');
+    try {
+      const { data, error } = await supabase
+        .from('qc_delegates')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .eq('active', true)
+        .eq('pin', qcPin)
+        .limit(1);
+      if (error) throw error;
+      if (!data || data.length === 0) { triggerShake('Incorrect PIN'); setQcPin(''); setBusy(false); return; }
+      try { localStorage.setItem('qc_delegate_name', selected.name); } catch { /* ignore */ }
+      setStep('done');
+      setTimeout(() => router.push('/app/crew?qc=1'), 600);
+    } catch {
+      triggerShake('Network error — try again');
+    } finally {
+      setBusy(false);
+    }
   }
 
   // WebAuthn registration (first time on this device)
@@ -327,6 +366,40 @@ function JoinInner() {
                   </div>
                   <button onClick={() => void submitPin()} disabled={pin.length < 4 || busy}
                     style={{ width: '100%', padding: '15px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', border: 'none', background: pin.length < 4 || busy ? 'var(--bg-1)' : '#2DE1C9', color: pin.length < 4 || busy ? 'var(--ink-mute)' : '#04201c', cursor: pin.length < 4 || busy ? 'not-allowed' : 'pointer' }}>
+                    {busy ? 'Checking…' : 'Continue'}
+                  </button>
+                </div>
+              )}
+
+              {/* Step: QC Delegate PIN */}
+              {step === 'qc-pin' && selected && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <button onClick={() => { setStep('pick'); setSelected(null); setPinError(''); setQcPin(''); }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', fontSize: 13, fontFamily: 'inherit', padding: 0, alignSelf: 'flex-start' }}>
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+                    Back
+                  </button>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>QC Delegate PIN</div>
+                    <div style={{ fontSize: 13, color: 'var(--ink-mute)', marginTop: 4 }}>Enter the PIN your supervisor gave you</div>
+                  </div>
+                  <div style={{ animation: shake ? 'shake 0.4s ease-in-out' : 'none' }}>
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={4}
+                      value={qcPin}
+                      onChange={(e) => { setQcPin(e.target.value.replace(/\D/g, '')); setPinError(''); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') void submitQcPin(); }}
+                      placeholder="••••"
+                      autoFocus
+                      style={{ width: '100%', textAlign: 'center', fontSize: 28, letterSpacing: '0.3em', padding: '16px', borderRadius: 12, border: `1px solid ${pinError ? 'rgba(248,113,113,0.5)' : 'var(--line-strong)'}`, background: 'var(--bg-1)', color: 'var(--ink)', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
+                    />
+                    {pinError && <div style={{ marginTop: 8, fontSize: 12, color: '#F87171', textAlign: 'center' }}>{pinError}</div>}
+                  </div>
+                  <button onClick={() => void submitQcPin()} disabled={qcPin.length < 4 || busy}
+                    style={{ width: '100%', padding: '15px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', border: 'none', background: qcPin.length < 4 || busy ? 'var(--bg-1)' : '#2DE1C9', color: qcPin.length < 4 || busy ? 'var(--ink-mute)' : '#04201c', cursor: qcPin.length < 4 || busy ? 'not-allowed' : 'pointer' }}>
                     {busy ? 'Checking…' : 'Continue'}
                   </button>
                 </div>

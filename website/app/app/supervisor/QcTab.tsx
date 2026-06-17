@@ -5,6 +5,7 @@ import { DEFAULT_DEPARTMENTS } from '@/lib/auth';
 import { deptDisplay } from '@/lib/partActions';
 import { sendNotify } from '@/lib/notify';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
+import DeptCrewStrip from './DeptCrewStrip';
 
 // Supervisor QC tab. Lists every cabinet that crew sent to QC (status =
 // 'ready_for_qc'), grouped by job. Each cabinet shows its parts (with final
@@ -122,9 +123,15 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
     if (busy) return;
     setBusy(cab.id);
     const now = new Date().toISOString();
+    // Stamp who signed off QC — the supervisor's email from the active session.
+    let qcBy = 'Supervisor';
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user?.email) qcBy = session.user.email;
+    } catch { /* fall back to 'Supervisor' */ }
     try {
       await supabase.from('parts').update({ status: 'complete', assigned_dept: 'complete', qc_failed: false, qc_notes: null }).eq('cabinet_unit_id', cab.id).eq('tenant_id', tenantId);
-      const { error } = await supabase.from('cabinet_units').update({ status: 'complete', assigned_dept: 'complete', completed_at: now, qc_notes: null }).eq('id', cab.id).eq('tenant_id', tenantId);
+      const { error } = await supabase.from('cabinet_units').update({ status: 'complete', assigned_dept: 'complete', completed_at: now, qc_notes: null, qc_by: qcBy, qc_at: now }).eq('id', cab.id).eq('tenant_id', tenantId);
       if (error) throw error;
 
       // Job rollup — if every cabinet in the job is complete, complete the job.
@@ -255,6 +262,9 @@ export default function QcTab({ tenantId, showToast, jobs = [], departments }: P
 
   return (
     <div>
+      <div style={{ marginBottom: 16 }}>
+        <DeptCrewStrip tenantId={tenantId} dept="QC" />
+      </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
         <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
         <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>Quality Control</div>

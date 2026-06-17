@@ -4,6 +4,7 @@ import type { CSSProperties } from 'react';
 import { supabase } from '@/lib/supabase';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 import FinishSpecsModal from './FinishSpecsModal';
+import DeptCrewStrip from './DeptCrewStrip';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -406,6 +407,8 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+      <DeptCrewStrip tenantId={tenantId} dept="Craftsman" />
 
       {/* ── SECTION 1 — Craftsman Assignments ── */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

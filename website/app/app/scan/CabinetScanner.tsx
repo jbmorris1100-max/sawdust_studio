@@ -27,6 +27,9 @@ interface Props {
   // Called with the matched cabinet's dept key (e.g. 'assembly') when the user
   // taps the View button — the crew page decides how to get them there.
   onNavigate?: (deptKey: string) => void;
+  // QC inspector mode — when set, the result screen offers "Inspect Cabinet"
+  // instead of "View in <dept>", handing the full matched cabinet back.
+  onMatch?: (cab: CabRow) => void;
 }
 
 // Lowercase, strip everything but letters/digits — tolerant of spacing, dashes
@@ -65,7 +68,7 @@ function statusLabel(status: string | null): string {
 
 const CREW_VIEW_DEPTS = ['production', 'craftsman', 'assembly', 'finishing'];
 
-export default function CabinetScanner({ tenantId, onClose, onNavigate }: Props) {
+export default function CabinetScanner({ tenantId, onClose, onNavigate, onMatch }: Props) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [extracted, setExtracted] = useState('');
@@ -310,7 +313,12 @@ export default function CabinetScanner({ tenantId, onClose, onNavigate }: Props)
               </div>
               <div style={{ fontSize: 11.5, color: 'var(--ink-mute)', marginTop: 12 }}>Label read: {extracted}</div>
             </div>
-            {canView && (
+            {onMatch ? (
+              <button onClick={() => onMatch(match)} style={primaryBtn}>
+                Inspect Cabinet
+                <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+              </button>
+            ) : canView && (
               <button onClick={() => onNavigate!(viewDept)} style={primaryBtn}>
                 View in {deptDisplay(viewDept)}
                 <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
