@@ -177,7 +177,10 @@ function JoinInner() {
         .limit(1);
       if (error) throw error;
       if (!data || data.length === 0) { triggerShake('Incorrect PIN'); setQcPin(''); setBusy(false); return; }
-      try { localStorage.setItem('qc_delegate_name', selected.name); } catch { /* ignore */ }
+      try {
+        localStorage.setItem('qc_delegate_name', selected.name);
+        localStorage.setItem('crew_tenant_id', tenantId);
+      } catch { /* ignore */ }
       setStep('done');
       setTimeout(() => router.push('/app/crew?qc=1'), 600);
     } catch {
