@@ -4,7 +4,9 @@
 //   parts.assigned_dept = 'production' | 'craftsman' | 'finishing' | 'assembly' | 'qc' | 'complete'
 //   parts.status        = 'pending' | 'complete'
 // A cabinet's assigned_dept is the majority dept of its parts (recomputed on
-// every push). production_status is never read or written here.
+// every push). production_status is written here only for the production→X
+// transition (the part's cut confirmation); pushes from any other dept leave it
+// untouched.
 //
 // pushPart() is the one function that performs a dept transition. PushPicker (and
 // the legacy pushPartToDept wrapper) call it.
@@ -158,9 +160,20 @@ export async function pushPart(opts: {
   const fromDept = (opts.fromDept || '').toLowerCase();
   const toDept = (opts.toDept || '').toLowerCase();
 
-  // 1. Reassign the part — must succeed.
+  // 1. Reassign the part — must succeed. When the source dept is Production, this
+  //    same atomic update also writes the cut confirmation (the only place
+  //    production_status/cut_by/cut_at are written), so a stray cutlist tap can
+  //    never leave the row in a contradictory state.
   const { error } = await supabase.from('parts')
-    .update({ assigned_dept: toDept, status: toDept === 'complete' ? 'complete' : 'pending' })
+    .update({
+      assigned_dept: toDept,
+      status: toDept === 'complete' ? 'complete' : 'pending',
+      ...(fromDept === 'production' ? {
+        production_status: 'cut',
+        cut_by: opts.workerName || null,
+        cut_at: new Date().toISOString(),
+      } : {}),
+    })
     .eq('id', opts.partId).eq('tenant_id', opts.tenantId);
   if (error) throw error;
 

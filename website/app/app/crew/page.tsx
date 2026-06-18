@@ -2212,26 +2212,23 @@ export default function CrewPage() {
     void loadProduction();
   }
 
-  // Check/uncheck a part as it's cut. Sets both `checked` (the cutlist tick) and
-  // production_status so the supervisor pipeline + job progress stay in sync.
+  // Check/uncheck a part on the cutlist. This is a pure pre-push checklist tick —
+  // it ONLY touches `checked` and has no effect on production_status/cut_by/cut_at.
+  // The real "cut" confirmation is written atomically when the part is pushed out
+  // of Production (see pushPart), so a stray uncheck tap can't corrupt the row.
   // When the cabinet's last unchecked part is checked, the "fully cut" popup fires.
   async function toggleCutPart(cabinetId: string, partId: string) {
     const cab = cutJobCabs.find((c) => c.cabinetId === cabinetId);
     const part = cab?.parts.find((p) => p.id === partId);
     if (!cab || !part) return;
     const next = !part.checked;
-    const now = new Date().toISOString();
     setCutJobCabs((cabs) => cabs.map((c) => c.cabinetId !== cabinetId ? c : { ...c, parts: c.parts.map((p) => p.id === partId ? { ...p, checked: next } : p) }));
     // Fully-cut popup when this check completes the cabinet.
     if (next && cab.parts.every((p) => p.id === partId || p.checked)) {
       setFullyCutCab({ cabinetId, label: cab.label });
     }
     try {
-      await supabase.from('parts')
-        .update(next
-          ? { checked: true, production_status: 'cut', cut_by: crewName || null, cut_at: now }
-          : { checked: false, production_status: 'not_cut' })
-        .eq('id', partId).eq('tenant_id', tenant!.id);
+      await supabase.from('parts').update({ checked: next }).eq('id', partId).eq('tenant_id', tenant!.id);
     } catch { /* optimistic; realtime will reconcile */ }
   }
 

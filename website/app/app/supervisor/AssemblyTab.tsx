@@ -520,7 +520,8 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
 
   // ── Computed data ──────────────────────────────────────────────────────────
 
-  const unitParts = (unitId: string) => allParts.filter((p) => p.cabinet_unit_id === unitId);
+  const unitParts = (unitId: string) =>
+    allParts.filter((p) => p.cabinet_unit_id === unitId && (p.assigned_dept || 'production').toLowerCase() === 'assembly');
 
   // Human label for a job_number, resolved from the jobs table (Client / Room path).
   const jobLabelFor = (jobNumber: string): string => {
@@ -752,13 +753,8 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                           );
                         }
 
-                        // ── Normal cabinet (may be parts-level split across depts) ──
+                        // ── Normal cabinet — Assembly-only parts (filtered by unitParts) ──
                         const sm = statusMeta(unit.status);
-                        const baseDept   = unit.assigned_dept && unit.assigned_dept !== 'split' ? deptDisplay(unit.assigned_dept) : 'Production';
-                        const effDept    = (p: AssemblyPart) => deptDisplay(p.assigned_dept) || baseDept;
-                        const partDepts  = Array.from(new Set(parts.map(effDept)));
-                        const isPartSplit = partDepts.length > 1;
-                        const allPartsComplete = parts.length > 0 && parts.every((p) => p.status === 'complete');
                         const cabKey     = unit.cabinet_number || unit.unit_label;
                         const pushCtx: PushCtx = {
                           tenantId, jobNumber: unit.job_number, unitLabel: unit.unit_label, jobPath: jobLabelFor(jobKey),
@@ -766,7 +762,7 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                           onPushed: (partId) => setAllParts((prev) => prev.map((p) => p.id === partId ? p : p)), // realtime reloads; keep state stable
                         };
                         return (
-                          <div key={unit.id} style={{ borderLeft: isFlagged ? '3px solid #F87171' : isPartSplit ? '3px solid #A78BFA' : '3px solid transparent' }}>
+                          <div key={unit.id} style={{ borderLeft: isFlagged ? '3px solid #F87171' : '3px solid transparent' }}>
                             <button onClick={() => setExpandedCab(cabOpen ? null : unit.id)} style={rowStyle(32, isFlagged, true)}>
                               <IcoChevron open={cabOpen} />
                               {isFlagged && <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#F87171', flexShrink: 0, animation: 'flagPulse 1.5s ease-in-out infinite' }} />}
@@ -783,13 +779,9 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                                   <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 20, color: dm.color, background: `${dm.color}22`, border: `1px solid ${dm.color}40`, flexShrink: 0 }}>{dm.label}</span>
                                 );
                               })()}
-                              {isPartSplit && !allPartsComplete ? (
-                                <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', padding: '2px 7px', borderRadius: 20, color: '#A78BFA', background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.3)', flexShrink: 0 }}>PARTIAL</span>
-                              ) : (
-                                <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: sm.color, background: sm.bg, border: `1px solid ${sm.border}`, flexShrink: 0 }}>
-                                  {sm.label}
-                                </span>
-                              )}
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: sm.color, background: sm.bg, border: `1px solid ${sm.border}`, flexShrink: 0 }}>
+                                {sm.label}
+                              </span>
                             </button>
 
                             {/* LEVEL 4 — Parts */}
@@ -799,23 +791,7 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
                                   <ViewDrawingsButton tenantId={tenantId} jobNumber={unit.job_number} cabinetKey={cabKey} compact={false} />
                                 </div>
 
-                                {isPartSplit ? (
-                                  partDepts.map((d) => {
-                                    const dParts = parts.filter((p) => effDept(p) === d);
-                                    const done = dParts.filter((p) => p.status === 'complete').length;
-                                    const inProg = dParts.some((p) => p.status !== 'complete');
-                                    return (
-                                      <div key={d} style={{ marginBottom: 10 }}>
-                                        <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-dim)', margin: '8px 0 2px' }}>
-                                          <span style={{ color: '#A78BFA' }}>{d}</span>: {done}/{dParts.length} part{dParts.length !== 1 ? 's' : ''} complete{inProg && done < dParts.length ? ' — In Progress' : ''}
-                                        </div>
-                                        <PartsList parts={dParts} enteredAt={enteredAt} pushCtx={pushCtx} />
-                                      </div>
-                                    );
-                                  })
-                                ) : (
-                                  <PartsList parts={parts} enteredAt={enteredAt} pushCtx={pushCtx} />
-                                )}
+                                <PartsList parts={parts} enteredAt={enteredAt} pushCtx={pushCtx} />
 
                                 {/* QC gate — supervisor passes or fails an assembled cabinet */}
                                 {unit.status === 'ready_for_qc' && (
