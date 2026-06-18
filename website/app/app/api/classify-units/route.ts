@@ -310,9 +310,41 @@ Return ONLY a valid JSON array:
       classified++;
     } catch { /* skip this unit */ }
     // Parts carry the dept the crew views filter on — move them with the cabinet.
+    // Units routed straight to finishing or assembly arrive ALREADY cut (the same
+    // rule pushPart() enforces for production→finishing/assembly), so mark their
+    // parts cut at write time. craftsman and production stay not_cut — the
+    // craftsman confirms the cut on Start Build, production cuts on the floor.
+    // cut_by is the literal 'Other' (a non-human/automated cut for display).
+    const marksCut = c.dept === 'finishing' || c.dept === 'assembly';
+    const now = new Date().toISOString();
     try {
-      await db.from('parts').update({ assigned_dept: c.dept }).eq('cabinet_unit_id', unitId).eq('tenant_id', tenantId);
+      await db.from('parts').update({
+        assigned_dept: c.dept,
+        ...(marksCut ? {
+          production_status: 'cut',
+          cut_by: 'Other',
+          cut_at: now,
+        } : {}),
+      }).eq('cabinet_unit_id', unitId).eq('tenant_id', tenantId);
     } catch { /* best-effort */ }
+    // Log the initial arrival event so Production's dwell-time has a start point
+    // for freshly uploaded parts (every other dept transition logs to
+    // part_dept_events via pushPart; classification was the one path that didn't).
+    // Independent try/catch — a logging failure must never block the assignment.
+    try {
+      const unitParts = partsByUnit.get(unitId) ?? [];
+      if (unitParts.length > 0) {
+        await db.from('part_dept_events').insert(unitParts.map((p) => ({
+          tenant_id: tenantId,
+          part_id: p.id,
+          cabinet_unit_id: unitId,
+          job_number: jobNumber,
+          from_dept: null,
+          to_dept: c.dept,
+          worker_name: 'AI Classifier',
+        })));
+      }
+    } catch { /* best-effort — never block classification on logging */ }
   }
 
   // ── STEP 4 — upsert learned patterns ────────────────────────────────────────

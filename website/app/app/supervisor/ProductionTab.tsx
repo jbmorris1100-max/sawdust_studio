@@ -69,6 +69,26 @@ function CutStatusBadge({ status }: { status: string | null }) {
   return <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: meta.color, background: meta.bg, border: `1px solid ${meta.border}`, flexShrink: 0 }}>{meta.label}</span>;
 }
 
+// Room folder label — matches FinishingView: null room_number → 'General'.
+function roomLabel(roomNumber: string | null): string {
+  if (!roomNumber) return 'General';
+  return `Room ${roomNumber}`;
+}
+
+// Group a job's units by room, named rooms first and 'General'/no-room last
+// (same ordering convention as FinishingView.roomsForJob).
+function roomsForUnits(jobUnits: CabinetUnit[]): { roomNumber: string | null; units: CabinetUnit[] }[] {
+  const byRoom: Record<string, CabinetUnit[]> = {};
+  jobUnits.forEach((u) => { const rk = u.room_number ?? '__noroom__'; (byRoom[rk] ??= []).push(u); });
+  return Object.entries(byRoom)
+    .sort(([a], [b]) => {
+      if (a === '__noroom__') return 1;
+      if (b === '__noroom__') return -1;
+      return a.localeCompare(b, undefined, { numeric: true });
+    })
+    .map(([rk, units]) => ({ roomNumber: rk === '__noroom__' ? null : rk, units }));
+}
+
 function rowStyle(indent: number, divider: boolean): CSSProperties {
   return {
     width: '100%', display: 'flex', alignItems: 'center', gap: 11,
@@ -88,6 +108,7 @@ export default function ProductionTab({ tenantId, showToast, jobs }: Props) {
   const [parts, setParts] = useState<ProdPart[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedJob, setExpandedJob] = useState<string | null>(null);
+  const [expandedRoom, setExpandedRoom] = useState<string | null>(null);
   const [expandedCab, setExpandedCab] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -219,7 +240,7 @@ export default function ProductionTab({ tenantId, showToast, jobs }: Props) {
             return (
               <div key={jobKey} style={{ borderTop: ji > 0 ? '1px solid var(--line)' : 'none' }}>
                 {/* Job folder */}
-                <button onClick={() => { setExpandedJob(jobOpen ? null : jobKey); setExpandedCab(null); }} style={rowStyle(0, false)}>
+                <button onClick={() => { setExpandedJob(jobOpen ? null : jobKey); setExpandedRoom(null); setExpandedCab(null); }} style={rowStyle(0, false)}>
                   <IcoChevron open={jobOpen} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -229,14 +250,28 @@ export default function ProductionTab({ tenantId, showToast, jobs }: Props) {
                   </div>
                 </button>
 
+                {/* Room folders */}
+                {jobOpen && roomsForUnits(jobUnits).map((room) => {
+                  const roomKey = `${jobKey}::${room.roomNumber ?? '__noroom__'}`;
+                  const roomOpen = expandedRoom === roomKey;
+                  return (
+                    <div key={roomKey}>
+                      <button onClick={() => { setExpandedRoom(roomOpen ? null : roomKey); setExpandedCab(null); }} style={rowStyle(16, true)}>
+                        <IcoChevron open={roomOpen} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>{roomLabel(room.roomNumber)}</span>
+                          <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 10 }}>{room.units.length} unit{room.units.length !== 1 ? 's' : ''}</span>
+                        </div>
+                      </button>
+
                 {/* Cabinets */}
-                {jobOpen && jobUnits.map((unit) => {
+                {roomOpen && room.units.map((unit) => {
                   const cabParts = unitParts(unit.id);
                   const cabOpen = expandedCab === unit.id;
                   const busy = busyId === unit.id;
                   return (
                     <div key={unit.id}>
-                      <button onClick={() => setExpandedCab(cabOpen ? null : unit.id)} style={rowStyle(16, true)}>
+                      <button onClick={() => setExpandedCab(cabOpen ? null : unit.id)} style={rowStyle(32, true)}>
                         <IcoChevron open={cabOpen} />
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>
@@ -287,6 +322,9 @@ export default function ProductionTab({ tenantId, showToast, jobs }: Props) {
                           </div>
                         </div>
                       )}
+                    </div>
+                  );
+                })}
                     </div>
                   );
                 })}

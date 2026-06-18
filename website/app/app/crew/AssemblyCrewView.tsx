@@ -36,7 +36,7 @@ type AsmPart = {
   qc_failed: boolean | null;
 };
 
-type CabInfo = { label: string; key: string; status: string | null; completedBy: string | null };
+type CabInfo = { label: string; key: string; status: string | null; completedBy: string | null; roomNumber: string | null };
 // One running assembly build on this device, keyed by cabinet id.
 type ActiveBuild = { timeClockId: string; start: string };
 // A part long-pressed in the assembly view, queued for a push to another dept.
@@ -66,6 +66,11 @@ function partDisplay(p: AsmPart): string {
   if (p.material) bits.push(p.material);
   return bits.join(' — ');
 }
+// Room folder label — matches FinishingView: null room_number → 'General'.
+function roomLabel(roomNumber: string | null): string {
+  if (!roomNumber) return 'General';
+  return `Room ${roomNumber}`;
+}
 export default function AssemblyCrewView({ tenantId, crewName = '', showToast, isClockedIn = true, onRequireClock }: Props) {
   const [parts, setParts] = useState<AsmPart[]>([]);
   const [cabInfo, setCabInfo] = useState<Record<string, CabInfo>>({});
@@ -76,6 +81,8 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
   const [jobPaths, setJobPaths] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [selectedJob, setSelectedJob] = useState<string>('');
+  // Open room folder within the selected job (key: `${jobNumber}::${room ?? '__noroom__'}`).
+  const [expandedRoom, setExpandedRoom] = useState<string | null>(null);
   const [busyCab, setBusyCab] = useState<string | null>(null);
   // Per-part long-press push sheet.
   const [longPressedAsmPart, setLongPressedAsmPart] = useState<LongPressedAsmPart>(null);
@@ -143,9 +150,9 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
       const info: Record<string, CabInfo> = {};
       if (cabIds.length > 0) {
         const { data: cabs } = await supabase
-          .from('cabinet_units').select('id, unit_label, cabinet_number, status, completed_by').in('id', cabIds);
-        ((cabs as { id: string; unit_label: string | null; cabinet_number: string | null; status: string | null; completed_by: string | null }[] | null) ?? []).forEach((c) => {
-          info[c.id] = { label: c.unit_label || c.cabinet_number || 'Cabinet', key: c.cabinet_number || c.unit_label || '', status: c.status, completedBy: c.completed_by };
+          .from('cabinet_units').select('id, unit_label, cabinet_number, room_number, status, completed_by').in('id', cabIds);
+        ((cabs as { id: string; unit_label: string | null; cabinet_number: string | null; room_number: string | null; status: string | null; completed_by: string | null }[] | null) ?? []).forEach((c) => {
+          info[c.id] = { label: c.unit_label || c.cabinet_number || 'Cabinet', key: c.cabinet_number || c.unit_label || '', status: c.status, completedBy: c.completed_by, roomNumber: c.room_number };
         });
       }
 
@@ -156,14 +163,14 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
       const WORKFLOW_CAB_STATUSES = ['pending', 'in_assembly'];
       if (jobNums.length > 0) {
         const { data: jobCabs } = await supabase
-          .from('cabinet_units').select('id, unit_label, cabinet_number, status, completed_by, job_number')
+          .from('cabinet_units').select('id, unit_label, cabinet_number, room_number, status, completed_by, job_number')
           .eq('tenant_id', tenantId).eq('assigned_dept', 'assembly').in('job_number', jobNums).limit(1000);
-        type CabRow = { id: string; unit_label: string | null; cabinet_number: string | null; status: string | null; completed_by: string | null; job_number: string | null };
+        type CabRow = { id: string; unit_label: string | null; cabinet_number: string | null; room_number: string | null; status: string | null; completed_by: string | null; job_number: string | null };
         const cabRowsByJob: Record<string, CabRow[]> = {};
         ((jobCabs as CabRow[] | null) ?? []).forEach((c) => {
           if (c.job_number) (cabRowsByJob[c.job_number] ??= []).push(c);
-          // Enrich cabInfo with the full cabinet row (status + completedBy).
-          info[c.id] = { label: c.unit_label || c.cabinet_number || 'Cabinet', key: c.cabinet_number || c.unit_label || '', status: c.status, completedBy: c.completed_by };
+          // Enrich cabInfo with the full cabinet row (status + completedBy + room).
+          info[c.id] = { label: c.unit_label || c.cabinet_number || 'Cabinet', key: c.cabinet_number || c.unit_label || '', status: c.status, completedBy: c.completed_by, roomNumber: c.room_number };
         });
         for (const jn of jobNums) {
           const cs = cabRowsByJob[jn] ?? [];
@@ -250,6 +257,23 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
     return ids.map((cabinetId) => ({ cabinetId, parts: groups[cabinetId] ?? [] }));
   };
 
+  // Group a job's cabinets by room (room comes from cabInfo) — named rooms first,
+  // 'General'/no-room last, same convention as FinishingView.
+  const roomsForJob = (jobNumber: string) => {
+    const byRoom: Record<string, { cabinetId: string; parts: AsmPart[] }[]> = {};
+    cabinetsForJob(jobNumber).forEach((c) => {
+      const rk = cabInfo[c.cabinetId]?.roomNumber ?? '__noroom__';
+      (byRoom[rk] ??= []).push(c);
+    });
+    return Object.entries(byRoom)
+      .sort(([a], [b]) => {
+        if (a === '__noroom__') return 1;
+        if (b === '__noroom__') return -1;
+        return a.localeCompare(b, undefined, { numeric: true });
+      })
+      .map(([rk, cabs]) => ({ roomNumber: rk === '__noroom__' ? null : rk, cabs }));
+  };
+
   // START — open a clock_in row for this cabinet's build. Manual; multiple
   // cabinets can run at once on different rows.
   async function startBuild(cabinetId: string, jobNumber: string | null, label: string) {
@@ -261,6 +285,7 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
         tenant_id: tenantId, worker_name: crewName || 'Assembly', dept: 'Assembly',
         clock_in: now, date: now.split('T')[0], status: 'assembly_work',
         notes: `Assembly: ${label}`, job_number: jobNumber,
+        cabinet_unit_id: cabinetId,
       }).select('id').single();
       if (error) throw error;
       const id = (data as { id: string }).id;
@@ -457,7 +482,7 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {jobOptions.map((j) => {
             const open = selectedJob === j.jobNumber;
-            const cabs = open ? cabinetsForJob(j.jobNumber) : [];
+            const rooms = open ? roomsForJob(j.jobNumber) : [];
             const count = parts.filter((p) => (p.job_number ?? '__nojob__') === j.jobNumber).length;
             return (
               <div key={j.jobNumber} style={{ borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)', overflow: 'hidden' }}>
@@ -468,9 +493,23 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                   <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{count} part{count === 1 ? '' : 's'}</span>
                 </button>
                 {open && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '12px 14px 14px', borderTop: '1px solid var(--line)' }}>
-                    {cabs.map((c) => {
-                      const info = cabInfo[c.cabinetId] ?? { label: 'Cabinet', key: '', status: null, completedBy: null };
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '12px 14px 14px', borderTop: '1px solid var(--line)' }}>
+                    {rooms.map((room) => {
+                      const rk = `${j.jobNumber}::${room.roomNumber ?? '__noroom__'}`;
+                      const roomOpen = expandedRoom === rk;
+                      const roomPartCount = room.cabs.reduce((n, c) => n + c.parts.length, 0);
+                      return (
+                        <div key={rk} style={{ borderRadius: 12, background: 'var(--bg-1)', border: '1px solid var(--line)', overflow: 'hidden' }}>
+                          <button onClick={() => setExpandedRoom(roomOpen ? null : rk)}
+                            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
+                            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transition: 'transform 0.2s ease', transform: roomOpen ? 'rotate(90deg)' : 'none' }}><polyline points="9 6 15 12 9 18"/></svg>
+                            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{roomLabel(room.roomNumber)}</span>
+                            <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{roomPartCount} part{roomPartCount === 1 ? '' : 's'}</span>
+                          </button>
+                          {roomOpen && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '10px 12px 12px', borderTop: '1px solid var(--line)' }}>
+                    {room.cabs.map((c) => {
+                      const info = cabInfo[c.cabinetId] ?? { label: 'Cabinet', key: '', status: null, completedBy: null, roomNumber: null };
                       const busy = busyCab === c.cabinetId;
                       const jobNumber = c.parts[0]?.job_number ?? (j.jobNumber === '__nojob__' ? null : j.jobNumber);
                       const build = builds[c.cabinetId];
@@ -618,6 +657,11 @@ export default function AssemblyCrewView({ tenantId, crewName = '', showToast, i
                               No parts in assembly
                             </div>
                           ))}
+                        </div>
+                      );
+                    })}
+                            </div>
+                          )}
                         </div>
                       );
                     })}

@@ -35,7 +35,7 @@ type CPart = {
   flag_notes: string | null;
 };
 
-type CabInfo = { label: string; key: string };
+type CabInfo = { label: string; key: string; roomNumber: string | null };
 // timeClockId is the live time_clock row opened on START so the supervisor sees
 // the build running in real time; null until that insert lands. start is the REAL
 // session start (used to log only this session's hours); accumulatedSeconds folds
@@ -77,6 +77,11 @@ function elapsedSeconds(startISO: string, endISO?: string | null): number {
   const end = endISO ? new Date(endISO).getTime() : Date.now();
   return Math.max(0, Math.floor((end - new Date(startISO).getTime()) / 1000));
 }
+// Room folder label — matches FinishingView: null room_number → 'General'.
+function roomLabel(roomNumber: string | null): string {
+  if (!roomNumber) return 'General';
+  return `Room ${roomNumber}`;
+}
 
 const IcoCraft = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -90,6 +95,8 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   const [jobPaths, setJobPaths] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [selectedJob, setSelectedJob] = useState<string>('');
+  // Open room folder within the selected job (key: `${jobNumber}::${room ?? '__noroom__'}`).
+  const [expandedRoom, setExpandedRoom] = useState<string | null>(null);
   // Full-screen open cabinet.
   const [openUnitId, setOpenUnitId] = useState<string | null>(null);
   // The one active build on this device (null = nothing running).
@@ -134,9 +141,9 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
       const cabIds = Array.from(new Set(cps.map((p) => p.cabinet_unit_id).filter(Boolean)));
       const info: Record<string, CabInfo> = {};
       if (cabIds.length > 0) {
-        const { data: cabs } = await supabase.from('cabinet_units').select('id, unit_label, cabinet_number').in('id', cabIds);
-        ((cabs as { id: string; unit_label: string | null; cabinet_number: string | null }[] | null) ?? []).forEach((c) => {
-          info[c.id] = { label: c.unit_label || c.cabinet_number || 'Cabinet', key: c.cabinet_number || c.unit_label || '' };
+        const { data: cabs } = await supabase.from('cabinet_units').select('id, unit_label, cabinet_number, room_number').in('id', cabIds);
+        ((cabs as { id: string; unit_label: string | null; cabinet_number: string | null; room_number: string | null }[] | null) ?? []).forEach((c) => {
+          info[c.id] = { label: c.unit_label || c.cabinet_number || 'Cabinet', key: c.cabinet_number || c.unit_label || '', roomNumber: c.room_number };
         });
       }
       setCabInfo(info);
@@ -264,6 +271,7 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         tenant_id: tenantId, worker_name: crewName || 'Craftsman', dept: 'Craftsman',
         clock_in: start, date: start.split('T')[0], status: 'craftsman_build',
         notes: `Build: ${cab?.label ?? 'Cabinet'}`, job_number: jobNumber,
+        cabinet_unit_id: cabinetId,
       }).select('id').single();
       if (error) throw error;
       liveRowId = (data as { id: string }).id;
@@ -495,6 +503,23 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
     return Object.entries(groups).map(([cabinetId, cp]) => ({ cabinetId, parts: cp }));
   };
 
+  // Group a job's cabinets by room (room comes from cabInfo) — named rooms first,
+  // 'General'/no-room last, same convention as FinishingView.
+  const roomsForJob = (jobNumber: string) => {
+    const byRoom: Record<string, { cabinetId: string; parts: CPart[] }[]> = {};
+    cabinetsForJob(jobNumber).forEach((c) => {
+      const rk = cabInfo[c.cabinetId]?.roomNumber ?? '__noroom__';
+      (byRoom[rk] ??= []).push(c);
+    });
+    return Object.entries(byRoom)
+      .sort(([a], [b]) => {
+        if (a === '__noroom__') return 1;
+        if (b === '__noroom__') return -1;
+        return a.localeCompare(b, undefined, { numeric: true });
+      })
+      .map(([rk, cabs]) => ({ roomNumber: rk === '__noroom__' ? null : rk, cabs }));
+  };
+
   // Undo toast — rendered in both the work-order and queue views (fixed, zIndex 2000).
   const undoToast = undoState ? (
     <div style={{ position: 'fixed', bottom: 'calc(20px + env(safe-area-inset-bottom))', left: 16, right: 16, zIndex: 2000, background: '#0a0f0e', border: '1px solid rgba(45,225,201,0.35)', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 4px 24px rgba(0,0,0,0.5)' }}>
@@ -516,7 +541,7 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
   // ── Full-screen work order ─────────────────────────────────────────────────
   if (openUnitId) {
     const cabParts = parts.filter((p) => p.cabinet_unit_id === openUnitId);
-    const info = cabInfo[openUnitId] ?? { label: 'Cabinet', key: '' };
+    const info = cabInfo[openUnitId] ?? { label: 'Cabinet', key: '', roomNumber: null };
     const isBuilding = build?.unitId === openUnitId;
     const isPushing = isBuilding && !!build?.stop;
     const anotherActive = !!build && build.unitId !== openUnitId;
@@ -692,7 +717,7 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {jobOptions.map((j) => {
             const open = selectedJob === j.jobNumber;
-            const cabs = open ? cabinetsForJob(j.jobNumber) : [];
+            const rooms = open ? roomsForJob(j.jobNumber) : [];
             const count = parts.filter((p) => (p.job_number ?? '__nojob__') === j.jobNumber).length;
             return (
               <div key={j.jobNumber} style={{ borderRadius: 14, background: 'var(--bg-1)', border: '1px solid var(--line)', overflow: 'hidden' }}>
@@ -703,9 +728,23 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
                   <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{count} part{count === 1 ? '' : 's'}</span>
                 </button>
                 {open && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '12px 14px 14px', borderTop: '1px solid var(--line)' }}>
-                    {cabs.map((c) => {
-                      const info = cabInfo[c.cabinetId] ?? { label: 'Cabinet', key: '' };
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '12px 14px 14px', borderTop: '1px solid var(--line)' }}>
+                    {rooms.map((room) => {
+                      const rk = `${j.jobNumber}::${room.roomNumber ?? '__noroom__'}`;
+                      const roomOpen = expandedRoom === rk;
+                      const roomPartCount = room.cabs.reduce((n, c) => n + c.parts.length, 0);
+                      return (
+                        <div key={rk} style={{ borderRadius: 12, background: 'var(--bg-1)', border: '1px solid var(--line)', overflow: 'hidden' }}>
+                          <button onClick={() => setExpandedRoom(roomOpen ? null : rk)}
+                            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
+                            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transition: 'transform 0.2s ease', transform: roomOpen ? 'rotate(90deg)' : 'none' }}><polyline points="9 6 15 12 9 18"/></svg>
+                            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{roomLabel(room.roomNumber)}</span>
+                            <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{roomPartCount} part{roomPartCount === 1 ? '' : 's'}</span>
+                          </button>
+                          {roomOpen && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '10px 12px 12px', borderTop: '1px solid var(--line)' }}>
+                    {room.cabs.map((c) => {
+                      const info = cabInfo[c.cabinetId] ?? { label: 'Cabinet', key: '', roomNumber: null };
                       const building = build?.unitId === c.cabinetId;
                       const paused = pausedProject?.cabinet_unit_id === c.cabinetId ? pausedProject : null;
                       if (paused) {
@@ -752,6 +791,11 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
                           {building && <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#60A5FA', display: 'inline-block', animation: 'craftPulse 1.4s ease-in-out infinite' }} />}
                           {!selectMode && <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="m9 18 6-6-6-6"/></svg>}
                         </button>
+                      );
+                    })}
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
