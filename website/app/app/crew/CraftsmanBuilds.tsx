@@ -285,6 +285,17 @@ export default function CraftsmanBuilds({ tenantId, crewName, timeClockId, showT
         .eq('id', cabinetId)
         .eq('tenant_id', tenantId);
     } catch { /* best-effort */ }
+    // The craftsman cuts/shapes as part of the build, so THIS cabinet's parts
+    // become cut the moment the build timer starts (the production→craftsman push
+    // deliberately did NOT mark them cut — see pushPart). Scoped to this cabinet's
+    // craftsman parts only. Best-effort: never blocks the timer from starting.
+    try {
+      await supabase.from('parts')
+        .update({ production_status: 'cut', cut_by: crewName || null, cut_at: start })
+        .eq('cabinet_unit_id', cabinetId)
+        .eq('tenant_id', tenantId)
+        .eq('assigned_dept', 'craftsman');
+    } catch { /* best-effort */ }
   }
 
   // Collapse the full-screen work order back to the queue WITHOUT pausing.

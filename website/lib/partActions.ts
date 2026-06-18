@@ -4,9 +4,12 @@
 //   parts.assigned_dept = 'production' | 'craftsman' | 'finishing' | 'assembly' | 'qc' | 'complete'
 //   parts.status        = 'pending' | 'complete'
 // A cabinet's assigned_dept is the majority dept of its parts (recomputed on
-// every push). production_status is written here only for the production→X
-// transition (the part's cut confirmation); pushes from any other dept leave it
-// untouched.
+// every push). production_status (the part's cut confirmation) is written here
+// ONLY for production→finishing and production→assembly — those destinations
+// receive already-cut parts. production→craftsman does NOT mark cut: the
+// craftsman does their own cutting/shaping as part of the build, and the cut is
+// confirmed later when they tap Start Build (see CraftsmanBuilds.startBuild).
+// Pushes from any other dept leave production_status untouched.
 //
 // pushPart() is the one function that performs a dept transition. PushPicker (and
 // the legacy pushPartToDept wrapper) call it.
@@ -123,7 +126,14 @@ export async function recomputeCabinet(tenantId: string, cabinetUnitId: string):
     const parts = (partRows as { assigned_dept: string | null; status: string | null }[] | null) ?? [];
     if (parts.length === 0) return;
 
-    // Majority dept among parts (ties broken by first-seen).
+    // Majority dept among parts. Ties are broken DETERMINISTICALLY by workflow
+    // order: the dept furthest along the line wins (production < craftsman <
+    // finishing < assembly < qc < complete). This keeps recompute stable
+    // regardless of the order Supabase returned the rows, and biases a split
+    // cabinet toward the work that's already been done. (Same rule is reused for
+    // any future majority computation — keep it in sync.)
+    const WORKFLOW_ORDER = ['production', 'craftsman', 'finishing', 'assembly', 'qc', 'complete'];
+    const rank = (d: string) => { const i = WORKFLOW_ORDER.indexOf(d); return i === -1 ? -1 : i; };
     const counts = new Map<string, number>();
     for (const p of parts) {
       const d = p.assigned_dept || 'production';
@@ -131,7 +141,9 @@ export async function recomputeCabinet(tenantId: string, cabinetUnitId: string):
     }
     let majority = 'production';
     let best = -1;
-    for (const [dept, n] of counts) { if (n > best) { best = n; majority = dept; } }
+    for (const [dept, n] of counts) {
+      if (n > best || (n === best && rank(dept) > rank(majority))) { best = n; majority = dept; }
+    }
 
     const update: Record<string, unknown> = { assigned_dept: majority };
     const allComplete = parts.every((p) => p.status === 'complete');
@@ -160,15 +172,18 @@ export async function pushPart(opts: {
   const fromDept = (opts.fromDept || '').toLowerCase();
   const toDept = (opts.toDept || '').toLowerCase();
 
-  // 1. Reassign the part — must succeed. When the source dept is Production, this
-  //    same atomic update also writes the cut confirmation (the only place
-  //    production_status/cut_by/cut_at are written), so a stray cutlist tap can
-  //    never leave the row in a contradictory state.
+  // 1. Reassign the part — must succeed. When the source dept is Production AND
+  //    the destination is Finishing or Assembly (the depts that receive already-
+  //    cut parts), this same atomic update also writes the cut confirmation, so a
+  //    stray cutlist tap can never leave the row in a contradictory state.
+  //    production→craftsman is deliberately excluded: the craftsman cuts during
+  //    the build, and the cut is confirmed on Start Build instead.
+  const marksCut = fromDept === 'production' && (toDept === 'finishing' || toDept === 'assembly');
   const { error } = await supabase.from('parts')
     .update({
       assigned_dept: toDept,
       status: toDept === 'complete' ? 'complete' : 'pending',
-      ...(fromDept === 'production' ? {
+      ...(marksCut ? {
         production_status: 'cut',
         cut_by: opts.workerName || null,
         cut_at: new Date().toISOString(),

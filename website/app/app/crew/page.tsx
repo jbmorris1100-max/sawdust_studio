@@ -1514,6 +1514,16 @@ export default function CrewPage() {
         .eq('name', crewName)
         .eq('tenant_id', tenant!.id);
     } catch (_) {}
+    // Keep the live crew roster in sync — the supervisor's Crew tab reads
+    // crew_members.department to show where each member is right now. Mirrors
+    // registerCrewMember's name match. Historical time/shift logs are never
+    // rewritten; only this live "current location" pointer is updated.
+    try {
+      await supabase.from('crew_members')
+        .update({ department: newDept })
+        .eq('tenant_id', tenant!.id)
+        .ilike('name', crewName);
+    } catch (_) { /* best-effort, same pattern as the device_tokens update above */ }
     // Update current_dept on active clock row
     const tcId = activeTimeClockId;
     if (tcId) {
@@ -1634,10 +1644,12 @@ export default function CrewPage() {
     // Assembly may only open the checklist once Production has cut the cabinet.
     // Cabinets already in assembly/flagged/complete are grandfathered in. The
     // auto-detect router passes force=true once the crew has chosen the flow.
+    // The cabinet-level production_status column is retired — the gate derives
+    // cut-status solely from the parts (every part must be cut) plus the
+    // already-started grandfather.
     const alreadyStarted = ['in_assembly', 'flagged', 'complete'].includes(unit.status);
-    const cabinetCut = isPartCut(unit.production_status);
     const allPartsCut = parts.length > 0 && parts.every((p) => isPartCut(p.production_status));
-    if (!force && !alreadyStarted && !cabinetCut && !allPartsCut) {
+    if (!force && !alreadyStarted && !allPartsCut) {
       setAssemblyNotReady({ unit, parts });
       return;
     }
@@ -1834,25 +1846,35 @@ export default function CrewPage() {
     await openCutView(prodUnit);
   }
 
-  // Auto-detect the right flow for a scanned cabinet (FIX 2):
-  //   in_assembly / flagged       → QC check (parts + flagging)
-  //   cut + pending               → Assembly checklist (auto-check parts)
-  //   not_cut / cutting           → Production cut view (mark parts cut)
-  //   otherwise indeterminate     → ask the crew (Assembly | Production/QC)
+  // Auto-detect the right flow for a scanned cabinet. Cut-status is derived from
+  // the parts (the cabinet-level production_status column is retired):
+  //   in_assembly / flagged          → QC check (parts + flagging)
+  //   all parts cut + pending        → Assembly checklist (auto-check parts)
+  //   parts carry a not_cut/cutting  → Production cut view (mark parts cut)
+  //   no per-part cut signal at all  → ask the crew (Assembly | Production/QC)
   async function routeScanToFlow(cabinetUnitId: string) {
     if (!tenant) return;
-    const { data, error } = await supabase.from('cabinet_units')
-      .select('id, unit_label, job_number, cabinet_number, room_number, status, production_status')
-      .eq('id', cabinetUnitId).single();
-    if (error) throw error;
-    const unit = data as AssemblyCabinetUnit & { production_status?: string | null };
+    const [unitRes, partsRes] = await Promise.all([
+      supabase.from('cabinet_units')
+        .select('id, unit_label, job_number, cabinet_number, room_number, status')
+        .eq('id', cabinetUnitId).single(),
+      supabase.from('parts')
+        .select('production_status, assigned_dept')
+        .eq('cabinet_unit_id', cabinetUnitId).eq('tenant_id', tenant.id),
+    ]);
+    if (unitRes.error) throw unitRes.error;
+    const unit = unitRes.data as AssemblyCabinetUnit & { production_status?: string | null };
     const status = unit.status;
-    const ps = unit.production_status ?? null;
-    const cut = isPartCut(ps);
+    // Derive cut-status from the parts. cut = every part cut · hasCutSignal = any
+    // part carries a production_status value (not_cut/cutting/cut), i.e. we have a
+    // real signal rather than a freshly-uploaded indeterminate cabinet.
+    const partRows = (partsRes.data as { production_status: string | null; assigned_dept: string | null }[] | null) ?? [];
+    const cut = partRows.length > 0 && partRows.every((p) => isPartCut(p.production_status));
+    const hasCutSignal = partRows.some((p) => !!p.production_status);
 
     if (status === 'in_assembly' || status === 'flagged') { await loadCabinetUnit(cabinetUnitId, true); return; }
     if (cut && (status === 'pending' || status === 'complete' || !status)) { await loadCabinetUnit(cabinetUnitId, true); return; }
-    if (ps === 'not_cut' || ps === 'cutting' || (!cut && ps)) { await openProductionCutFlow(unit); return; }
+    if (!cut && hasCutSignal) { await openProductionCutFlow(unit); return; }
     if (cut) { await loadCabinetUnit(cabinetUnitId, true); return; }
     setScanChoiceUnit(unit);
   }
@@ -2030,12 +2052,18 @@ export default function CrewPage() {
       });
       const damage_reports = flaggedEntries.map(([partId, flag]) => {
         const part = assemblyScanParts.find((pp) => pp.id === partId);
+        // When local state is stale the part won't resolve. Log it (so it's
+        // debuggable) and keep the unresolved id traceable instead of silently
+        // labeling the report "Unknown part".
+        if (!part) console.error('[assemblyScanConfirm] flagged part not in local state (offline path):', partId);
+        const partName = part?.part_name ?? `Unresolved part (${partId})`;
+        const notes = [flag.notes || null, part ? null : `Unresolved part id: ${partId} — local state was stale when saved`].filter(Boolean).join(' — ') || null;
         return {
-          part_name:       part?.part_name ?? 'Unknown part',
+          part_name:       partName,
           dept:            'Assembly',
           status:          'open',
           flag_type:       flag.type,
-          notes:           flag.notes || null,
+          notes,
           cabinet_unit_id: assemblyScanUnit.id,
           job_id:          assemblyScanUnit.job_number,
           assembler_name:  crewName || null,
@@ -2106,13 +2134,19 @@ export default function CrewPage() {
       if (hasFlagged) {
         const reports = flaggedEntries.map(([partId, flag]) => {
           const part = assemblyScanParts.find((p) => p.id === partId);
+          // When local state is stale the part won't resolve. Log it (so it's
+          // debuggable) and keep the unresolved id traceable instead of silently
+          // labeling the report "Unknown part".
+          if (!part) console.error('[assemblyScanConfirm] flagged part not in local state (online path):', partId);
+          const partName = part?.part_name ?? `Unresolved part (${partId})`;
+          const notes = [flag.notes || null, part ? null : `Unresolved part id: ${partId} — local state was stale when saved`].filter(Boolean).join(' — ') || null;
           return {
-            part_name:       part?.part_name ?? 'Unknown part',
+            part_name:       partName,
             dept:            'Assembly',
             status:          'open',
             tenant_id:       tenant!.id,
             flag_type:       flag.type,
-            notes:           flag.notes || null,
+            notes,
             cabinet_unit_id: assemblyScanUnit!.id,
             job_id:          assemblyScanUnit!.job_number,
             assembler_name:  crewName || null,

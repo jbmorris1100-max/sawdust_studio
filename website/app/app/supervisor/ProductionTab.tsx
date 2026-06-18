@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { CSSProperties } from 'react';
 import { supabase } from '@/lib/supabase';
-import { pushPart, deptDisplay } from '@/lib/partActions';
+import { pushPart, deptDisplay, recomputeCabinet } from '@/lib/partActions';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 import DeptCrewStrip from './DeptCrewStrip';
 
@@ -133,6 +133,17 @@ export default function ProductionTab({ tenantId, showToast, jobs }: Props) {
 
   const unitParts = (unitId: string) => parts.filter((p) => p.cabinet_unit_id === unitId);
 
+  // Derive a cabinet's cut status from its parts — the cabinet-level
+  // production_status column is retired (parts are the only trustworthy source).
+  // cut = every part cut · cutting = any part mid-cut · else not cut.
+  function cabinetCutStatus(unitId: string): string {
+    const ps = unitParts(unitId);
+    if (ps.length === 0) return 'not_cut';
+    if (ps.every((p) => p.production_status === 'cut')) return 'cut';
+    if (ps.some((p) => p.production_status === 'cutting')) return 'cutting';
+    return 'not_cut';
+  }
+
   // Push every production part of a cabinet to another dept.
   async function pushCabinet(unit: CabinetUnit, toDept: string) {
     if (busyId) return;
@@ -154,16 +165,21 @@ export default function ProductionTab({ tenantId, showToast, jobs }: Props) {
     }
   }
 
-  // Mark every part on a cabinet cut.
+  // Mark every part on a cabinet cut. Brings parity with pushPart's cut
+  // confirmation (records cut_by/cut_at and recomputes the cabinet), but stays in
+  // production — this never moves the cabinet to another dept.
   async function markAllCut(unit: CabinetUnit) {
     if (busyId) return;
     setBusyId(unit.id);
     try {
       const { error } = await supabase.from('parts')
-        .update({ production_status: 'cut' })
+        .update({ production_status: 'cut', cut_by: 'Supervisor', cut_at: new Date().toISOString() })
         .eq('cabinet_unit_id', unit.id).eq('tenant_id', tenantId);
       if (error) throw error;
-      try { await supabase.from('cabinet_units').update({ production_status: 'cut', status: 'cut' }).eq('id', unit.id); } catch { /* best-effort */ }
+      // Keep cabinet_units.status = 'cut' for AssemblyTab's status display, but no
+      // longer write the retired cabinet_units.production_status column.
+      try { await supabase.from('cabinet_units').update({ status: 'cut' }).eq('id', unit.id); } catch { /* best-effort */ }
+      await recomputeCabinet(tenantId, unit.id);
       showToast(`${unit.unit_label} marked cut`);
       void load();
     } catch (err: unknown) {
@@ -228,7 +244,7 @@ export default function ProductionTab({ tenantId, showToast, jobs }: Props) {
                           </span>
                           <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 10 }}>{cabParts.length} part{cabParts.length !== 1 ? 's' : ''}</span>
                         </div>
-                        <CutStatusBadge status={unit.production_status} />
+                        <CutStatusBadge status={cabinetCutStatus(unit.id)} />
                       </button>
 
                       {cabOpen && (

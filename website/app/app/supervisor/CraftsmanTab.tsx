@@ -367,7 +367,6 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
           unit_label:        desc,
           assigned_dept:     'craftsman',
           status:            'pending',
-          production_status: 'not_cut',
         })
         .select('id')
         .single();
