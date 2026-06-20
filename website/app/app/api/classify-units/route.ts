@@ -137,15 +137,21 @@ export async function POST(req: Request) {
   let parts: DbPart[] = [];
   let learned: LearnedPattern[] = [];
   let routingRules: RoutingRule[] = [];
+  // Tenant AI mode gates the unmatched-unit fallback below: 'learn' queues to
+  // sort_list instead of guessing; 'assist'/'autonomous' (or unset) keep the AI
+  // classification exactly as it was.
+  let aiMode: string | null = null;
   try {
-    const [unitsRes, learnedRes, rulesRes] = await Promise.all([
+    const [unitsRes, learnedRes, rulesRes, tenantRes] = await Promise.all([
       db.from('cabinet_units').select('id, unit_label').eq('tenant_id', tenantId).eq('job_number', jobNumber),
       db.from('craftsman_classifications').select('unit_label_pattern, assigned_dept, times_confirmed').eq('tenant_id', tenantId),
       db.from('routing_rules').select('priority, condition_field, condition_operator, condition_value, assigned_dept').eq('tenant_id', tenantId).eq('is_active', true).order('priority', { ascending: true }),
+      db.from('tenants').select('ai_mode').eq('id', tenantId).maybeSingle(),
     ]);
     units = (unitsRes.data as DbUnit[] | null) ?? [];
     learned = (learnedRes.data as LearnedPattern[] | null) ?? [];
     routingRules = (rulesRes.data as RoutingRule[] | null) ?? [];
+    aiMode = (tenantRes.data as { ai_mode?: string | null } | null)?.ai_mode ?? null;
     if (units.length > 0) {
       const ids = units.map((u) => u.id);
       const { data: partsData } = await db
@@ -194,6 +200,32 @@ export async function POST(req: Request) {
       if (best) hints.set(unit.id, `prior: "${best.unit_label_pattern}" → ${best.assigned_dept} (${best.times_confirmed}×)`);
       remaining.push(unit);
     }
+  }
+
+  // ── LEARN MODE — queue unmatched units instead of AI-guessing ───────────────
+  // In Learn mode the AI fallback is retired: a unit that matched no routing rule
+  // and no confirmed learned pattern (i.e. everything left in `remaining`) is NOT
+  // classified. It is parked in sort_list for a supervisor to assign by hand,
+  // which then teaches the learner the same way a confirmed push does. We do NOT
+  // touch the unit's assigned_dept — it keeps whatever the upload defaulted it to
+  // (cabinet_units defaults to 'production', parts default to null).
+  // Routing-rule / learned-pattern matches from Step 1 are untouched: they stay
+  // in `decided` and still flow through Step 3 (apply) and Step 4 (learn).
+  let queued = 0;
+  if (aiMode === 'learn' && remaining.length > 0) {
+    try {
+      // Unique constraint on cabinet_unit_id makes this idempotent across re-runs.
+      const { error } = await db
+        .from('sort_list')
+        .upsert(
+          remaining.map((u) => ({ tenant_id: tenantId, cabinet_unit_id: u.id, job_number: jobNumber })),
+          { onConflict: 'cabinet_unit_id', ignoreDuplicates: true },
+        );
+      if (!error) queued = remaining.length;
+    } catch { /* queue is best-effort — never throw out of classification */ }
+    // Drain `remaining` so the AI block, the keyword/default fallback, and
+    // Steps 3-4 all skip these units entirely (they stay undecided).
+    remaining.length = 0;
   }
 
   // ── STEP 2 — AI classification for the remaining units ──────────────────────
@@ -385,5 +417,5 @@ Return ONLY a valid JSON array:
     } catch { /* learning is best-effort */ }
   }
 
-  return NextResponse.json({ classified, total: units.length });
+  return NextResponse.json({ classified, total: units.length, queued });
 }

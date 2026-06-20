@@ -14,6 +14,7 @@ import FinishingTab from './FinishingTab';
 import CraftsmanTab from './CraftsmanTab';
 import CrewTab from './CrewTab';
 import QcTab from './QcTab';
+import SortListTab from './SortListTab';
 import RoutingRulesPanel from './RoutingRulesPanel';
 import JobDrillDown from './JobDrillDown';
 import FinishSpecsModal from './FinishSpecsModal';
@@ -336,7 +337,7 @@ type NotificationRow = {
 
 // '__dept__' is the single sentinel tab for any custom (non-fixed) department that
 // doesn't yet have a dedicated component — its placeholder reads activeDeptTab.
-type Tab = 'overview' | 'crew' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'production' | 'assembly' | 'craftsman' | 'finishing' | 'qc' | 'settings' | '__dept__';
+type Tab = 'overview' | 'crew' | 'messages' | 'needs' | 'damage' | 'plans' | 'sortlist' | 'sops' | 'ai' | 'integrations' | 'reports' | 'production' | 'assembly' | 'craftsman' | 'finishing' | 'qc' | 'settings' | '__dept__';
 
 // The five tracking-unit templates a department can be assigned, plus 'qc' (a
 // permanently-special, non-templated department kept exactly as it is today).
@@ -804,6 +805,7 @@ export default function SupervisorPage() {
   const [productionCount, setProductionCount] = useState(0);
   const [assemblyCount, setAssemblyCount] = useState(0);
   const [finishingCount, setFinishingCount] = useState(0);
+  const [sortListCount, setSortListCount] = useState(0);
 
   // Notification center (header bell)
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
@@ -1682,6 +1684,26 @@ export default function SupervisorPage() {
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenant, loadFinishingCount]);
+
+  // Sort List queue size — the Learn-mode classifier fallback (see SortListTab).
+  const loadSortListCount = useCallback(async () => {
+    if (!tenant) return;
+    try {
+      const { count } = await supabase.from('sort_list')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenant.id);
+      setSortListCount(count ?? 0);
+    } catch { /* best-effort — table may predate the migration */ }
+  }, [tenant]);
+  useEffect(() => {
+    if (!tenant) return;
+    void loadSortListCount();
+    const ch = supabase
+      .channel('rt-sup-sortlist-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sort_list', filter: `tenant_id=eq.${tenant.id}` }, () => { void loadSortListCount(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [tenant, loadSortListCount]);
 
   // ── Notification center ─────────────────────────────────────────────────────
   const loadNotifications = useCallback(async () => {
@@ -3507,6 +3529,7 @@ export default function SupervisorPage() {
     { key: 'needs',         label: 'Inventory',   count: activeNeeds.length },
     { key: 'damage',        label: 'Damage',      count: openDamage.length },
     { key: 'plans',         label: 'Plans',       count: plans.length > 0 ? plans.length : undefined },
+    { key: 'sortlist',      label: 'Sort List',   count: sortListCount > 0 ? sortListCount : undefined },
     { key: 'sops',          label: 'SOPs',        count: sops.length > 0 ? sops.length : undefined },
     { key: 'ai',            label: 'AI' },
     { key: 'integrations',  label: 'Integrations' },
@@ -3529,6 +3552,7 @@ export default function SupervisorPage() {
     needs:        (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>),
     damage:       (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>),
     plans:        (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>),
+    sortlist:     (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>),
     sops:         (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>),
     ai:           (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>),
     integrations: (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>),
@@ -3581,7 +3605,7 @@ export default function SupervisorPage() {
     { label: null,             keys: ['overview'] },
     { label: 'Shop Floor',     items: shopFloorNav },
     { label: 'Communications', keys: ['messages', 'needs', 'damage'] },
-    { label: 'Resources',      keys: ['plans', 'sops'] },
+    { label: 'Resources',      keys: ['plans', 'sortlist', 'sops'] },
     { label: 'System',         keys: ['ai', 'integrations', 'reports', 'settings'] },
   ];
 
@@ -5894,6 +5918,16 @@ export default function SupervisorPage() {
             />
           )}
 
+          {/* ── Sort List tab ────────────────────────────────────────────── */}
+          {tab === 'sortlist' && tenant && (
+            <SortListTab
+              tenantId={tenant.id}
+              showToast={showToast}
+              jobs={jobs}
+              departments={departments}
+            />
+          )}
+
           {/* ── Custom department placeholder ────────────────────────────────
               Shown for any custom (non-fixed) department whose template view
               hasn't been built yet. The template components land in a later
@@ -6467,6 +6501,12 @@ export default function SupervisorPage() {
                       <polyline points="14 2 14 8 20 8"/>
                       <line x1="16" y1="13" x2="8" y2="13"/>
                       <line x1="16" y1="17" x2="8" y2="17"/>
+                    </svg>
+                  )},
+                  { key: 'sortlist' as Tab, label: 'Sort List', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M22 12h-6l-2 3h-4l-2-3H2"/>
+                      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
                     </svg>
                   )},
                   { key: 'sops' as Tab, label: 'SOPs', icon: (
