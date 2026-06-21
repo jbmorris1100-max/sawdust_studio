@@ -167,6 +167,10 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
           .from('parts')
           .select('id, cabinet_unit_id, part_name, material, width, height, depth, assigned_dept')
           .eq('tenant_id', tenantId)
+          // Scope to the only depts this tab renders (matches the units query
+          // above) instead of fetching every part tenant-wide. Craftsman parts
+          // stay included, so the split-cabinet detection below still works.
+          .in('assigned_dept', ['craftsman', 'production'])
           .limit(10000),
       ]);
       let unitList = (unitRes.data as CabinetUnit[]) ?? [];
@@ -309,13 +313,18 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
         .update({ assigned_dept: 'craftsman' })
         .eq('cabinet_unit_id', unit.id)
         .eq('tenant_id', tenantId);
-      // Save the pattern so the classifier learns this is craftsman work.
+      // Save the pattern so the classifier learns this is craftsman work. Atomic
+      // upsert (+increment) with times_confirmed set explicitly to 1 — matching the
+      // auto-learned path (classify-units Step 4) instead of relying on the table's
+      // column default, and avoiding duplicate rows under the natural-key index.
       try {
-        await supabase.from('craftsman_classifications').insert({
-          tenant_id: tenantId,
-          unit_label_pattern: patternFromLabel(unit.unit_label),
-          assigned_dept: 'craftsman',
-          confirmed_by: 'Supervisor',
+        await supabase.rpc('learn_craftsman_classification', {
+          p_tenant_id: tenantId,
+          p_unit_label_pattern: patternFromLabel(unit.unit_label),
+          p_assigned_dept: 'craftsman',
+          p_part_name_pattern: null,
+          p_count: 1,
+          p_confirmed_by: 'Supervisor',
         });
       } catch (_) { /* learning is best-effort */ }
       showToast('Assigned to Craftsman');
@@ -334,11 +343,16 @@ export default function CraftsmanTab({ tenantId, showToast, jobs = [] }: Props) 
     if (busyId) return;
     setBusyId(unit.id);
     try {
-      await supabase.from('craftsman_classifications').insert({
-        tenant_id: tenantId,
-        unit_label_pattern: patternFromLabel(unit.unit_label),
-        assigned_dept: 'production',
-        confirmed_by: 'Supervisor',
+      // Atomic upsert (+increment) — same RPC as the assign path; keeps this
+      // writer safe under the new natural-key unique index (a plain insert would
+      // now fail/no-op on the second "keep in production" of the same pattern).
+      await supabase.rpc('learn_craftsman_classification', {
+        p_tenant_id: tenantId,
+        p_unit_label_pattern: patternFromLabel(unit.unit_label),
+        p_assigned_dept: 'production',
+        p_part_name_pattern: null,
+        p_count: 1,
+        p_confirmed_by: 'Supervisor',
       });
       // Locally drop it from the suggestion list for this session.
       setDismissed((prev) => { const n = new Set(prev); n.add(unit.id); return n; });

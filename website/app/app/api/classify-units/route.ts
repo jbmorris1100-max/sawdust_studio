@@ -394,26 +394,18 @@ Return ONLY a valid JSON array:
   }
   for (const { pattern, dept, count } of batch.values()) {
     try {
-      const { data: existing } = await db
-        .from('craftsman_classifications')
-        .select('id, times_confirmed')
-        .eq('tenant_id', tenantId)
-        .eq('unit_label_pattern', pattern)
-        .eq('assigned_dept', dept)
-        .is('part_name_pattern', null)
-        .maybeSingle();
-      if (existing) {
-        await db.from('craftsman_classifications')
-          .update({ times_confirmed: ((existing as { times_confirmed: number }).times_confirmed ?? 0) + count, updated_at: new Date().toISOString() })
-          .eq('id', (existing as { id: string }).id);
-      } else {
-        await db.from('craftsman_classifications').insert({
-          tenant_id: tenantId,
-          unit_label_pattern: pattern,
-          assigned_dept: dept,
-          times_confirmed: count,
-        });
-      }
+      // Atomic upsert (+increment) on the natural key — replaces the
+      // SELECT-then-INSERT/UPDATE that could race two concurrent classification
+      // runs into duplicate rows (part_name_pattern is NULL for unit-label
+      // patterns; the RPC's index folds NULL to '' so the conflict still fires).
+      await db.rpc('learn_craftsman_classification', {
+        p_tenant_id: tenantId,
+        p_unit_label_pattern: pattern,
+        p_assigned_dept: dept,
+        p_part_name_pattern: null,
+        p_count: count,
+        p_confirmed_by: null,
+      });
     } catch { /* learning is best-effort */ }
   }
 

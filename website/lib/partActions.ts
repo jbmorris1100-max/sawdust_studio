@@ -49,24 +49,17 @@ async function learnRouting(tenantId: string, partName: string, fromDept: string
   const pattern = patternFromPartName(partName);
   if (!pattern) return;
   try {
-    const { data: existing } = await supabase
-      .from('part_routing_patterns')
-      .select('id, times_confirmed')
-      .eq('tenant_id', tenantId)
-      .eq('part_name_pattern', pattern)
-      .eq('from_dept', fromDept)
-      .eq('to_dept', toDept)
-      .maybeSingle();
-    if (existing) {
-      await supabase.from('part_routing_patterns')
-        .update({ times_confirmed: ((existing as { times_confirmed: number }).times_confirmed ?? 0) + 1, updated_at: new Date().toISOString() })
-        .eq('id', (existing as { id: string }).id);
-    } else {
-      await supabase.from('part_routing_patterns').insert({
-        tenant_id: tenantId, part_name_pattern: pattern,
-        from_dept: fromDept, to_dept: toDept, times_confirmed: 1, confidence_score: 1,
-      });
-    }
+    // Atomic upsert (+increment) of the (pattern, from_dept, to_dept) row. Replaces
+    // the old SELECT-then-INSERT/UPDATE, which let two concurrent pushes of the same
+    // pattern both see "no row" and both INSERT a duplicate. Backed by the live
+    // UNIQUE(tenant_id, part_name_pattern, from_dept, to_dept) constraint.
+    await supabase.rpc('learn_routing_pattern', {
+      p_tenant_id: tenantId,
+      p_part_name_pattern: pattern,
+      p_from_dept: fromDept,
+      p_to_dept: toDept,
+      p_count: 1,
+    });
 
     // Recompute confidence = times_confirmed / total pushes for this (pattern, from_dept).
     const { data: siblings } = await supabase

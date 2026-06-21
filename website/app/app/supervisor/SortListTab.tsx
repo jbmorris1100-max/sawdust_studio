@@ -186,30 +186,20 @@ export default function SortListTab({ tenantId, showToast, jobs, departments }: 
         }
       } catch { /* event log is best-effort */ }
 
-      // c. Teach the classifier (mirror classify-units Step 4 upsert).
+      // c. Teach the classifier (mirror classify-units Step 4 upsert) — atomic
+      //    upsert (+increment) so two near-simultaneous assigns teaching the same
+      //    pattern can't both insert a duplicate row.
       try {
         const pattern = patternFromLabel(unit.unit_label);
         if (pattern) {
-          const { data: existing } = await supabase
-            .from('craftsman_classifications')
-            .select('id, times_confirmed')
-            .eq('tenant_id', tenantId)
-            .eq('unit_label_pattern', pattern)
-            .eq('assigned_dept', dept)
-            .is('part_name_pattern', null)
-            .maybeSingle();
-          if (existing) {
-            await supabase.from('craftsman_classifications')
-              .update({ times_confirmed: ((existing as { times_confirmed: number }).times_confirmed ?? 0) + 1, updated_at: new Date().toISOString() })
-              .eq('id', (existing as { id: string }).id);
-          } else {
-            await supabase.from('craftsman_classifications').insert({
-              tenant_id: tenantId,
-              unit_label_pattern: pattern,
-              assigned_dept: dept,
-              confirmed_by: 'Supervisor',
-            });
-          }
+          await supabase.rpc('learn_craftsman_classification', {
+            p_tenant_id: tenantId,
+            p_unit_label_pattern: pattern,
+            p_assigned_dept: dept,
+            p_part_name_pattern: null,
+            p_count: 1,
+            p_confirmed_by: 'Supervisor',
+          });
         }
       } catch { /* learning is best-effort */ }
 
