@@ -186,6 +186,25 @@ export default function PartTemplateView({
     return () => { void supabase.removeChannel(ch); };
   }, [tenantId, deptKey, loadProduction]);
 
+  // Polling fallback — iOS Safari silently kills WebSocket connections, so the
+  // realtime subscription above can go dead without firing. Reload every 15s
+  // (no spinner) to cover that. Mirrors CraftsmanBuilds/CabinetTemplateView.
+  useEffect(() => {
+    let inFlight = false;
+    const iv = setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      void loadProduction(false).finally(() => { inFlight = false; });
+    }, 15000);
+    return () => clearInterval(iv);
+  }, [loadProduction]);
+
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === 'visible') void loadProduction(false); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [loadProduction]);
+
   function closeCutView() { setCutUnit(null); setCutParts([]); }
 
   async function openCutJob(units: ProdUnit[], jobPath: string) {

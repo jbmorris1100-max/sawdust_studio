@@ -255,7 +255,7 @@ export default function SortListTab({ tenantId, showToast, jobs, departments }: 
             const jn = row.job_number;
             const jName = jobName(jn);
             return (
-              <div key={row.id} className="portal-card" style={{ padding: '16px 18px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 14 }}>
+              <div key={row.id} className="portal-card" data-testid="sort-list-row" data-cabinet-unit-id={row.cabinet_unit_id} style={{ padding: '16px 18px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 14 }}>
                 <div style={{ flex: '1 1 240px', minWidth: 0 }}>
                   <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {unit?.unit_label ?? '(unit removed)'}

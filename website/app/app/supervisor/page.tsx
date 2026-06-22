@@ -3568,8 +3568,19 @@ export default function SupervisorPage() {
   // (custom) department routes to the '__dept__' placeholder. Falls back to the
   // legacy static list when no rows are loaded (pre-migration / still loading) so
   // nothing regresses before the migration is applied.
-  type ShopFloorNavItem = { id: string; label: string; icon: React.ReactNode; fixedTab: Tab | null; deptRow?: DeptRow; count?: number };
+  type ShopFloorNavItem = { id: string; label: string; icon: React.ReactNode; fixedTab: Tab | null; deptRow?: DeptRow; count?: number; crewCount?: number };
   const genericDeptIcon = navIcon['__dept__'];
+  // Crew clocked into each department right now — reuse the already-loaded,
+  // realtime-updated `activeCrew` roster (deduped one row per worker) rather than
+  // running a separate query. Keyed by lowercased dept so it matches both the
+  // fixed tab keys ('production'…) and custom department names. current_dept is
+  // where the worker is on the floor now; dept is their home dept fallback.
+  const crewCountByDept: Record<string, number> = {};
+  for (const c of activeCrew) {
+    const d = (c.current_dept || c.dept || '').toLowerCase();
+    if (!d) continue;
+    crewCountByDept[d] = (crewCountByDept[d] ?? 0) + 1;
+  }
   const shopFloorNav: ShopFloorNavItem[] = [
     { id: 'crew', label: tabByKey.crew?.label ?? 'Crew', icon: navIcon.crew, fixedTab: 'crew', count: tabByKey.crew?.count },
   ];
@@ -3577,20 +3588,21 @@ export default function SupervisorPage() {
   if (nonQcRows.length > 0) {
     for (const r of nonQcRows) {
       const fixed = FIXED_DEPT_TAB[r.name.toLowerCase()];
+      const crewCount = crewCountByDept[r.name.toLowerCase()];
       if (fixed && fixed !== 'qc') {
         const meta = tabByKey[fixed];
-        shopFloorNav.push({ id: r.id, label: meta?.label ?? r.name, icon: navIcon[fixed] ?? genericDeptIcon, fixedTab: fixed, count: meta?.count });
+        shopFloorNav.push({ id: r.id, label: meta?.label ?? r.name, icon: navIcon[fixed] ?? genericDeptIcon, fixedTab: fixed, count: meta?.count, crewCount });
       } else {
-        shopFloorNav.push({ id: r.id, label: r.name, icon: genericDeptIcon, fixedTab: null, deptRow: r });
+        shopFloorNav.push({ id: r.id, label: r.name, icon: genericDeptIcon, fixedTab: null, deptRow: r, crewCount });
       }
     }
   } else {
     for (const k of ['production', 'assembly', 'craftsman', 'finishing'] as Tab[]) {
       const meta = tabByKey[k];
-      shopFloorNav.push({ id: k, label: meta?.label ?? k, icon: navIcon[k], fixedTab: k, count: meta?.count });
+      shopFloorNav.push({ id: k, label: meta?.label ?? k, icon: navIcon[k], fixedTab: k, count: meta?.count, crewCount: crewCountByDept[k] });
     }
   }
-  shopFloorNav.push({ id: 'qc', label: tabByKey.qc?.label ?? 'QC', icon: navIcon.qc, fixedTab: 'qc', count: tabByKey.qc?.count });
+  shopFloorNav.push({ id: 'qc', label: tabByKey.qc?.label ?? 'QC', icon: navIcon.qc, fixedTab: 'qc', count: tabByKey.qc?.count, crewCount: crewCountByDept['qc'] });
 
   // Active-state + click behavior shared by the sidebar and the mobile drawer.
   const shopFloorItemActive = (it: ShopFloorNavItem): boolean =>
@@ -3700,15 +3712,15 @@ export default function SupervisorPage() {
                   <div style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', padding: '16px 18px 6px', opacity: 0.5 }}>{group.label}</div>
                 )}
                 {(group.items
-                  ? group.items.map((it) => ({ key: it.id, label: it.label, icon: it.icon, count: it.count, active: shopFloorItemActive(it), onClick: () => openShopFloorItem(it) }))
+                  ? group.items.map((it) => ({ key: it.id, label: it.label, icon: it.icon, count: it.count, crewCount: it.crewCount, active: shopFloorItemActive(it), onClick: () => openShopFloorItem(it) }))
                   : (group.keys ?? []).map((key) => {
                       const t = tabByKey[key];
                       if (!t) return null;
-                      return { key, label: t.label, icon: navIcon[key], count: t.count, active: tab === key, onClick: () => { setTab(key); setOpenThread(null); setMsgBody(''); } };
+                      return { key, label: t.label, icon: navIcon[key], count: t.count, crewCount: undefined as number | undefined, active: tab === key, onClick: () => { setTab(key); setOpenThread(null); setMsgBody(''); } };
                     })
                 ).map((nav) => {
                   if (!nav) return null;
-                  const { key, label, icon, count, active, onClick } = nav;
+                  const { key, label, icon, count, crewCount, active, onClick } = nav;
                   return (
                     <button
                       key={key}
@@ -3718,9 +3730,24 @@ export default function SupervisorPage() {
                     >
                       <span style={{ display: 'flex', flexShrink: 0 }}>{icon}</span>
                       {label}
-                      {count !== undefined && count > 0 && (
-                        <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: active ? 'rgba(45,225,201,0.15)' : 'rgba(255,255,255,0.06)', color: active ? 'var(--teal)' : 'var(--ink-mute)' }}>
-                          {count}
+                      {((count !== undefined && count > 0) || (crewCount !== undefined && crewCount > 0)) && (
+                        <span
+                          style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                          title={`${count ?? 0} ${(count ?? 0) === 1 ? 'unit' : 'units'} · ${crewCount ?? 0} crew on floor`}
+                        >
+                          {/* Unit / cabinet count — unchanged from before. */}
+                          {count !== undefined && count > 0 && (
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: active ? 'rgba(45,225,201,0.15)' : 'rgba(255,255,255,0.06)', color: active ? 'var(--teal)' : 'var(--ink-mute)' }}>
+                              {count}
+                            </span>
+                          )}
+                          {/* Crew-clocked-in count — teal pill with a person glyph. */}
+                          {crewCount !== undefined && crewCount > 0 && (
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 20, display: 'inline-flex', alignItems: 'center', gap: 3, background: 'rgba(94,234,212,0.1)', color: '#2DE1C9' }}>
+                              <svg width={9} height={9} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+                              {crewCount}
+                            </span>
+                          )}
                         </span>
                       )}
                     </button>

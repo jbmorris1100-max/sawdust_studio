@@ -156,6 +156,25 @@ export default function GroupManualTemplateView({
     return () => { supabase.removeChannel(ch); };
   }, [tenantId, deptKey, load]);
 
+  // Polling fallback — iOS Safari silently kills WebSocket connections, so the
+  // realtime subscription above can go dead without firing. Reload every 15s to
+  // cover that. Mirrors CraftsmanBuilds/CabinetTemplateView.
+  useEffect(() => {
+    let inFlight = false;
+    const iv = setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      void load().finally(() => { inFlight = false; });
+    }, 15000);
+    return () => clearInterval(iv);
+  }, [load]);
+
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === 'visible') void load(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [load]);
+
   // Live tick while a session runs (pulsing dot only — crew never sees a clock).
   useEffect(() => {
     if (!session) return;
