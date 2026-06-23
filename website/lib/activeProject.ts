@@ -125,6 +125,7 @@ export async function startProjectSession(opts: {
       tenant_id: opts.tenantId, worker_name: opts.workerName || 'Crew', dept: deptLabel(opts.dept),
       clock_in: now, date: now.split('T')[0], status,
       notes: `Build: ${opts.unitLabel}`, job_number: opts.jobNumber,
+      cabinet_unit_id: opts.cabinetUnitId,
     }).select('id').single();
     timeClockId = (data as { id: string } | null)?.id ?? null;
   } catch { timeClockId = null; }

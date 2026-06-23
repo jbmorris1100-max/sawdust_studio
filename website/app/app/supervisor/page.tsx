@@ -14,6 +14,7 @@ import FinishingTab from './FinishingTab';
 import CraftsmanTab from './CraftsmanTab';
 import CrewTab from './CrewTab';
 import QcTab from './QcTab';
+import SortListTab from './SortListTab';
 import RoutingRulesPanel from './RoutingRulesPanel';
 import JobDrillDown from './JobDrillDown';
 import FinishSpecsModal from './FinishSpecsModal';
@@ -299,6 +300,8 @@ type Job = {
   client_name?: string | null;
   room_name?: string | null;
   due_date?: string | null;
+  material_est?: number | null;
+  labor_est?: number | null;
   install_date?: string | null;
   archived?: boolean | null;
   archived_at?: string | null;
@@ -332,7 +335,64 @@ type NotificationRow = {
   created_at: string;
 };
 
-type Tab = 'overview' | 'crew' | 'messages' | 'needs' | 'damage' | 'plans' | 'sops' | 'ai' | 'integrations' | 'reports' | 'production' | 'assembly' | 'craftsman' | 'finishing' | 'qc' | 'settings';
+// '__dept__' is the single sentinel tab for any custom (non-fixed) department that
+// doesn't yet have a dedicated component — its placeholder reads activeDeptTab.
+type Tab = 'overview' | 'crew' | 'messages' | 'needs' | 'damage' | 'plans' | 'sortlist' | 'sops' | 'ai' | 'integrations' | 'reports' | 'production' | 'assembly' | 'craftsman' | 'finishing' | 'qc' | 'settings' | '__dept__';
+
+// The five tracking-unit templates a department can be assigned, plus 'qc' (a
+// permanently-special, non-templated department kept exactly as it is today).
+type DeptTemplate = 'part' | 'cabinet' | 'group_auto' | 'group_manual' | 'sheet' | 'qc';
+
+// One row in the structured `departments` config table (parallel to the legacy
+// tenant.departments string array, which is still written for back-compat).
+type DeptRow = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  template: DeptTemplate;
+  group_by_field: string | null;   // only meaningful for group_auto: 'room_number' | 'color'
+  completion_behavior: string | null; // 'auto_route_to_qc' | 'push_picker' | null
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+};
+
+// Plain-language labels for the template dropdown (Settings) — and the template
+// name surfaced in the "Coming soon" placeholder.
+const TEMPLATE_OPTIONS: { value: DeptTemplate; label: string }[] = [
+  { value: 'part',         label: 'Part — tracked automatically, no start button' },
+  { value: 'cabinet',      label: 'Cabinet — one at a time, start/pause/complete' },
+  { value: 'group_auto',   label: 'Auto-Group — by room or color' },
+  { value: 'group_manual', label: 'Manual Group — pick a job and select what to work on' },
+  { value: 'sheet',        label: 'Sheet — barcode verification' },
+];
+const templateLabel = (t: string): string =>
+  TEMPLATE_OPTIONS.find((o) => o.value === t)?.label.split(' — ')[0] ?? t;
+
+// Department NAMES that already have a dedicated, fixed tab component. Any other
+// department (custom) routes to the '__dept__' placeholder until its template
+// component is built. QC is handled separately as a permanently-fixed tab.
+const FIXED_DEPT_TAB: Record<string, Tab> = {
+  production: 'production',
+  assembly:   'assembly',
+  craftsman:  'craftsman',
+  finishing:  'finishing',
+  qc:         'qc',
+};
+
+// Backfill / default mapping: a department name → its tracking template + default
+// completion behavior. Mirrors the one-time SQL backfill so newly-typed depts and
+// the migration stay consistent. Custom names fall through to 'part'.
+const DEPT_TEMPLATE_DEFAULTS: Record<string, { template: DeptTemplate; group_by_field: string | null; completion_behavior: string | null }> = {
+  production: { template: 'part',       group_by_field: null,          completion_behavior: null },
+  assembly:   { template: 'cabinet',    group_by_field: null,          completion_behavior: 'auto_route_to_qc' },
+  craftsman:  { template: 'cabinet',    group_by_field: null,          completion_behavior: 'push_picker' },
+  finishing:  { template: 'group_auto', group_by_field: 'room_number', completion_behavior: null },
+  qc:         { template: 'qc',         group_by_field: null,          completion_behavior: null },
+};
+function defaultDeptMeta(name: string): { template: DeptTemplate; group_by_field: string | null; completion_behavior: string | null } {
+  return DEPT_TEMPLATE_DEFAULTS[name.toLowerCase()] ?? { template: 'part', group_by_field: null, completion_behavior: null };
+}
 
 type AiMode = 'learn' | 'assist' | 'autonomous';
 
@@ -726,6 +786,10 @@ export default function SupervisorPage() {
   const [archiveOpen,       setArchiveOpen]       = useState(false);
   const [deleteArchiveTarget, setDeleteArchiveTarget] = useState<Job | null>(null);
   const [finishSpecsJob, setFinishSpecsJob] = useState<Job | null>(null);
+  // Inline-edit of Due Date / Material Est. / Labor Est. in the expanded job row.
+  const [editingJobId,  setEditingJobId]  = useState<string | null>(null);
+  const [jobEditForm,   setJobEditForm]   = useState<{ due_date: string; material_est: string; labor_est: string }>({ due_date: '', material_est: '', labor_est: '' });
+  const [savingJobEdit, setSavingJobEdit] = useState(false);
 
   // Production pipeline (Overview)
   const [pipeline, setPipeline] = useState<PipelineRow[]>([]);
@@ -741,6 +805,7 @@ export default function SupervisorPage() {
   const [productionCount, setProductionCount] = useState(0);
   const [assemblyCount, setAssemblyCount] = useState(0);
   const [finishingCount, setFinishingCount] = useState(0);
+  const [sortListCount, setSortListCount] = useState(0);
 
   // Notification center (header bell)
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
@@ -756,6 +821,9 @@ export default function SupervisorPage() {
   const [planJobOpen,   setPlanJobOpen]   = useState(false);
   const [planNewClient, setPlanNewClient] = useState('');   // create-new: Client Name (required)
   const [planNewRoom,   setPlanNewRoom]   = useState('');   // create-new: Room/Area (optional)
+  const [planNewDueDate,     setPlanNewDueDate]     = useState('');   // create-new: Due Date (required)
+  const [planNewMaterialEst, setPlanNewMaterialEst] = useState('');   // create-new: Material Est. (required)
+  const [planNewLaborEst,    setPlanNewLaborEst]    = useState('');   // create-new: Labor Est. in hours (required)
   // Carries the resolved job context through the version-conflict prompt.
   const [pendingJobCtx, setPendingJobCtx] = useState<{ jobNumber: string; jobPath: string | null } | null>(null);
   const [planLabel,     setPlanLabel]     = useState('');
@@ -1034,6 +1102,17 @@ export default function SupervisorPage() {
   const [deptConfig,      setDeptConfig]      = useState<Record<string, Record<string, boolean>>>({});
   const [deptConfigDraft, setDeptConfigDraft] = useState<Record<string, Record<string, boolean>>>({});
   const [expandedDeptConfig, setExpandedDeptConfig] = useState<string | null>(null);
+  // Structured department rows (new `departments` table). Source of truth for the
+  // per-department template + the dynamic Shop Floor nav. Loaded best-effort —
+  // the table is optional until the migration runs (mirrors qc_delegates).
+  const [deptRows, setDeptRows] = useState<DeptRow[]>([]);
+  // Template + group_by_field edit buffers, keyed by dept name lowercased.
+  // `*Draft` is the editable copy in Settings; the committed copy is derived from
+  // deptRows (see deptTemplateCommitted) for the dirty check.
+  const [deptTemplateDraft, setDeptTemplateDraft] = useState<Record<string, DeptTemplate>>({});
+  const [deptGroupByDraft,  setDeptGroupByDraft]  = useState<Record<string, string>>({});
+  // The custom-department placeholder tab currently open ('__dept__').
+  const [activeDeptTab, setActiveDeptTab] = useState<{ id: string; name: string; template: DeptTemplate } | null>(null);
 
   // The 8 feature toggles a supervisor can flip for a custom department.
   const DEPT_FEATURES: { key: string; label: string }[] = [
@@ -1066,9 +1145,55 @@ export default function SupervisorPage() {
     setDeptConfigDraft(cfg);
   }, [tenant]);
 
+  // Load the structured department rows (best-effort — table optional until the
+  // migration runs). Seeds the template/group-by edit buffers from the stored
+  // rows; any department in the legacy array without a row defaults to 'part'.
+  const loadDeptRows = useCallback(async () => {
+    if (!tenant) return;
+    try {
+      const { data } = await supabase
+        .from('departments')
+        .select('id, tenant_id, name, template, group_by_field, completion_behavior, sort_order, is_active, created_at')
+        .eq('tenant_id', tenant.id)
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true });
+      const rows = (data as DeptRow[] | null) ?? [];
+      setDeptRows(rows);
+      const tmpl: Record<string, DeptTemplate> = {};
+      const grp:  Record<string, string> = {};
+      for (const r of rows) {
+        tmpl[r.name.toLowerCase()] = r.template;
+        if (r.group_by_field) grp[r.name.toLowerCase()] = r.group_by_field;
+      }
+      setDeptTemplateDraft(tmpl);
+      setDeptGroupByDraft(grp);
+    } catch { /* table optional until migration runs */ }
+  }, [tenant]);
+  useEffect(() => { void loadDeptRows(); }, [loadDeptRows]);
+
+  // Committed template/group-by maps derived from the loaded rows — the baseline
+  // the Settings drafts are diffed against for the dirty check.
+  const deptTemplateCommitted = useMemo(() => {
+    const m: Record<string, DeptTemplate> = {};
+    for (const r of deptRows) m[r.name.toLowerCase()] = r.template;
+    return m;
+  }, [deptRows]);
+  const deptGroupByCommitted = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const r of deptRows) if (r.group_by_field) m[r.name.toLowerCase()] = r.group_by_field;
+    return m;
+  }, [deptRows]);
+
+  // The template assigned to a dept name in the current draft (defaults to 'part'
+  // for a newly-added dept with no row yet). QC is always 'qc'.
+  const draftTemplateFor = (name: string): DeptTemplate =>
+    name.toLowerCase() === 'qc' ? 'qc' : (deptTemplateDraft[name.toLowerCase()] ?? defaultDeptMeta(name).template);
+
   const deptDirty =
     JSON.stringify(deptDraft) !== JSON.stringify(departments) ||
-    JSON.stringify(deptConfigDraft) !== JSON.stringify(deptConfig);
+    JSON.stringify(deptConfigDraft) !== JSON.stringify(deptConfig) ||
+    JSON.stringify(deptTemplateDraft) !== JSON.stringify(deptTemplateCommitted) ||
+    JSON.stringify(deptGroupByDraft) !== JSON.stringify(deptGroupByCommitted);
 
   function addDeptToDraft() {
     const v = deptInput.trim();
@@ -1080,6 +1205,11 @@ export default function SupervisorPage() {
     if (isCustomDept(v)) {
       setDeptConfigDraft((prev) => ({ ...prev, [v.toLowerCase()]: emptyDeptConfig() }));
     }
+    // A newly-added department defaults to the 'part' template (QC can't be added
+    // here — addDeptToDraft is for new custom depts) until the supervisor changes it.
+    if (v.toLowerCase() !== 'qc') {
+      setDeptTemplateDraft((prev) => ({ ...prev, [v.toLowerCase()]: defaultDeptMeta(v).template }));
+    }
     setDeptInput(''); setDeptErr('');
   }
 
@@ -1090,8 +1220,61 @@ export default function SupervisorPage() {
       delete next[d.toLowerCase()];
       return next;
     });
+    setDeptTemplateDraft((prev) => { const next = { ...prev }; delete next[d.toLowerCase()]; return next; });
+    setDeptGroupByDraft((prev) => { const next = { ...prev }; delete next[d.toLowerCase()]; return next; });
     if (expandedDeptConfig === d) setExpandedDeptConfig(null);
     setDeptErr('');
+  }
+
+  // Setters for the Settings template dropdowns.
+  function setDeptTemplate(name: string, template: DeptTemplate) {
+    const lk = name.toLowerCase();
+    setDeptTemplateDraft((prev) => ({ ...prev, [lk]: template }));
+    // Selecting group_auto seeds a default group_by_field; leaving it clears it.
+    setDeptGroupByDraft((prev) => {
+      const next = { ...prev };
+      if (template === 'group_auto') { if (!next[lk]) next[lk] = 'room_number'; }
+      else delete next[lk];
+      return next;
+    });
+  }
+  function setDeptGroupBy(name: string, field: string) {
+    setDeptGroupByDraft((prev) => ({ ...prev, [name.toLowerCase()]: field }));
+  }
+
+  // Reconcile the structured `departments` table with the saved draft: upsert a
+  // row per current dept (template + group_by_field + sort_order from the draft),
+  // hard-delete rows for depts that were removed. Best-effort — keeps the legacy
+  // tenant.departments string array as the always-written source of truth.
+  async function syncDepartmentsTable(cleaned: string[]) {
+    if (!tenant) return;
+    const existingByName = new Map(deptRows.map((r) => [r.name.toLowerCase(), r]));
+    const keepLower = new Set(cleaned.map((d) => d.toLowerCase()));
+    for (let i = 0; i < cleaned.length; i++) {
+      const name = cleaned[i];
+      const lk = name.toLowerCase();
+      const isQc = lk === 'qc';
+      const template: DeptTemplate = isQc ? 'qc' : (deptTemplateDraft[lk] ?? defaultDeptMeta(name).template);
+      const group_by_field = template === 'group_auto' ? (deptGroupByDraft[lk] ?? 'room_number') : null;
+      const existing = existingByName.get(lk);
+      if (existing) {
+        // Touch only the fields the Settings UI controls — leave completion_behavior intact.
+        await supabase.from('departments')
+          .update({ name, template, group_by_field, sort_order: i, is_active: true })
+          .eq('id', existing.id).eq('tenant_id', tenant.id);
+      } else {
+        await supabase.from('departments').insert({
+          tenant_id: tenant.id, name, template, group_by_field,
+          completion_behavior: defaultDeptMeta(name).completion_behavior,
+          sort_order: i, is_active: true,
+        });
+      }
+    }
+    for (const r of deptRows) {
+      if (!keepLower.has(r.name.toLowerCase())) {
+        await supabase.from('departments').delete().eq('id', r.id).eq('tenant_id', tenant.id);
+      }
+    }
   }
 
   async function saveDepartments() {
@@ -1114,6 +1297,11 @@ export default function SupervisorPage() {
       setDeptDraft(cleaned);
       setDeptConfig(cleanedConfig);
       setDeptConfigDraft(cleanedConfig);
+      // Mirror changes into the structured departments table (powers templates +
+      // dynamic nav). Best-effort: the legacy array above is already persisted, so
+      // a missing table (pre-migration) must not fail the save.
+      try { await syncDepartmentsTable(cleaned); await loadDeptRows(); }
+      catch { /* structured table optional until migration runs */ }
       showToast('Departments saved');
     } catch (_) {
       showToast('Could not save departments', true);
@@ -1496,6 +1684,26 @@ export default function SupervisorPage() {
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [tenant, loadFinishingCount]);
+
+  // Sort List queue size — the Learn-mode classifier fallback (see SortListTab).
+  const loadSortListCount = useCallback(async () => {
+    if (!tenant) return;
+    try {
+      const { count } = await supabase.from('sort_list')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenant.id);
+      setSortListCount(count ?? 0);
+    } catch { /* best-effort — table may predate the migration */ }
+  }, [tenant]);
+  useEffect(() => {
+    if (!tenant) return;
+    void loadSortListCount();
+    const ch = supabase
+      .channel('rt-sup-sortlist-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sort_list', filter: `tenant_id=eq.${tenant.id}` }, () => { void loadSortListCount(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [tenant, loadSortListCount]);
 
   // ── Notification center ─────────────────────────────────────────────────────
   const loadNotifications = useCallback(async () => {
@@ -2003,6 +2211,34 @@ export default function SupervisorPage() {
     }
   }
 
+  // Inline-edit Due Date / Material Est. / Labor Est. from the Overview expanded
+  // job row. Touches only those three fields. Optimistic local update; update by
+  // id + tenant_id; revert on failure — mirrors handleCompleteJob/handleRestoreJob.
+  async function handleSaveJobEstimates(job: Job) {
+    if (savingJobEdit || !tenant) return;
+    setSavingJobEdit(true);
+    const due_date     = jobEditForm.due_date || null;
+    const material_est = jobEditForm.material_est.trim() ? (parseFloat(jobEditForm.material_est) || null) : null;
+    const labor_est    = jobEditForm.labor_est.trim()   ? (parseFloat(jobEditForm.labor_est)   || null) : null;
+    const prev = { due_date: job.due_date ?? null, material_est: job.material_est ?? null, labor_est: job.labor_est ?? null };
+    setJobs((jj) => jj.map((j) => j.id === job.id ? { ...j, due_date, material_est, labor_est } : j));
+    try {
+      const { error } = await supabase
+        .from('jobs')
+        .update({ due_date, material_est, labor_est })
+        .eq('id', job.id)
+        .eq('tenant_id', tenant.id);
+      if (error) throw error;
+      setEditingJobId(null);
+      showToast(`${jobLabel(job)} updated`);
+    } catch (err: unknown) {
+      setJobs((jj) => jj.map((j) => j.id === job.id ? { ...j, ...prev } : j));
+      showToast(err instanceof Error ? err.message : 'Update failed', true);
+    } finally {
+      setSavingJobEdit(false);
+    }
+  }
+
   // ── Message send ────────────────────────────────────────────────────────────
 
   async function handleSendMessage(overrideBody?: string) {
@@ -2435,11 +2671,17 @@ export default function SupervisorPage() {
     setPlanJobNum('');
     setPlanNewClient('');
     setPlanNewRoom('');
+    setPlanNewDueDate('');
+    setPlanNewMaterialEst('');
+    setPlanNewLaborEst('');
     setPlanJobOpen(false);
   }
 
-  // Upload is allowed once a job is chosen: an existing one, or a new one with a client name.
-  const planJobReady = planJobId === '__new__' ? !!planNewClient.trim() : !!planJobNum.trim();
+  // Upload is allowed once a job is chosen: an existing one, or a new one with a
+  // client name, due date, material estimate, and labor estimate.
+  const planJobReady = planJobId === '__new__'
+    ? (!!planNewClient.trim() && !!planNewDueDate && !!planNewMaterialEst.trim() && !!planNewLaborEst.trim())
+    : !!planJobNum.trim();
 
   // Pick an existing job from the selector dropdown.
   function selectPlanJob(j: Job) {
@@ -2480,7 +2722,7 @@ export default function SupervisorPage() {
       // so "Anderson" resolves to an existing "anderson".
       const { data: existingJob } = await supabase
         .from('jobs')
-        .select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, install_date')
+        .select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, material_est, labor_est, install_date')
         .eq('tenant_id', tenant.id)
         .ilike('job_path', jobPath)
         .maybeSingle();
@@ -2497,12 +2739,15 @@ export default function SupervisorPage() {
           job_path:    jobPath,
           status:      'active',
           tenant_id:   tenant.id,
+          due_date:     planNewDueDate,
+          material_est: parseFloat(planNewMaterialEst) || null,
+          labor_est:    parseFloat(planNewLaborEst) || null,
         };
         if (room) insert.room_name = room;
         const { data, error } = await supabase
           .from('jobs')
           .insert(insert)
-          .select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, install_date')
+          .select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, material_est, labor_est, install_date')
           .single();
         if (error) throw error;
         const created = data as Job;
@@ -3284,6 +3529,7 @@ export default function SupervisorPage() {
     { key: 'needs',         label: 'Inventory',   count: activeNeeds.length },
     { key: 'damage',        label: 'Damage',      count: openDamage.length },
     { key: 'plans',         label: 'Plans',       count: plans.length > 0 ? plans.length : undefined },
+    { key: 'sortlist',      label: 'Sort List',   count: sortListCount > 0 ? sortListCount : undefined },
     { key: 'sops',          label: 'SOPs',        count: sops.length > 0 ? sops.length : undefined },
     { key: 'ai',            label: 'AI' },
     { key: 'integrations',  label: 'Integrations' },
@@ -3306,17 +3552,72 @@ export default function SupervisorPage() {
     needs:        (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>),
     damage:       (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>),
     plans:        (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>),
+    sortlist:     (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>),
     sops:         (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>),
     ai:           (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>),
     integrations: (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>),
     reports:      (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>),
     settings:     (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>),
+    // Generic icon for custom (non-fixed) department placeholder tabs.
+    '__dept__':   (<svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>),
   };
-  const navGroups: { label: string | null; keys: Tab[] }[] = [
+  // ── Dynamic Shop Floor nav ──────────────────────────────────────────────────
+  // Generated from the structured departments table (ordered by sort_order). Crew
+  // (not a department) always leads; QC is a permanently-fixed tab that always
+  // trails. A department matching a fixed component routes to it; any other
+  // (custom) department routes to the '__dept__' placeholder. Falls back to the
+  // legacy static list when no rows are loaded (pre-migration / still loading) so
+  // nothing regresses before the migration is applied.
+  type ShopFloorNavItem = { id: string; label: string; icon: React.ReactNode; fixedTab: Tab | null; deptRow?: DeptRow; count?: number; crewCount?: number };
+  const genericDeptIcon = navIcon['__dept__'];
+  // Crew clocked into each department right now — reuse the already-loaded,
+  // realtime-updated `activeCrew` roster (deduped one row per worker) rather than
+  // running a separate query. Keyed by lowercased dept so it matches both the
+  // fixed tab keys ('production'…) and custom department names. current_dept is
+  // where the worker is on the floor now; dept is their home dept fallback.
+  const crewCountByDept: Record<string, number> = {};
+  for (const c of activeCrew) {
+    const d = (c.current_dept || c.dept || '').toLowerCase();
+    if (!d) continue;
+    crewCountByDept[d] = (crewCountByDept[d] ?? 0) + 1;
+  }
+  const shopFloorNav: ShopFloorNavItem[] = [
+    { id: 'crew', label: tabByKey.crew?.label ?? 'Crew', icon: navIcon.crew, fixedTab: 'crew', count: tabByKey.crew?.count },
+  ];
+  const nonQcRows = deptRows.filter((r) => r.name.toLowerCase() !== 'qc');
+  if (nonQcRows.length > 0) {
+    for (const r of nonQcRows) {
+      const fixed = FIXED_DEPT_TAB[r.name.toLowerCase()];
+      const crewCount = crewCountByDept[r.name.toLowerCase()];
+      if (fixed && fixed !== 'qc') {
+        const meta = tabByKey[fixed];
+        shopFloorNav.push({ id: r.id, label: meta?.label ?? r.name, icon: navIcon[fixed] ?? genericDeptIcon, fixedTab: fixed, count: meta?.count, crewCount });
+      } else {
+        shopFloorNav.push({ id: r.id, label: r.name, icon: genericDeptIcon, fixedTab: null, deptRow: r, crewCount });
+      }
+    }
+  } else {
+    for (const k of ['production', 'assembly', 'craftsman', 'finishing'] as Tab[]) {
+      const meta = tabByKey[k];
+      shopFloorNav.push({ id: k, label: meta?.label ?? k, icon: navIcon[k], fixedTab: k, count: meta?.count, crewCount: crewCountByDept[k] });
+    }
+  }
+  shopFloorNav.push({ id: 'qc', label: tabByKey.qc?.label ?? 'QC', icon: navIcon.qc, fixedTab: 'qc', count: tabByKey.qc?.count, crewCount: crewCountByDept['qc'] });
+
+  // Active-state + click behavior shared by the sidebar and the mobile drawer.
+  const shopFloorItemActive = (it: ShopFloorNavItem): boolean =>
+    it.fixedTab ? tab === it.fixedTab : (tab === '__dept__' && activeDeptTab?.id === it.id);
+  const openShopFloorItem = (it: ShopFloorNavItem) => {
+    if (it.fixedTab) { setTab(it.fixedTab); setActiveDeptTab(null); }
+    else if (it.deptRow) { setTab('__dept__'); setActiveDeptTab({ id: it.deptRow.id, name: it.deptRow.name, template: it.deptRow.template }); }
+    setOpenThread(null); setMsgBody(''); setMoreOpen(false);
+  };
+
+  const navGroups: { label: string | null; keys?: Tab[]; items?: ShopFloorNavItem[] }[] = [
     { label: null,             keys: ['overview'] },
-    { label: 'Shop Floor',     keys: ['crew', 'production', 'assembly', 'craftsman', 'finishing', 'qc'] },
+    { label: 'Shop Floor',     items: shopFloorNav },
     { label: 'Communications', keys: ['messages', 'needs', 'damage'] },
-    { label: 'Resources',      keys: ['plans', 'sops'] },
+    { label: 'Resources',      keys: ['plans', 'sortlist', 'sops'] },
     { label: 'System',         keys: ['ai', 'integrations', 'reports', 'settings'] },
   ];
 
@@ -3410,22 +3711,43 @@ export default function SupervisorPage() {
                 {group.label && (
                   <div style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', padding: '16px 18px 6px', opacity: 0.5 }}>{group.label}</div>
                 )}
-                {group.keys.map((key) => {
-                  const t = tabByKey[key];
-                  if (!t) return null;
-                  const active = tab === key;
+                {(group.items
+                  ? group.items.map((it) => ({ key: it.id, label: it.label, icon: it.icon, count: it.count, crewCount: it.crewCount, active: shopFloorItemActive(it), onClick: () => openShopFloorItem(it) }))
+                  : (group.keys ?? []).map((key) => {
+                      const t = tabByKey[key];
+                      if (!t) return null;
+                      return { key, label: t.label, icon: navIcon[key], count: t.count, crewCount: undefined as number | undefined, active: tab === key, onClick: () => { setTab(key); setOpenThread(null); setMsgBody(''); } };
+                    })
+                ).map((nav) => {
+                  if (!nav) return null;
+                  const { key, label, icon, count, crewCount, active, onClick } = nav;
                   return (
                     <button
                       key={key}
                       className={active ? 'sup-nav-item active' : 'sup-nav-item'}
-                      onClick={() => { setTab(key); setOpenThread(null); setMsgBody(''); }}
+                      onClick={onClick}
                       style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 18px', background: active ? 'rgba(45,225,201,0.08)' : 'none', borderLeft: active ? '3px solid var(--teal)' : '3px solid transparent', borderTop: 'none', borderRight: 'none', borderBottom: 'none', color: active ? 'var(--teal)' : 'var(--ink-mute)', fontSize: 13.5, fontWeight: active ? 700 : 500, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', transition: 'color 0.15s, background 0.15s', whiteSpace: 'nowrap' }}
                     >
-                      <span style={{ display: 'flex', flexShrink: 0 }}>{navIcon[key]}</span>
-                      {t.label}
-                      {t.count !== undefined && t.count > 0 && (
-                        <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: active ? 'rgba(45,225,201,0.15)' : 'rgba(255,255,255,0.06)', color: active ? 'var(--teal)' : 'var(--ink-mute)' }}>
-                          {t.count}
+                      <span style={{ display: 'flex', flexShrink: 0 }}>{icon}</span>
+                      {label}
+                      {((count !== undefined && count > 0) || (crewCount !== undefined && crewCount > 0)) && (
+                        <span
+                          style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                          title={`${count ?? 0} ${(count ?? 0) === 1 ? 'unit' : 'units'} · ${crewCount ?? 0} crew on floor`}
+                        >
+                          {/* Unit / cabinet count — unchanged from before. */}
+                          {count !== undefined && count > 0 && (
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: active ? 'rgba(45,225,201,0.15)' : 'rgba(255,255,255,0.06)', color: active ? 'var(--teal)' : 'var(--ink-mute)' }}>
+                              {count}
+                            </span>
+                          )}
+                          {/* Crew-clocked-in count — teal pill with a person glyph. */}
+                          {crewCount !== undefined && crewCount > 0 && (
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 20, display: 'inline-flex', alignItems: 'center', gap: 3, background: 'rgba(94,234,212,0.1)', color: '#2DE1C9' }}>
+                              <svg width={9} height={9} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+                              {crewCount}
+                            </span>
+                          )}
                         </span>
                       )}
                     </button>
@@ -3991,9 +4313,15 @@ export default function SupervisorPage() {
                             {(() => { const c = laborByJob[j.job_number]; return c && c > 0 ? (
                               <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--teal)' }}>Labor to date: ${c.toFixed(2)}</span>
                             ) : null; })()}
+                            {j.material_est != null && (
+                              <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>Material est: ${j.material_est.toLocaleString()}</span>
+                            )}
+                            {j.labor_est != null && (
+                              <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>Labor est: {j.labor_est}h</span>
+                            )}
                             <SourceBadge source={j.source} />
                           </div>
-                          <div>
+                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                             <button
                               onClick={() => setFinishSpecsJob(j)}
                               className="btn btn-ghost"
@@ -4003,7 +4331,39 @@ export default function SupervisorPage() {
                               <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7Z"/><path d="M9 21h6"/></svg>
                               Finish Specs
                             </button>
+                            {editingJobId !== j.id && (
+                              <button
+                                onClick={() => { setEditingJobId(j.id); setJobEditForm({ due_date: j.due_date ?? '', material_est: j.material_est != null ? String(j.material_est) : '', labor_est: j.labor_est != null ? String(j.labor_est) : '' }); }}
+                                className="btn btn-ghost"
+                                style={{ padding: '6px 12px', fontSize: 12, fontWeight: 700 }}
+                                title="Edit dates & estimates"
+                              >
+                                Edit Dates & Estimates
+                              </button>
+                            )}
                           </div>
+                          {editingJobId === j.id && (
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 2, padding: '12px 14px', border: '1px solid rgba(45,225,201,0.3)', borderRadius: 10, background: 'rgba(45,225,201,0.04)' }}>
+                              <div>
+                                <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Due Date</label>
+                                <input type="date" className="form-input" value={jobEditForm.due_date} onChange={(e) => setJobEditForm((f) => ({ ...f, due_date: e.target.value }))} />
+                              </div>
+                              <div>
+                                <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Material Est.</label>
+                                <input type="number" className="form-input" placeholder="e.g. 2500" value={jobEditForm.material_est} onChange={(e) => setJobEditForm((f) => ({ ...f, material_est: e.target.value }))} />
+                              </div>
+                              <div>
+                                <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Labor Est. (hours)</label>
+                                <input type="number" className="form-input" placeholder="e.g. 40" value={jobEditForm.labor_est} onChange={(e) => setJobEditForm((f) => ({ ...f, labor_est: e.target.value }))} />
+                              </div>
+                              <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10 }}>
+                                <button className="btn btn-primary" style={{ opacity: savingJobEdit ? 0.5 : 1 }} disabled={savingJobEdit} onClick={() => { void handleSaveJobEstimates(j); }}>
+                                  {savingJobEdit ? 'Saving…' : 'Save Changes'}
+                                </button>
+                                <button className="btn btn-ghost" disabled={savingJobEdit} onClick={() => setEditingJobId(null)}>Cancel</button>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -4590,7 +4950,7 @@ export default function SupervisorPage() {
                           ))}
                           <button
                             type="button"
-                            onMouseDown={(e) => { e.preventDefault(); setPlanJobId('__new__'); setPlanJobNum(''); setPlanJobQuery(''); setPlanNewClient(''); setPlanNewRoom(''); setPlanJobOpen(false); }}
+                            onMouseDown={(e) => { e.preventDefault(); setPlanJobId('__new__'); setPlanJobNum(''); setPlanJobQuery(''); setPlanNewClient(''); setPlanNewRoom(''); setPlanNewDueDate(''); setPlanNewMaterialEst(''); setPlanNewLaborEst(''); setPlanJobOpen(false); }}
                             style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', background: 'rgba(167,139,250,0.06)', border: 'none', color: '#A78BFA', fontSize: 13, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer' }}
                           >
                             + Create new job
@@ -4615,6 +4975,18 @@ export default function SupervisorPage() {
                     <div>
                       <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Room / Area</label>
                       <input className="form-input" placeholder="e.g. Kitchen (optional)" value={planNewRoom} onChange={(e) => setPlanNewRoom(e.target.value)} onBlur={(e) => setPlanNewRoom(toTitleCase(e.target.value))} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Due Date *</label>
+                      <input type="date" className="form-input" value={planNewDueDate} onChange={(e) => setPlanNewDueDate(e.target.value)} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Material Est. *</label>
+                      <input type="number" className="form-input" placeholder="e.g. 2500" value={planNewMaterialEst} onChange={(e) => setPlanNewMaterialEst(e.target.value)} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Labor Est. (hours) *</label>
+                      <input type="number" className="form-input" placeholder="e.g. 40" value={planNewLaborEst} onChange={(e) => setPlanNewLaborEst(e.target.value)} />
                     </div>
                   </div>
                 )}
@@ -5573,6 +5945,39 @@ export default function SupervisorPage() {
             />
           )}
 
+          {/* ── Sort List tab ────────────────────────────────────────────── */}
+          {tab === 'sortlist' && tenant && (
+            <SortListTab
+              tenantId={tenant.id}
+              showToast={showToast}
+              jobs={jobs}
+              departments={departments}
+            />
+          )}
+
+          {/* ── Custom department placeholder ────────────────────────────────
+              Shown for any custom (non-fixed) department whose template view
+              hasn't been built yet. The template components land in a later
+              prompt; this keeps the generated tab functional in the meantime. */}
+          {tab === '__dept__' && activeDeptTab && (
+            <div style={{ maxWidth: 720 }}>
+              <div className="eyebrow" style={{ marginBottom: 8 }}>Shop Floor</div>
+              <h2 style={{ fontSize: 24, marginBottom: 4 }}>{activeDeptTab.name}</h2>
+              <div className="portal-card" style={{ marginTop: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, padding: '44px 28px', textAlign: 'center' }}>
+                <div style={{ width: 56, height: 56, borderRadius: 14, background: 'rgba(45,225,201,0.08)', border: '1px solid rgba(45,225,201,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--teal)' }}>
+                  <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>
+                  Coming soon — {templateLabel(activeDeptTab.template)} view for {activeDeptTab.name}
+                </div>
+                <p style={{ fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6, margin: 0, maxWidth: 460 }}>
+                  This department is configured with the <b style={{ color: 'var(--teal)' }}>{templateLabel(activeDeptTab.template)}</b> tracking template.
+                  Its crew-facing tracking view is being built. You can change its template anytime in <b>Settings → Departments</b>.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* ── Integrations tab ─────────────────────────────────────────── */}
           {tab === 'integrations' && tenant && (
             <IntegrationsTab
@@ -5691,9 +6096,13 @@ export default function SupervisorPage() {
                     const custom = isCustomDept(d);
                     const expanded = expandedDeptConfig === d;
                     const cfg = deptConfigDraft[d.toLowerCase()] ?? {};
+                    // QC is a permanently-special department: it can't be removed and
+                    // has no tracking-template selector (its pass/fail logic is fixed).
+                    const isQc = d.toLowerCase() === 'qc';
+                    const tmpl = draftTemplateFor(d);
                     return (
                       <div key={d}>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--teal)', background: 'rgba(94,234,212,0.1)', border: '1px solid var(--line-strong)', borderRadius: 20, padding: '6px 8px 6px 14px' }}>
                             {d}
                             {custom && (
@@ -5706,14 +6115,46 @@ export default function SupervisorPage() {
                                 <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                               </button>
                             )}
-                            <button
-                              onClick={() => removeDeptFromDraft(d)}
-                              aria-label={`Remove ${d}`}
-                              style={{ width: 20, height: 20, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', border: 'none', color: 'var(--ink-mute)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'inherit' }}
-                            >
-                              <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                            </button>
+                            {!isQc && (
+                              <button
+                                onClick={() => removeDeptFromDraft(d)}
+                                aria-label={`Remove ${d}`}
+                                style={{ width: 20, height: 20, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', border: 'none', color: 'var(--ink-mute)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'inherit' }}
+                              >
+                                <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                              </button>
+                            )}
                           </span>
+                          {/* Tracking-unit template selector (every dept except QC). */}
+                          {isQc ? (
+                            <span style={{ fontSize: 12, color: 'var(--ink-mute)', fontStyle: 'italic' }}>Quality Control — fixed</span>
+                          ) : (
+                            <>
+                              <select
+                                className="form-input"
+                                value={tmpl}
+                                onChange={(e) => setDeptTemplate(d, e.target.value as DeptTemplate)}
+                                style={{ flex: '1 1 280px', minWidth: 240, maxWidth: 380, padding: '7px 10px', fontSize: 13 }}
+                                aria-label={`Tracking template for ${d}`}
+                              >
+                                {TEMPLATE_OPTIONS.map((o) => (
+                                  <option key={o.value} value={o.value}>{o.label}</option>
+                                ))}
+                              </select>
+                              {tmpl === 'group_auto' && (
+                                <select
+                                  className="form-input"
+                                  value={deptGroupByDraft[d.toLowerCase()] ?? 'room_number'}
+                                  onChange={(e) => setDeptGroupBy(d, e.target.value)}
+                                  style={{ flex: '0 1 150px', minWidth: 120, padding: '7px 10px', fontSize: 13 }}
+                                  aria-label={`Group ${d} by`}
+                                >
+                                  <option value="room_number">Group by Room</option>
+                                  <option value="color">Group by Color</option>
+                                </select>
+                              )}
+                            </>
+                          )}
                         </div>
 
                         {/* Feature toggles for this custom dept */}
@@ -6075,52 +6516,24 @@ export default function SupervisorPage() {
               }}
             >
               <div style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(94,234,212,0.2)', margin: '14px auto 10px' }} />
-              {(
+              {[
+                // Shop Floor — dynamic (Crew, the configured departments, fixed QC).
+                ...shopFloorNav.map((it) => ({ key: it.id, label: it.label, icon: it.icon, active: shopFloorItemActive(it), onClick: () => openShopFloorItem(it) })),
+                // Resources + System — fixed tabs.
+                ...(
                 [
-                  { key: 'crew' as Tab, label: 'Crew', icon: (
-                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                      <circle cx="9" cy="7" r="4"/>
-                      <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-                      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                    </svg>
-                  )},
-                  { key: 'production' as Tab, label: 'Production', icon: (
-                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M3 3v18h18"/><path d="m7 14 3-3 3 3 5-5"/><path d="M14 9h3v3"/>
-                    </svg>
-                  )},
-                  { key: 'assembly' as Tab, label: 'Assembly', icon: (
-                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="2" y="3" width="20" height="14" rx="2"/>
-                      <line x1="8" y1="21" x2="16" y2="21"/>
-                      <line x1="12" y1="17" x2="12" y2="21"/>
-                    </svg>
-                  )},
-                  { key: 'craftsman' as Tab, label: 'Craftsman', icon: (
-                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-                    </svg>
-                  )},
-                  { key: 'finishing' as Tab, label: 'Finishing', icon: (
-                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M18.37 2.63 14 7l-1.59-1.59a2 2 0 0 0-2.82 0L8 7l9 9 1.59-1.59a2 2 0 0 0 0-2.82L17 10l4.37-4.37a2.12 2.12 0 0 0-3-3z"/>
-                      <path d="M9 8c-2 3-4 3.5-7 4l8 8c1-.5 3.5-1.5 4-7"/>
-                      <path d="M14.5 17.5 4.5 15"/>
-                    </svg>
-                  )},
-                  { key: 'qc' as Tab, label: 'QC', icon: (
-                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M9 11l3 3L22 4"/>
-                      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
-                    </svg>
-                  )},
                   { key: 'plans' as Tab, label: 'Plans', icon: (
                     <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                       <polyline points="14 2 14 8 20 8"/>
                       <line x1="16" y1="13" x2="8" y2="13"/>
                       <line x1="16" y1="17" x2="8" y2="17"/>
+                    </svg>
+                  )},
+                  { key: 'sortlist' as Tab, label: 'Sort List', icon: (
+                    <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M22 12h-6l-2 3h-4l-2-3H2"/>
+                      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
                     </svg>
                   )},
                   { key: 'sops' as Tab, label: 'SOPs', icon: (
@@ -6154,19 +6567,20 @@ export default function SupervisorPage() {
                     </svg>
                   )},
                 ] as { key: Tab; label: string; icon: React.ReactNode }[]
-              ).map(({ key, label, icon }) => (
+                ).map((m) => ({ key: m.key as string, label: m.label, icon: m.icon, active: tab === m.key, onClick: () => { setTab(m.key); setOpenThread(null); setMsgBody(''); setMoreOpen(false); } })),
+              ].map(({ key, label, icon, active, onClick }) => (
                 <button
                   key={key}
-                  onClick={() => { setTab(key); setOpenThread(null); setMsgBody(''); setMoreOpen(false); }}
+                  onClick={onClick}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 16,
                     width: '100%', padding: '15px 24px',
                     background: 'none', border: 'none',
                     borderBottom: '1px solid rgba(94,234,212,0.07)',
                     cursor: 'pointer', fontFamily: 'inherit',
-                    fontSize: 15, fontWeight: tab === key ? 700 : 500,
+                    fontSize: 15, fontWeight: active ? 700 : 500,
                     textAlign: 'left',
-                    color: tab === key ? '#2DE1C9' : '#9AAAA7',
+                    color: active ? '#2DE1C9' : '#9AAAA7',
                   }}
                 >
                   {icon}

@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
@@ -9,9 +9,10 @@ import { trialDaysLeft, getDepartments, type Tenant } from '@/lib/auth';
 import FileViewer, { type ViewerFile } from '@/components/FileViewer';
 import PushPrompt from '@/components/PushPrompt';
 import OfflineBanner from '@/components/OfflineBanner';
-import CraftsmanBuilds from './CraftsmanBuilds';
-import FinishingView from './FinishingView';
-import AssemblyCrewView from './AssemblyCrewView';
+import PartTemplateView from './PartTemplateView';
+import CabinetTemplateView from './CabinetTemplateView';
+import GroupAutoTemplateView from './GroupAutoTemplateView';
+import GroupManualTemplateView from './GroupManualTemplateView';
 import CabinetScanner from '../scan/CabinetScanner';
 import QcInspectorView from './QcInspectorView';
 import PushPicker from '@/components/PushPicker';
@@ -292,21 +293,6 @@ type ProdUnit = {
   dueDate: string | null;
 };
 
-// Job-level cut list (production) — a part the crew checks off as it's cut.
-type CutJobPart = {
-  id: string;
-  part_name: string;
-  material: string | null;
-  width: number | null;
-  height: number | null;
-  depth: number | null;
-  quantity: number;
-  checked: boolean;
-  cabinet_unit_id: string;
-  qc_notes: string | null;
-  qc_failed: boolean | null;
-};
-type CutJobCab = { cabinetId: string; label: string; key: string; jobNumber: string | null; parts: CutJobPart[] };
 
 // AI label-match result (from /app/api/match-label).
 type ScanAiMatch = {
@@ -539,22 +525,6 @@ function CutStatusBadge({ status }: { status: string | null | undefined }) {
   );
 }
 
-// ── Due-date badge (green 7+ · amber 3-6 · red 1-2 · pulsing red overdue) ───────
-function dueBadgeMeta(dueDate: string): { label: string; color: string; overdue: boolean } {
-  const days = Math.ceil((new Date(dueDate).getTime() - Date.now()) / 86400000);
-  const overdue = days < 0;
-  const color = overdue || days <= 2 ? '#F87171' : days <= 6 ? '#FBBF24' : '#34D399';
-  const label = overdue ? `${-days}d overdue` : days === 0 ? 'Due today' : `${days}d`;
-  return { label, color, overdue };
-}
-function DueBadge({ dueDate }: { dueDate: string }) {
-  const { label, color, overdue } = dueBadgeMeta(dueDate);
-  return (
-    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: `${color}22`, color, ...(overdue ? { animation: 'prodPulse 1.4s ease-in-out infinite' } : {}) }}>
-      {label}
-    </span>
-  );
-}
 
 // ── Small UI pieces ────────────────────────────────────────────────────────────
 
@@ -698,6 +668,43 @@ export default function CrewPage() {
   // Ref so realtime closure always reads current dept without re-subscribing
   const crewDeptRef = useRef('');
   useEffect(() => { crewDeptRef.current = crewDept; }, [crewDept]);
+
+  // ── Dynamic department template (departments table) ──────────────────────────
+  // The crew member's structured department config drives which tracking-template
+  // component mounts. Loaded best-effort; falls back to a name-based default so the
+  // four fixed departments keep working even before/without a departments row.
+  type CrewDeptRow = { id: string; name: string; template: string; group_by_field: string | null; completion_behavior: string | null };
+  const [crewDeptRow, setCrewDeptRow] = useState<CrewDeptRow | null>(null);
+  useEffect(() => {
+    if (!tenant || !crewDept) { setCrewDeptRow(null); return; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { data } = await supabase
+          .from('departments')
+          .select('id, name, template, group_by_field, completion_behavior')
+          .eq('tenant_id', tenant.id).eq('is_active', true).ilike('name', crewDept);
+        const rows = (data as CrewDeptRow[] | null) ?? [];
+        const match = rows.find((r) => r.name.toLowerCase() === crewDept.toLowerCase()) ?? null;
+        if (!cancelled) setCrewDeptRow(match);
+      } catch { if (!cancelled) setCrewDeptRow(null); }
+    })();
+    return () => { cancelled = true; };
+  }, [tenant, crewDept]);
+
+  // Resolve the active template config: the loaded row, or a name-based default
+  // for the four fixed departments (pre-migration / missing row).
+  const resolvedDept = useMemo((): CrewDeptRow | null => {
+    if (crewDeptRow) return crewDeptRow;
+    const DEF: Record<string, { template: string; group_by_field: string | null; completion_behavior: string | null }> = {
+      production: { template: 'part',       group_by_field: null,          completion_behavior: null },
+      assembly:   { template: 'cabinet',    group_by_field: null,          completion_behavior: 'auto_route_to_qc' },
+      craftsman:  { template: 'cabinet',    group_by_field: null,          completion_behavior: 'push_picker' },
+      finishing:  { template: 'group_auto', group_by_field: 'room_number', completion_behavior: null },
+    };
+    const d = DEF[crewDept.toLowerCase()];
+    return d ? { id: '', name: crewDept, ...d } : null;
+  }, [crewDept, crewDeptRow]);
 
   // Self-heal stale/null-dept push subscriptions: once the crew's dept and
   // tenant are known and notifications are already granted, re-tag this
@@ -868,8 +875,6 @@ export default function CrewPage() {
   const [prodLoading,  setProdLoading]  = useState(false);
   // Active work surfaced from the dept child views for the crew-home banner.
   const [finishingActiveTimers, setFinishingActiveTimers] = useState(0);
-  const [craftsmanActiveBuild, setCraftsmanActiveBuild] = useState<{ label: string; job: string | null } | null>(null);
-  const [craftsmanReopen, setCraftsmanReopen] = useState(0);
 
   // Production job folder — the currently selected job in the cut list.
   const [prodSelectedJob, setProdSelectedJob] = useState<string>('');
@@ -880,32 +885,6 @@ export default function CrewPage() {
   const [cutActioning,   setCutActioning]   = useState<Record<string, boolean>>({});
   const [cutBulkBusy,    setCutBulkBusy]    = useState(false);
 
-  // ── Job-level cut list (production) ────────────────────────────────────────
-  // Tapping a Production job opens a full-screen, job-level cut list: all
-  // cabinets (collapsed), check parts off across cabinets, and when a cabinet's
-  // last part is checked a "fully cut" popup offers Push (now) or Hold (batch).
-  const [cutJob,         setCutJob]         = useState<{ jobPath: string; jobNumber: string | null } | null>(null);
-  const [cutJobCabs,     setCutJobCabs]     = useState<CutJobCab[]>([]);
-  const [cutJobLoading,  setCutJobLoading]  = useState(false);
-  const [cutCabExpanded, setCutCabExpanded] = useState<Record<string, boolean>>({});
-  const [heldCabs,       setHeldCabs]       = useState<Record<string, boolean>>({});
-  const [fullyCutCab,    setFullyCutCab]    = useState<{ cabinetId: string; label: string } | null>(null);
-  const [destForCabs,    setDestForCabs]    = useState<string[] | null>(null);
-  const [pushGroupOpen,  setPushGroupOpen]  = useState(false);
-  const [groupSel,       setGroupSel]       = useState<Record<string, boolean>>({});
-  const [cutJobBusy,     setCutJobBusy]     = useState(false);
-  // Cutlist multi-select: tap selects parts (instead of checking them as cut) so
-  // a batch can be pushed to one dept at once.
-  const [selectMode,     setSelectMode]     = useState(false);
-  const [selectedParts,  setSelectedParts]  = useState<Record<string, { part: CutJobPart; cabinetId: string }>>({});
-  // Undo toast — shown after any dept push so the worker can reverse it.
-  const [undoState, setUndoState] = useState<{
-    label: string;
-    toDept: string;
-    fromDept: string;
-    parts: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[];
-    timer: ReturnType<typeof setTimeout>;
-  } | null>(null);
 
   // Camera (shared between damage + parts modals — only one open at a time)
   const videoRef         = useRef<HTMLVideoElement>(null);
@@ -1459,22 +1438,6 @@ export default function CrewPage() {
     setCameraStarting(false);
     setModal('damage');
   }
-  // Open the damage report flow prefilled for a specific part (from the cutlist
-  // long-press sheet). Closes the cut list so the modal is visible on top.
-  function openDamageForPart(partName: string) {
-    setCutJob(null);
-    setDmgWhat(partName);
-    setDmgDept('Production');
-    setDmgType('damage');
-    setDmgPhoto(null);
-    setDmgPhotoPreview(null);
-    setDmgScanStep('preview');
-    setDmgShowDetails(true);
-    setCameraError(null);
-    setCameraStarting(false);
-    setModal('damage');
-  }
-
   function openSwitchDept() {
     setSwitchDeptVal(crewDept);
     setModal('switchDept');
@@ -1514,6 +1477,16 @@ export default function CrewPage() {
         .eq('name', crewName)
         .eq('tenant_id', tenant!.id);
     } catch (_) {}
+    // Keep the live crew roster in sync — the supervisor's Crew tab reads
+    // crew_members.department to show where each member is right now. Mirrors
+    // registerCrewMember's name match. Historical time/shift logs are never
+    // rewritten; only this live "current location" pointer is updated.
+    try {
+      await supabase.from('crew_members')
+        .update({ department: newDept })
+        .eq('tenant_id', tenant!.id)
+        .ilike('name', crewName);
+    } catch (_) { /* best-effort, same pattern as the device_tokens update above */ }
     // Update current_dept on active clock row
     const tcId = activeTimeClockId;
     if (tcId) {
@@ -1634,10 +1607,12 @@ export default function CrewPage() {
     // Assembly may only open the checklist once Production has cut the cabinet.
     // Cabinets already in assembly/flagged/complete are grandfathered in. The
     // auto-detect router passes force=true once the crew has chosen the flow.
+    // The cabinet-level production_status column is retired — the gate derives
+    // cut-status solely from the parts (every part must be cut) plus the
+    // already-started grandfather.
     const alreadyStarted = ['in_assembly', 'flagged', 'complete'].includes(unit.status);
-    const cabinetCut = isPartCut(unit.production_status);
     const allPartsCut = parts.length > 0 && parts.every((p) => isPartCut(p.production_status));
-    if (!force && !alreadyStarted && !cabinetCut && !allPartsCut) {
+    if (!force && !alreadyStarted && !allPartsCut) {
       setAssemblyNotReady({ unit, parts });
       return;
     }
@@ -1834,25 +1809,35 @@ export default function CrewPage() {
     await openCutView(prodUnit);
   }
 
-  // Auto-detect the right flow for a scanned cabinet (FIX 2):
-  //   in_assembly / flagged       → QC check (parts + flagging)
-  //   cut + pending               → Assembly checklist (auto-check parts)
-  //   not_cut / cutting           → Production cut view (mark parts cut)
-  //   otherwise indeterminate     → ask the crew (Assembly | Production/QC)
+  // Auto-detect the right flow for a scanned cabinet. Cut-status is derived from
+  // the parts (the cabinet-level production_status column is retired):
+  //   in_assembly / flagged          → QC check (parts + flagging)
+  //   all parts cut + pending        → Assembly checklist (auto-check parts)
+  //   parts carry a not_cut/cutting  → Production cut view (mark parts cut)
+  //   no per-part cut signal at all  → ask the crew (Assembly | Production/QC)
   async function routeScanToFlow(cabinetUnitId: string) {
     if (!tenant) return;
-    const { data, error } = await supabase.from('cabinet_units')
-      .select('id, unit_label, job_number, cabinet_number, room_number, status, production_status')
-      .eq('id', cabinetUnitId).single();
-    if (error) throw error;
-    const unit = data as AssemblyCabinetUnit & { production_status?: string | null };
+    const [unitRes, partsRes] = await Promise.all([
+      supabase.from('cabinet_units')
+        .select('id, unit_label, job_number, cabinet_number, room_number, status')
+        .eq('id', cabinetUnitId).single(),
+      supabase.from('parts')
+        .select('production_status, assigned_dept')
+        .eq('cabinet_unit_id', cabinetUnitId).eq('tenant_id', tenant.id),
+    ]);
+    if (unitRes.error) throw unitRes.error;
+    const unit = unitRes.data as AssemblyCabinetUnit & { production_status?: string | null };
     const status = unit.status;
-    const ps = unit.production_status ?? null;
-    const cut = isPartCut(ps);
+    // Derive cut-status from the parts. cut = every part cut · hasCutSignal = any
+    // part carries a production_status value (not_cut/cutting/cut), i.e. we have a
+    // real signal rather than a freshly-uploaded indeterminate cabinet.
+    const partRows = (partsRes.data as { production_status: string | null; assigned_dept: string | null }[] | null) ?? [];
+    const cut = partRows.length > 0 && partRows.every((p) => isPartCut(p.production_status));
+    const hasCutSignal = partRows.some((p) => !!p.production_status);
 
     if (status === 'in_assembly' || status === 'flagged') { await loadCabinetUnit(cabinetUnitId, true); return; }
     if (cut && (status === 'pending' || status === 'complete' || !status)) { await loadCabinetUnit(cabinetUnitId, true); return; }
-    if (ps === 'not_cut' || ps === 'cutting' || (!cut && ps)) { await openProductionCutFlow(unit); return; }
+    if (!cut && hasCutSignal) { await openProductionCutFlow(unit); return; }
     if (cut) { await loadCabinetUnit(cabinetUnitId, true); return; }
     setScanChoiceUnit(unit);
   }
@@ -2030,12 +2015,18 @@ export default function CrewPage() {
       });
       const damage_reports = flaggedEntries.map(([partId, flag]) => {
         const part = assemblyScanParts.find((pp) => pp.id === partId);
+        // When local state is stale the part won't resolve. Log it (so it's
+        // debuggable) and keep the unresolved id traceable instead of silently
+        // labeling the report "Unknown part".
+        if (!part) console.error('[assemblyScanConfirm] flagged part not in local state (offline path):', partId);
+        const partName = part?.part_name ?? `Unresolved part (${partId})`;
+        const notes = [flag.notes || null, part ? null : `Unresolved part id: ${partId} — local state was stale when saved`].filter(Boolean).join(' — ') || null;
         return {
-          part_name:       part?.part_name ?? 'Unknown part',
+          part_name:       partName,
           dept:            'Assembly',
           status:          'open',
           flag_type:       flag.type,
-          notes:           flag.notes || null,
+          notes,
           cabinet_unit_id: assemblyScanUnit.id,
           job_id:          assemblyScanUnit.job_number,
           assembler_name:  crewName || null,
@@ -2106,13 +2097,19 @@ export default function CrewPage() {
       if (hasFlagged) {
         const reports = flaggedEntries.map(([partId, flag]) => {
           const part = assemblyScanParts.find((p) => p.id === partId);
+          // When local state is stale the part won't resolve. Log it (so it's
+          // debuggable) and keep the unresolved id traceable instead of silently
+          // labeling the report "Unknown part".
+          if (!part) console.error('[assemblyScanConfirm] flagged part not in local state (online path):', partId);
+          const partName = part?.part_name ?? `Unresolved part (${partId})`;
+          const notes = [flag.notes || null, part ? null : `Unresolved part id: ${partId} — local state was stale when saved`].filter(Boolean).join(' — ') || null;
           return {
-            part_name:       part?.part_name ?? 'Unknown part',
+            part_name:       partName,
             dept:            'Assembly',
             status:          'open',
             tenant_id:       tenant!.id,
             flag_type:       flag.type,
-            notes:           flag.notes || null,
+            notes,
             cabinet_unit_id: assemblyScanUnit!.id,
             job_id:          assemblyScanUnit!.job_number,
             assembler_name:  crewName || null,
@@ -2177,158 +2174,6 @@ export default function CrewPage() {
   }
   function closeCutView() { setCutUnit(null); setCutParts([]); setCutPartExpanded({}); }
 
-  // ── Job-level cut list ─────────────────────────────────────────────────────
-  async function openCutJob(units: ProdUnit[], jobPath: string) {
-    if (!requireClockIn()) return;
-    const jobNumber = units.find((u) => u.job_number)?.job_number ?? null;
-    setCutJob({ jobPath, jobNumber });
-    setCutJobCabs([]);
-    setCutCabExpanded({});
-    setHeldCabs({});
-    setCutJobLoading(true);
-    try {
-      const cabIds = units.map((u) => u.id);
-      const { data } = await supabase
-        .from('parts')
-        .select('id, part_name, material, width, height, depth, quantity, checked, cabinet_unit_id, assigned_dept, qc_notes, qc_failed')
-        .in('cabinet_unit_id', cabIds)
-        .order('part_name');
-      const rows = (data as (CutJobPart & { assigned_dept: string | null })[] | null) ?? [];
-      const byCab: Record<string, CutJobPart[]> = {};
-      rows.filter((p) => p.assigned_dept === 'production').forEach((p) => {
-        (byCab[p.cabinet_unit_id] ??= []).push({ ...p, checked: !!p.checked });
-      });
-      const cabs: CutJobCab[] = units
-        .filter((u) => (byCab[u.id]?.length ?? 0) > 0)
-        .map((u) => ({ cabinetId: u.id, label: u.unit_label, key: u.cabinet_number || u.unit_label, jobNumber: u.job_number, parts: byCab[u.id] ?? [] }));
-      setCutJobCabs(cabs);
-    } catch { /* best-effort */ }
-    setCutJobLoading(false);
-  }
-  function closeCutJob() {
-    setCutJob(null); setCutJobCabs([]); setCutCabExpanded({}); setHeldCabs({});
-    setFullyCutCab(null); setDestForCabs(null); setPushGroupOpen(false);
-    setSelectMode(false); setSelectedParts({});
-    void loadProduction();
-  }
-
-  // Check/uncheck a part as it's cut. Sets both `checked` (the cutlist tick) and
-  // production_status so the supervisor pipeline + job progress stay in sync.
-  // When the cabinet's last unchecked part is checked, the "fully cut" popup fires.
-  async function toggleCutPart(cabinetId: string, partId: string) {
-    const cab = cutJobCabs.find((c) => c.cabinetId === cabinetId);
-    const part = cab?.parts.find((p) => p.id === partId);
-    if (!cab || !part) return;
-    const next = !part.checked;
-    const now = new Date().toISOString();
-    setCutJobCabs((cabs) => cabs.map((c) => c.cabinetId !== cabinetId ? c : { ...c, parts: c.parts.map((p) => p.id === partId ? { ...p, checked: next } : p) }));
-    // Fully-cut popup when this check completes the cabinet.
-    if (next && cab.parts.every((p) => p.id === partId || p.checked)) {
-      setFullyCutCab({ cabinetId, label: cab.label });
-    }
-    try {
-      await supabase.from('parts')
-        .update(next
-          ? { checked: true, production_status: 'cut', cut_by: crewName || null, cut_at: now }
-          : { checked: false, production_status: 'not_cut' })
-        .eq('id', partId).eq('tenant_id', tenant!.id);
-    } catch { /* optimistic; realtime will reconcile */ }
-  }
-
-  // Push every part of the given cabinets to a destination dept and drop them.
-  function showUndoToast(
-    label: string,
-    toDept: string,
-    fromDept: string,
-    parts: { partId: string; cabinetUnitId: string; partName: string; jobNumber: string | null }[],
-  ) {
-    if (undoState) clearTimeout(undoState.timer);
-    const timer = setTimeout(() => { setUndoState(null); }, 8000);
-    setUndoState({ label, toDept, fromDept, parts, timer });
-  }
-
-  async function handleUndo() {
-    if (!undoState) return;
-    clearTimeout(undoState.timer);
-    const u = undoState;
-    setUndoState(null);
-    for (const p of u.parts) {
-      try {
-        await pushPart({ tenantId: tenant!.id, partId: p.partId, partName: p.partName, cabinetUnitId: p.cabinetUnitId, jobNumber: p.jobNumber, fromDept: u.toDept, toDept: u.fromDept, workerName: crewName, timeClockId: activeTimeClockId });
-      } catch { /* best-effort per part */ }
-    }
-    showToast(`Undone — parts returned to ${deptDisplay(u.fromDept)}`);
-    void loadProduction();
-  }
-
-  async function pushCutCabinets(cabinetIds: string[], toDept: string) {
-    if (cutJobBusy) return;
-    setCutJobBusy(true);
-    try {
-      // Flatten to (part, cabinet) push tasks across the selected cabinets.
-      const tasks: { part: CutJobPart; cid: string; jobNumber: string | null }[] = [];
-      for (const cid of cabinetIds) {
-        const cab = cutJobCabs.find((c) => c.cabinetId === cid);
-        if (!cab) continue;
-        for (const p of cab.parts) tasks.push({ part: p, cid, jobNumber: cab.jobNumber });
-      }
-      const pushedParts = tasks.map((t) => ({ partId: t.part.id, cabinetUnitId: t.cid, partName: t.part.part_name, jobNumber: t.jobNumber }));
-      // Push all parts in parallel.
-      const pushResults = await Promise.allSettled(tasks.map((t) =>
-        pushPart({ tenantId: tenant!.id, partId: t.part.id, partName: t.part.part_name, cabinetUnitId: t.cid, jobNumber: t.jobNumber, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId })
-      ));
-      const failedCount = pushResults.filter((r) => r.status === 'rejected').length;
-      if (failedCount > 0) {
-        showToast(`${failedCount} part${failedCount === 1 ? '' : 's'} failed to push — try again`, true);
-      }
-      // Recompute each unique cabinet once.
-      const uniqueCabIds = [...new Set(tasks.map((t) => t.cid))];
-      await Promise.all(uniqueCabIds.map((id) => recomputeCabinet(tenant!.id, id).catch(() => {})));
-      setCutJobCabs((cabs) => cabs.filter((c) => !cabinetIds.includes(c.cabinetId)));
-      setHeldCabs((h) => { const n = { ...h }; cabinetIds.forEach((id) => delete n[id]); return n; });
-      showUndoToast(`${cabinetIds.length} cabinet${cabinetIds.length === 1 ? '' : 's'}`, toDept, 'production', pushedParts);
-      notifyDeptWork(tenant!.id, toDept, cutJob?.jobNumber ?? null, pushedParts.length);
-      void loadProduction();
-    } finally {
-      setCutJobBusy(false);
-      setDestForCabs(null);
-    }
-  }
-
-  // Push every selected part (multi-select mode) to one dept, then exit select mode.
-  async function pushSelectedParts(toDept: string) {
-    if (cutJobBusy) return;
-    const items = Object.values(selectedParts);
-    if (items.length === 0) return;
-    setCutJobBusy(true);
-    try {
-      // Push all parts in parallel.
-      const pushResults = await Promise.allSettled(items.map(({ part, cabinetId }) =>
-        pushPart({ tenantId: tenant!.id, partId: part.id, partName: part.part_name, cabinetUnitId: cabinetId, jobNumber: cutJob?.jobNumber ?? null, fromDept: 'production', toDept, workerName: crewName, timeClockId: activeTimeClockId })
-      ));
-      const failedCount = pushResults.filter((r) => r.status === 'rejected').length;
-      if (failedCount > 0) {
-        showToast(`${failedCount} part${failedCount === 1 ? '' : 's'} failed to push — try again`, true);
-      }
-      // Recompute each unique cabinet once.
-      const uniqueCabIds = [...new Set(items.map((it) => it.cabinetId))];
-      await Promise.all(uniqueCabIds.map((id) => recomputeCabinet(tenant!.id, id).catch(() => {})));
-      const pushedIds = new Set(items.map((it) => it.part.id));
-      setCutJobCabs((cabs) => cabs.map((c) => ({ ...c, parts: c.parts.filter((p) => !pushedIds.has(p.id)) })).filter((c) => c.parts.length > 0));
-      showUndoToast(
-        `${items.length} part${items.length === 1 ? '' : 's'}`,
-        toDept,
-        'production',
-        items.map((it) => ({ partId: it.part.id, cabinetUnitId: it.cabinetId, partName: it.part.part_name, jobNumber: cutJob?.jobNumber ?? null })),
-      );
-      notifyDeptWork(tenant!.id, toDept, cutJob?.jobNumber ?? null, items.length);
-      setSelectedParts({});
-      setSelectMode(false);
-      void loadProduction();
-    } finally {
-      setCutJobBusy(false);
-    }
-  }
 
   async function handlePartPhoto(partId: string, file: File) {
     try {
@@ -3427,34 +3272,29 @@ export default function CrewPage() {
               Each department renders its own queue of parts driven entirely by
               parts.assigned_dept. Production uses the Cut List accordion below;
               Craftsman, Finishing and Assembly each get their own folder view. */}
-          {crewDept === 'Craftsman' && tenant ? (
-            <CraftsmanBuilds tenantId={tenant.id} crewName={crewName} timeClockId={activeTimeClockId} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} aiMode={aiMode} onActiveBuild={setCraftsmanActiveBuild} reopenSignal={craftsmanReopen} />
-          ) : crewDept === 'Finishing' && tenant ? (
-            <FinishingView tenantId={tenant.id} showToast={showToast} crewName={crewName} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} onActiveTimerCount={setFinishingActiveTimers} />
-          ) : crewDept === 'Assembly' && tenant ? (
-            <AssemblyCrewView tenantId={tenant.id} crewName={crewName} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={() => setGateOpen(true)} />
-          ) : null}
+          {tenant && resolvedDept && (() => {
+            const t = resolvedDept.template;
+            const onClock = () => setGateOpen(true);
+            if (t === 'part') {
+              return <PartTemplateView tenantId={tenant.id} deptId={resolvedDept.id} deptName={resolvedDept.name} crewName={crewName} timeClockId={activeTimeClockId} aiMode={aiMode} isClockedIn={isClockedIn} onRequireClock={onClock} showToast={showToast} allDepts={deptOptions} />;
+            }
+            if (t === 'cabinet') {
+              return <CabinetTemplateView tenantId={tenant.id} deptId={resolvedDept.id} deptName={resolvedDept.name} completionBehavior={resolvedDept.completion_behavior as 'auto_route_to_qc' | 'push_picker' | null} crewName={crewName} aiMode={aiMode} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={onClock} />;
+            }
+            if (t === 'group_auto') {
+              return <GroupAutoTemplateView tenantId={tenant.id} deptId={resolvedDept.id} deptName={resolvedDept.name} groupByField={resolvedDept.group_by_field as 'room_number' | 'color' | null} crewName={crewName} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={onClock} onActiveTimerCount={setFinishingActiveTimers} />;
+            }
+            if (t === 'group_manual') {
+              return <GroupManualTemplateView tenantId={tenant.id} deptId={resolvedDept.id} deptName={resolvedDept.name} completionBehavior={resolvedDept.completion_behavior as 'auto_route_to_qc' | 'push_picker' | null} crewName={crewName} aiMode={aiMode} showToast={showToast} isClockedIn={isClockedIn} onRequireClock={onClock} />;
+            }
+            return null; // 'qc' or unknown templates have no queue view here
+          })()}
 
           {/* ── Active work banner ─────────────────────────────────────────
               Shown when a Craftsman build or Finishing room timer is running.
               Lets crew know their timer is still tracked while they navigate. */}
-          <style>{`@keyframes finishPulse{0%,100%{opacity:1}50%{opacity:0.25}}@keyframes craftsPulse{0%,100%{opacity:1}50%{opacity:0.3}}`}</style>
-          {crewDept === 'Craftsman' && craftsmanActiveBuild && (
-            <div style={{ marginBottom: 20, padding: '14px 16px', borderRadius: 12, background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.3)', display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#60A5FA', flexShrink: 0, animation: 'craftsPulse 1.4s ease-in-out infinite' }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#60A5FA' }}>Build timer running</div>
-                <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{craftsmanActiveBuild.label}{craftsmanActiveBuild.job ? ` · Job ${craftsmanActiveBuild.job}` : ''}</div>
-              </div>
-              <button
-                onClick={() => setCraftsmanReopen((n) => n + 1)}
-                style={{ fontSize: 12, fontWeight: 700, color: '#60A5FA', background: 'rgba(96,165,250,0.12)', border: '1px solid rgba(96,165,250,0.3)', borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}
-              >
-                Return
-              </button>
-            </div>
-          )}
-          {crewDept === 'Finishing' && finishingActiveTimers > 0 && (
+          <style>{`@keyframes finishPulse{0%,100%{opacity:1}50%{opacity:0.25}}`}</style>
+          {resolvedDept?.template === 'group_auto' && finishingActiveTimers > 0 && (
             <div style={{ marginBottom: 20, padding: '14px 16px', borderRadius: 12, background: 'rgba(45,225,201,0.08)', border: '1px solid rgba(45,225,201,0.3)', display: 'flex', alignItems: 'center', gap: 12 }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#2DE1C9', flexShrink: 0, animation: 'finishPulse 1.4s ease-in-out infinite' }} />
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -3467,58 +3307,6 @@ export default function CrewPage() {
             </div>
           )}
 
-          {/* ── Production · Cut List ──────────────────────────────────────────── */}
-          {crewDept === 'Production' && (
-            <div style={{ marginBottom: 40 }}>
-              <style>{`@keyframes prodPulse{0%,100%{opacity:1}50%{opacity:0.35}}`}</style>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Production · Cut List</div>
-              </div>
-
-              {prodLoading && prodUnits.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '28px 0', color: 'var(--ink-mute)', fontSize: 13 }}>Loading cut list…</div>
-              ) : (() => {
-                // prodUnits only contains cabinets that still have production parts
-                // to cut, so every job here is active. Render as a collapsed folder
-                // list — tap a job to expand its cabinets (one open at a time).
-                const groups: Record<string, ProdUnit[]> = {};
-                prodUnits.forEach((u) => { (groups[u.jobPath] ??= []).push(u); });
-                const jobPaths = Object.keys(groups);
-                if (jobPaths.length === 0) {
-                  return <div style={{ textAlign: 'center', padding: '28px 0', color: 'var(--ink-mute)', fontSize: 13 }}>No active work assigned. New jobs will appear here automatically.</div>;
-                }
-                return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {jobPaths.map((jp) => {
-                      const units = groups[jp];
-                      const due = units.find((u) => u.dueDate)?.dueDate ?? null;
-                      // Job progress = parts checked / total across all cabinets.
-                      const total = units.reduce((s, u) => s + u.partsTotal, 0);
-                      const cut   = units.reduce((s, u) => s + u.partsCut, 0);
-                      const pct   = total > 0 ? Math.round((cut / total) * 100) : 0;
-                      return (
-                        <div key={jp} style={{ border: '1px solid var(--line)', borderRadius: 14, overflow: 'hidden', background: 'var(--bg-1)' }}>
-                          <button onClick={() => void openCutJob(units, jp)}
-                            style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 10, padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%' }}>
-                              <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{jp.split('/').join(' / ')}</span>
-                              {due && <DueBadge dueDate={due} />}
-                              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{cut}/{total} cut</span>
-                              <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="9 6 15 12 9 18"/></svg>
-                            </div>
-                            <div style={{ height: 6, borderRadius: 20, background: 'var(--bg-2, #11151a)', overflow: 'hidden', width: '100%' }}>
-                              <div style={{ height: '100%', width: `${pct}%`, background: pct === 100 ? '#2DE1C9' : '#60A5FA', transition: 'width 0.3s ease' }} />
-                            </div>
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
-            </div>
-          )}
 
           {/* Quick actions */}
           <div style={{ marginBottom: 40 }}>
@@ -5099,215 +4887,6 @@ export default function CrewPage() {
         </div>
       )}
 
-      {/* ── Job-level Cut List (Production) ────────────────────────────────────── */}
-      {cutJob && (() => {
-        const totalParts = cutJobCabs.reduce((s, c) => s + c.parts.length, 0);
-        const cutCount   = cutJobCabs.reduce((s, c) => s + c.parts.filter((p) => p.checked).length, 0);
-        const heldIds    = Object.keys(heldCabs).filter((id) => heldCabs[id] && cutJobCabs.some((c) => c.cabinetId === id));
-        const dims = (p: CutJobPart) => [p.width, p.height, p.depth].filter((d) => d != null).map((d) => `${d}"`).join(' x ');
-        return (
-          <div style={{ position: 'fixed', inset: 0, zIndex: 1500, background: 'var(--bg)', display: 'flex', flexDirection: 'column', paddingTop: 'env(safe-area-inset-top)' }}>
-            {/* header */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', borderBottom: '1px solid var(--line)', flexShrink: 0 }}>
-              <button onClick={closeCutJob} aria-label="Close"
-                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, borderRadius: 10, background: 'rgba(255,255,255,0.06)', color: 'var(--ink-dim)', border: '1px solid var(--line)', cursor: 'pointer', flexShrink: 0 }}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="m15 18-6-6 6-6"/></svg>
-              </button>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cutJob.jobPath.split('/').map((s) => s.trim()).join(' / ')}</div>
-                <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2 }}>{cutCount}/{totalParts} parts cut</div>
-              </div>
-              <ViewDrawingsButton tenantId={tenant!.id} jobNumber={cutJob.jobNumber} cabinetKey="" compact />
-              <button
-                onClick={() => { if (selectMode) { setSelectMode(false); setSelectedParts({}); } else { setSelectMode(true); } }}
-                style={{ flexShrink: 0, padding: '8px 16px', borderRadius: 10, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', background: selectMode ? 'rgba(248,113,113,0.15)' : 'rgba(251,191,36,0.15)', border: `1px solid ${selectMode ? 'rgba(248,113,113,0.5)' : 'rgba(251,191,36,0.5)'}`, color: selectMode ? '#F87171' : '#FBBF24', cursor: 'pointer' }}>
-                {selectMode ? 'Cancel' : 'Select'}
-              </button>
-            </div>
-
-            {/* cabinets */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: 16, paddingBottom: (selectMode && Object.keys(selectedParts).length > 0) ? 'calc(132px + env(safe-area-inset-bottom))' : heldIds.length > 0 ? 'calc(96px + env(safe-area-inset-bottom))' : 'calc(24px + env(safe-area-inset-bottom))' }}>
-              {cutJobLoading ? (
-                <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32 }}>Loading cut list…</div>
-              ) : cutJobCabs.length === 0 ? (
-                <div style={{ textAlign: 'center', color: 'var(--ink-mute)', padding: 32 }}>All parts cut and pushed — nothing left in this job.</div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 640, margin: '0 auto' }}>
-                  {cutJobCabs.map((c) => {
-                    const open = !!cutCabExpanded[c.cabinetId];
-                    const cabCut = c.parts.filter((p) => p.checked).length;
-                    const held = !!heldCabs[c.cabinetId];
-                    return (
-                      <div key={c.cabinetId} style={{ border: `1px solid ${held ? 'rgba(251,191,36,0.4)' : 'var(--line)'}`, borderRadius: 12, background: 'var(--bg-1)', overflow: 'hidden' }}>
-                        <button onClick={() => setCutCabExpanded((s) => ({ ...s, [c.cabinetId]: !s[c.cabinetId] }))}
-                          style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '13px 14px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
-                          <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transition: 'transform 0.2s ease', transform: open ? 'rotate(90deg)' : 'none' }}><polyline points="9 6 15 12 9 18"/></svg>
-                          <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--ink)' }}>{c.label}</span>
-                          {held && <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', padding: '2px 6px', borderRadius: 20, background: 'rgba(251,191,36,0.16)', color: '#FBBF24' }}>Held</span>}
-                          <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 600, color: cabCut === c.parts.length ? '#2DE1C9' : 'var(--ink-mute)' }}>{cabCut}/{c.parts.length}</span>
-                        </button>
-                        {open && (
-                          <div style={{ borderTop: '1px solid var(--line)', display: 'flex', flexDirection: 'column' }}>
-                            {c.parts.map((p) => {
-                              const selected = !!selectedParts[p.id];
-                              // In select mode the checkbox reflects selection; otherwise the cut state.
-                              const boxOn = selectMode ? selected : p.checked;
-                              return (
-                              <div key={p.id}
-                                onClick={() => {
-                                  if (selectMode) {
-                                    setSelectedParts((s) => { const n = { ...s }; if (n[p.id]) delete n[p.id]; else n[p.id] = { part: p, cabinetId: c.cabinetId }; return n; });
-                                  } else {
-                                    void toggleCutPart(c.cabinetId, p.id);
-                                  }
-                                }}
-                                style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderTop: '1px solid var(--line)', cursor: 'pointer', userSelect: 'none', touchAction: 'manipulation' }}>
-                                <span style={{ width: 24, height: 24, flexShrink: 0, borderRadius: 6, border: `1px solid ${boxOn ? 'var(--teal)' : 'var(--line-strong)'}`, background: boxOn ? 'var(--teal)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                  {boxOn && <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#04201c" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
-                                </span>
-                                <div style={{ minWidth: 0, flex: 1 }}>
-                                  <div style={{ fontSize: 14, fontWeight: 600, color: p.checked ? 'var(--ink-mute)' : 'var(--ink)', textDecoration: p.checked ? 'line-through' : 'none' }}>{p.part_name}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</div>
-                                  {p.qc_failed && p.qc_notes && (
-                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '6px 10px', borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.25)', marginTop: 4 }}>
-                                      <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                                      <span style={{ fontSize: 12, color: '#F87171', lineHeight: 1.4 }}>QC: {p.qc_notes}</span>
-                                    </div>
-                                  )}
-                                  <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>{[dims(p), p.material].filter(Boolean).join(' · ')}</div>
-                                </div>
-                              </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {/* Push Group bottom bar */}
-            {heldIds.length > 0 && !selectMode && (
-              <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 1500, padding: '14px 16px calc(14px + env(safe-area-inset-bottom))', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
-                <button onClick={() => { const sel: Record<string, boolean> = {}; heldIds.forEach((id) => { sel[id] = true; }); setGroupSel(sel); setPushGroupOpen(true); }}
-                  style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '14px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', background: '#FBBF24', border: 'none', color: '#1a1206', cursor: 'pointer' }}>
-                  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-                  Push Group ({heldIds.length} held)
-                </button>
-              </div>
-            )}
-
-            {/* Multi-select push bar */}
-            {selectMode && Object.keys(selectedParts).length > 0 && (() => {
-              const n = Object.keys(selectedParts).length;
-              return (
-                <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 1500, padding: '14px 16px calc(14px + env(safe-area-inset-bottom))', borderTop: '1px solid var(--line)', background: 'var(--bg)' }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-dim)', marginBottom: 10 }}>Push {n} part{n === 1 ? '' : 's'} to:</div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {pushDeptKeys.map((d) => (
-                      <button key={d} onClick={() => void pushSelectedParts(d)} disabled={cutJobBusy}
-                        style={{ flex: 1, minWidth: 0, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 6, padding: '13px 12px', borderRadius: 12, fontSize: 14, fontWeight: 800, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: cutJobBusy ? 'wait' : 'pointer' }}>
-                        {deptDisplay(d)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Undo toast — reverse the last push within 8s */}
-            {undoState && (
-              <div style={{ position: 'fixed', bottom: 'calc(20px + env(safe-area-inset-bottom))', left: 16, right: 16, zIndex: 2000, background: '#0a0f0e', border: '1px solid rgba(45,225,201,0.35)', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 4px 24px rgba(0,0,0,0.5)' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{undoState.label}</div>
-                  <div style={{ fontSize: 12, color: 'var(--teal)' }}>Sent to {deptDisplay(undoState.toDept)}</div>
-                </div>
-                <button onClick={() => void handleUndo()}
-                  style={{ background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.4)', color: '#F87171', borderRadius: 8, padding: '8px 14px', fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer' }}>
-                  Undo
-                </button>
-                <button onClick={() => { clearTimeout(undoState.timer); setUndoState(null); }} aria-label="Dismiss"
-                  style={{ background: 'none', border: 'none', color: 'var(--ink-mute)', cursor: 'pointer', display: 'flex', padding: 4 }}>
-                  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                </button>
-              </div>
-            )}
-          </div>
-        );
-      })()}
-
-      {/* Fully-cut popup */}
-      {fullyCutCab && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 1600, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
-          onClick={(e) => { if (e.target === e.currentTarget) setFullyCutCab(null); }}>
-          <div style={{ width: '100%', maxWidth: 360, background: '#0a0d10', border: '1px solid rgba(45,225,201,0.25)', borderRadius: 18, padding: '26px 24px', display: 'flex', flexDirection: 'column', gap: 18, textAlign: 'center' }}>
-            <div style={{ alignSelf: 'center', width: 52, height: 52, borderRadius: '50%', background: 'rgba(45,225,201,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--teal)' }}>
-              <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            </div>
-            <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--ink)' }}>{fullyCutCab.label} is fully cut</div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={() => { setHeldCabs((h) => ({ ...h, [fullyCutCab.cabinetId]: true })); setFullyCutCab(null); }}
-                style={{ flex: 1, padding: '13px', borderRadius: 12, fontSize: 14, fontWeight: 700, fontFamily: 'inherit', background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', cursor: 'pointer' }}>
-                Hold
-              </button>
-              <button onClick={() => { const id = fullyCutCab.cabinetId; setFullyCutCab(null); setDestForCabs([id]); }}
-                style={{ flex: 1, padding: '13px', borderRadius: 12, fontSize: 14, fontWeight: 800, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: 'pointer' }}>
-                Push
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Push Group selection modal */}
-      {pushGroupOpen && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 1600, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
-          onClick={(e) => { if (e.target === e.currentTarget) setPushGroupOpen(false); }}>
-          <div style={{ width: '100%', maxWidth: 480, background: '#0a0d10', borderTopLeftRadius: 20, borderTopRightRadius: 20, border: '1px solid var(--line-strong)', padding: '22px 20px calc(22px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>Push held cabinets</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '40vh', overflowY: 'auto' }}>
-              {Object.keys(heldCabs).filter((id) => heldCabs[id]).map((id) => {
-                const cab = cutJobCabs.find((c) => c.cabinetId === id);
-                if (!cab) return null;
-                const on = !!groupSel[id];
-                return (
-                  <button key={id} onClick={() => setGroupSel((s) => ({ ...s, [id]: !s[id] }))}
-                    style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 10, background: 'var(--bg-1)', border: `1px solid ${on ? 'rgba(45,225,201,0.4)' : 'var(--line)'}`, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}>
-                    <span style={{ width: 22, height: 22, flexShrink: 0, borderRadius: 6, border: `1px solid ${on ? 'var(--teal)' : 'var(--line-strong)'}`, background: on ? 'var(--teal)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {on && <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#04201c" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
-                    </span>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>{cab.label}</span>
-                    <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-mute)' }}>{cab.parts.length} part{cab.parts.length === 1 ? '' : 's'}</span>
-                  </button>
-                );
-              })}
-            </div>
-            <button
-              onClick={() => { const ids = Object.keys(groupSel).filter((id) => groupSel[id]); if (ids.length === 0) { showToast('Select at least one cabinet', true); return; } setPushGroupOpen(false); setDestForCabs(ids); }}
-              style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 8, padding: '14px', borderRadius: 12, fontSize: 15, fontWeight: 800, fontFamily: 'inherit', background: '#2DE1C9', border: 'none', color: '#04201c', cursor: 'pointer' }}>
-              Choose destination
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Destination picker (for cabinet push / group push) */}
-      {destForCabs && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 1700, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
-          onClick={(e) => { if (e.target === e.currentTarget && !cutJobBusy) setDestForCabs(null); }}>
-          <div style={{ width: '100%', maxWidth: 480, background: '#0a0d10', borderTopLeftRadius: 20, borderTopRightRadius: 20, border: '1px solid var(--line-strong)', padding: '22px 20px calc(22px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>Send {destForCabs.length} cabinet{destForCabs.length === 1 ? '' : 's'} to</div>
-            {pushDeptKeys.map((d) => (
-              <button key={d} onClick={() => void pushCutCabinets(destForCabs, d)} disabled={cutJobBusy}
-                style={{ width: '100%', justifyContent: 'space-between', display: 'flex', alignItems: 'center', padding: '15px 16px', borderRadius: 12, fontSize: 15, fontWeight: 700, fontFamily: 'inherit', background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--ink)', cursor: cutJobBusy ? 'wait' : 'pointer' }}>
-                {deptDisplay(d)}
-                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--ink-mute)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* ── Claude Vision cabinet-label scanner ─────────────────────────────── */}
       {labelScannerOpen && tenant && (

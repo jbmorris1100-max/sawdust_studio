@@ -19,6 +19,7 @@ type QcCabinet = {
   unit_label: string;
   cabinet_number: string | null;
   job_number: string | null;
+  room_number: string | null;
   status: string;
   completed_by: string | null;
   qc_notes: string | null;
@@ -40,6 +41,26 @@ function fmtHours(ms: number): string {
   if (mins < 60) return `${mins}m`;
   const h = Math.floor(mins / 60);
   return `${h}h ${mins % 60}m`;
+}
+
+// Room folder label — matches FinishingView: null room_number → 'General'.
+function roomLabel(roomNumber: string | null): string {
+  if (!roomNumber) return 'General';
+  return `Room ${roomNumber}`;
+}
+
+// Group a job's cabinets by room, named rooms first and 'General'/no-room last
+// (same ordering convention as FinishingView.roomsForJob).
+function roomsForCabs(cabs: QcCabinet[]): { roomNumber: string | null; cabs: QcCabinet[] }[] {
+  const byRoom: Record<string, QcCabinet[]> = {};
+  cabs.forEach((c) => { const rk = c.room_number ?? '__noroom__'; (byRoom[rk] ??= []).push(c); });
+  return Object.entries(byRoom)
+    .sort(([a], [b]) => {
+      if (a === '__noroom__') return 1;
+      if (b === '__noroom__') return -1;
+      return a.localeCompare(b, undefined, { numeric: true });
+    })
+    .map(([rk, cs]) => ({ roomNumber: rk === '__noroom__' ? null : rk, cabs: cs }));
 }
 
 export default function QcInspectorView({ tenantId, qcName, showToast, onExit, jobs = [], departments }: Props) {
@@ -68,7 +89,7 @@ export default function QcInspectorView({ tenantId, qcName, showToast, onExit, j
     try {
       const { data: cabRows } = await supabase
         .from('cabinet_units')
-        .select('id, unit_label, cabinet_number, job_number, status, completed_by, qc_notes')
+        .select('id, unit_label, cabinet_number, job_number, room_number, status, completed_by, qc_notes')
         .eq('tenant_id', tenantId)
         // pending_qc_check = assembly marked it done, awaiting the crew's QC tap;
         // ready_for_qc = QC tapped, ready to act. Show both so cabinets appear the
@@ -105,6 +126,33 @@ export default function QcInspectorView({ tenantId, qcName, showToast, onExit, j
             }
           }
           dTime[cabId] = perDept;
+        }
+      }
+
+      // Craftsman & Assembly: dwell time (arrival→departure) over-counts idle
+      // queue-waiting as work. Overwrite those two depts with REAL active time
+      // summed from time_clock (gated by a human Start/Pause/Resume). Production
+      // and Finishing keep their dwell-time values untouched.
+      if (cabIds.length > 0) {
+        const { data: tcRows } = await supabase
+          .from('time_clock')
+          .select('cabinet_unit_id, status, total_hours, clock_in, clock_out')
+          .in('cabinet_unit_id', cabIds)
+          .in('status', ['craftsman_build', 'assembly_work']);
+        const realMs: Record<string, Record<string, number>> = {};
+        ((tcRows as { cabinet_unit_id: string | null; status: string | null; total_hours: number | null; clock_in: string; clock_out: string | null }[] | null) ?? []).forEach((row) => {
+          if (!row.cabinet_unit_id) return;
+          const dept = row.status === 'craftsman_build' ? 'craftsman' : 'assembly';
+          // total_hours may be null on a still-open session (clock_out null) —
+          // fall back to live elapsed so an in-progress build still shows time.
+          const hours = row.total_hours ?? Math.max(0, (Date.now() - new Date(row.clock_in).getTime()) / 3600000);
+          const ms = hours * 3600000;
+          ((realMs[row.cabinet_unit_id] ??= {})[dept] = (realMs[row.cabinet_unit_id]?.[dept] ?? 0) + ms);
+        });
+        for (const cabId of Object.keys(realMs)) {
+          for (const dept of Object.keys(realMs[cabId])) {
+            (dTime[cabId] ??= {})[dept] = realMs[cabId][dept];
+          }
         }
       }
       setPartsByCab(pByCab);
@@ -312,8 +360,12 @@ export default function QcInspectorView({ tenantId, qcName, showToast, onExit, j
             {jobKeys.map((jk) => (
               <div key={jk}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-dim)', marginBottom: 10 }}>{jobLabel(jk === '__nojob__' ? null : jk)}</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  {groups[jk].map((cab) => {
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  {roomsForCabs(groups[jk]).map((room) => (
+                    <div key={room.roomNumber ?? '__noroom__'}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-mute)', marginBottom: 8, paddingLeft: 2 }}>{roomLabel(room.roomNumber)}</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {room.cabs.map((cab) => {
                     const parts = partsByCab[cab.id] ?? [];
                     const times = deptTime[cab.id] ?? {};
                     const isBusy = busy === cab.id;
@@ -391,6 +443,9 @@ export default function QcInspectorView({ tenantId, qcName, showToast, onExit, j
                       </div>
                     );
                   })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             ))}

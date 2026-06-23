@@ -53,7 +53,7 @@ async function fetchPipeline(tenantId: string | undefined): Promise<JobPipeline[
     if (!jobs || jobs.length === 0) return [];
 
     const { data: cabs } = await db.from('cabinet_units')
-      .select('id, job_number, status, production_status').eq('tenant_id', tenantId).limit(2000);
+      .select('id, job_number, status').eq('tenant_id', tenantId).limit(2000);
     const { data: parts } = await db.from('parts')
       .select('cabinet_unit_id, job_number, production_status, status').eq('tenant_id', tenantId).limit(20000);
 
@@ -69,9 +69,15 @@ async function fetchPipeline(tenantId: string | undefined): Promise<JobPipeline[
         installDate: j.install_date ?? null,
         status: j.status ?? null,
         cabinetsTotal: jc.length,
-        cabinetsCut: jc.filter((c) => cut(c.production_status)).length,
-        cabinetsInAssembly: jc.filter((c) => c.production_status === 'in_assembly' || c.status === 'in_assembly').length,
-        cabinetsComplete: jc.filter((c) => c.production_status === 'complete' || c.status === 'complete').length,
+        // Cut-status derives from the parts (the cabinet-level production_status
+        // column is retired): a cabinet counts as cut when every one of its parts
+        // is cut.
+        cabinetsCut: jc.filter((c) => {
+          const cp = jp.filter((p) => p.cabinet_unit_id === c.id);
+          return cp.length > 0 && cp.every((p) => cut(p.production_status));
+        }).length,
+        cabinetsInAssembly: jc.filter((c) => c.status === 'in_assembly').length,
+        cabinetsComplete: jc.filter((c) => c.status === 'complete').length,
         partsTotal: jp.length,
         partsCut: jp.filter((p) => cut(p.production_status)).length,
         daysToDue,

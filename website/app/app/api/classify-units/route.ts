@@ -137,15 +137,21 @@ export async function POST(req: Request) {
   let parts: DbPart[] = [];
   let learned: LearnedPattern[] = [];
   let routingRules: RoutingRule[] = [];
+  // Tenant AI mode gates the unmatched-unit fallback below: 'learn' queues to
+  // sort_list instead of guessing; 'assist'/'autonomous' (or unset) keep the AI
+  // classification exactly as it was.
+  let aiMode: string | null = null;
   try {
-    const [unitsRes, learnedRes, rulesRes] = await Promise.all([
+    const [unitsRes, learnedRes, rulesRes, tenantRes] = await Promise.all([
       db.from('cabinet_units').select('id, unit_label').eq('tenant_id', tenantId).eq('job_number', jobNumber),
       db.from('craftsman_classifications').select('unit_label_pattern, assigned_dept, times_confirmed').eq('tenant_id', tenantId),
       db.from('routing_rules').select('priority, condition_field, condition_operator, condition_value, assigned_dept').eq('tenant_id', tenantId).eq('is_active', true).order('priority', { ascending: true }),
+      db.from('tenants').select('ai_mode').eq('id', tenantId).maybeSingle(),
     ]);
     units = (unitsRes.data as DbUnit[] | null) ?? [];
     learned = (learnedRes.data as LearnedPattern[] | null) ?? [];
     routingRules = (rulesRes.data as RoutingRule[] | null) ?? [];
+    aiMode = (tenantRes.data as { ai_mode?: string | null } | null)?.ai_mode ?? null;
     if (units.length > 0) {
       const ids = units.map((u) => u.id);
       const { data: partsData } = await db
@@ -194,6 +200,32 @@ export async function POST(req: Request) {
       if (best) hints.set(unit.id, `prior: "${best.unit_label_pattern}" → ${best.assigned_dept} (${best.times_confirmed}×)`);
       remaining.push(unit);
     }
+  }
+
+  // ── LEARN MODE — queue unmatched units instead of AI-guessing ───────────────
+  // In Learn mode the AI fallback is retired: a unit that matched no routing rule
+  // and no confirmed learned pattern (i.e. everything left in `remaining`) is NOT
+  // classified. It is parked in sort_list for a supervisor to assign by hand,
+  // which then teaches the learner the same way a confirmed push does. We do NOT
+  // touch the unit's assigned_dept — it keeps whatever the upload defaulted it to
+  // (cabinet_units defaults to 'production', parts default to null).
+  // Routing-rule / learned-pattern matches from Step 1 are untouched: they stay
+  // in `decided` and still flow through Step 3 (apply) and Step 4 (learn).
+  let queued = 0;
+  if (aiMode === 'learn' && remaining.length > 0) {
+    try {
+      // Unique constraint on cabinet_unit_id makes this idempotent across re-runs.
+      const { error } = await db
+        .from('sort_list')
+        .upsert(
+          remaining.map((u) => ({ tenant_id: tenantId, cabinet_unit_id: u.id, job_number: jobNumber })),
+          { onConflict: 'cabinet_unit_id', ignoreDuplicates: true },
+        );
+      if (!error) queued = remaining.length;
+    } catch { /* queue is best-effort — never throw out of classification */ }
+    // Drain `remaining` so the AI block, the keyword/default fallback, and
+    // Steps 3-4 all skip these units entirely (they stay undecided).
+    remaining.length = 0;
   }
 
   // ── STEP 2 — AI classification for the remaining units ──────────────────────
@@ -310,9 +342,41 @@ Return ONLY a valid JSON array:
       classified++;
     } catch { /* skip this unit */ }
     // Parts carry the dept the crew views filter on — move them with the cabinet.
+    // Units routed straight to finishing or assembly arrive ALREADY cut (the same
+    // rule pushPart() enforces for production→finishing/assembly), so mark their
+    // parts cut at write time. craftsman and production stay not_cut — the
+    // craftsman confirms the cut on Start Build, production cuts on the floor.
+    // cut_by is the literal 'Other' (a non-human/automated cut for display).
+    const marksCut = c.dept === 'finishing' || c.dept === 'assembly';
+    const now = new Date().toISOString();
     try {
-      await db.from('parts').update({ assigned_dept: c.dept }).eq('cabinet_unit_id', unitId).eq('tenant_id', tenantId);
+      await db.from('parts').update({
+        assigned_dept: c.dept,
+        ...(marksCut ? {
+          production_status: 'cut',
+          cut_by: 'Other',
+          cut_at: now,
+        } : {}),
+      }).eq('cabinet_unit_id', unitId).eq('tenant_id', tenantId);
     } catch { /* best-effort */ }
+    // Log the initial arrival event so Production's dwell-time has a start point
+    // for freshly uploaded parts (every other dept transition logs to
+    // part_dept_events via pushPart; classification was the one path that didn't).
+    // Independent try/catch — a logging failure must never block the assignment.
+    try {
+      const unitParts = partsByUnit.get(unitId) ?? [];
+      if (unitParts.length > 0) {
+        await db.from('part_dept_events').insert(unitParts.map((p) => ({
+          tenant_id: tenantId,
+          part_id: p.id,
+          cabinet_unit_id: unitId,
+          job_number: jobNumber,
+          from_dept: null,
+          to_dept: c.dept,
+          worker_name: 'AI Classifier',
+        })));
+      }
+    } catch { /* best-effort — never block classification on logging */ }
   }
 
   // ── STEP 4 — upsert learned patterns ────────────────────────────────────────
@@ -330,28 +394,20 @@ Return ONLY a valid JSON array:
   }
   for (const { pattern, dept, count } of batch.values()) {
     try {
-      const { data: existing } = await db
-        .from('craftsman_classifications')
-        .select('id, times_confirmed')
-        .eq('tenant_id', tenantId)
-        .eq('unit_label_pattern', pattern)
-        .eq('assigned_dept', dept)
-        .is('part_name_pattern', null)
-        .maybeSingle();
-      if (existing) {
-        await db.from('craftsman_classifications')
-          .update({ times_confirmed: ((existing as { times_confirmed: number }).times_confirmed ?? 0) + count, updated_at: new Date().toISOString() })
-          .eq('id', (existing as { id: string }).id);
-      } else {
-        await db.from('craftsman_classifications').insert({
-          tenant_id: tenantId,
-          unit_label_pattern: pattern,
-          assigned_dept: dept,
-          times_confirmed: count,
-        });
-      }
+      // Atomic upsert (+increment) on the natural key — replaces the
+      // SELECT-then-INSERT/UPDATE that could race two concurrent classification
+      // runs into duplicate rows (part_name_pattern is NULL for unit-label
+      // patterns; the RPC's index folds NULL to '' so the conflict still fires).
+      await db.rpc('learn_craftsman_classification', {
+        p_tenant_id: tenantId,
+        p_unit_label_pattern: pattern,
+        p_assigned_dept: dept,
+        p_part_name_pattern: null,
+        p_count: count,
+        p_confirmed_by: null,
+      });
     } catch { /* learning is best-effort */ }
   }
 
-  return NextResponse.json({ classified, total: units.length });
+  return NextResponse.json({ classified, total: units.length, queued });
 }
