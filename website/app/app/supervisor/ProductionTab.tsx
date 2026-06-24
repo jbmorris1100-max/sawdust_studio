@@ -46,6 +46,10 @@ interface Props {
   showToast: (msg: string, error?: boolean) => void;
   jobs?: Job[];
   departments?: string[];
+  // The department this tab is scoped to. Defaults to 'Production' so the fixed
+  // Production tab is unchanged; the dynamic '__dept__' renderer passes a custom
+  // department name here to reuse this exact structure for any 'part'-template dept.
+  deptName?: string;
 }
 
 // Push destinations from production (parts flow FROM production).
@@ -103,7 +107,8 @@ function dimLabel(p: ProdPart): string {
   return [p.width, p.height, p.depth].filter(Boolean).map((v) => `${v}"`).join(' x ');
 }
 
-export default function ProductionTab({ tenantId, showToast, jobs }: Props) {
+export default function ProductionTab({ tenantId, showToast, jobs, deptName = 'Production' }: Props) {
+  const deptKey = deptName.toLowerCase();
   const [units, setUnits] = useState<CabinetUnit[]>([]);
   const [parts, setParts] = useState<ProdPart[]>([]);
   const [loading, setLoading] = useState(true);
@@ -117,11 +122,11 @@ export default function ProductionTab({ tenantId, showToast, jobs }: Props) {
       const [unitRes, partRes] = await Promise.all([
         supabase.from('cabinet_units')
           .select('id, tenant_id, job_number, room_number, cabinet_number, unit_label, status, assigned_dept, production_status, created_at')
-          .eq('tenant_id', tenantId).eq('assigned_dept', 'production').neq('status', 'complete')
+          .eq('tenant_id', tenantId).eq('assigned_dept', deptKey).neq('status', 'complete')
           .order('created_at', { ascending: false }).limit(5000),
         supabase.from('parts')
           .select('id, cabinet_unit_id, job_number, part_name, material, width, height, depth, quantity, status, production_status, assigned_dept')
-          .eq('tenant_id', tenantId).eq('assigned_dept', 'production').limit(10000),
+          .eq('tenant_id', tenantId).eq('assigned_dept', deptKey).limit(10000),
       ]);
       setUnits((unitRes.data as CabinetUnit[] | null) ?? []);
       setParts((partRes.data as ProdPart[] | null) ?? []);
@@ -130,13 +135,13 @@ export default function ProductionTab({ tenantId, showToast, jobs }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [tenantId, showToast]);
+  }, [tenantId, deptKey, showToast]);
 
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
     const ch = supabase
-      .channel('rt-sup-production')
+      .channel(`rt-sup-production-${deptKey}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'parts', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
       .subscribe();
@@ -173,7 +178,7 @@ export default function ProductionTab({ tenantId, showToast, jobs }: Props) {
     setBusyId(unit.id);
     try {
       const results = await Promise.allSettled(cabParts.map((p) =>
-        pushPart({ tenantId, partId: p.id, partName: p.part_name, cabinetUnitId: unit.id, jobNumber: unit.job_number, fromDept: 'production', toDept, workerName: 'Supervisor', timeClockId: null })
+        pushPart({ tenantId, partId: p.id, partName: p.part_name, cabinetUnitId: unit.id, jobNumber: unit.job_number, fromDept: deptKey, toDept, workerName: 'Supervisor', timeClockId: null })
       ));
       const failed = results.filter((r) => r.status === 'rejected').length;
       if (failed > 0) showToast(`${failed} part${failed === 1 ? '' : 's'} failed to push`, true);
@@ -226,7 +231,7 @@ export default function ProductionTab({ tenantId, showToast, jobs }: Props) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <DeptCrewStrip tenantId={tenantId} dept="Production" />
+      <DeptCrewStrip tenantId={tenantId} dept={deptName} />
 
       {loading ? (
         <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading production data…</div>

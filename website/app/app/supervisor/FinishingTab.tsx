@@ -55,6 +55,10 @@ interface Props {
   showToast: (msg: string, error?: boolean) => void;
   jobs?: Job[];
   departments?: string[];
+  // Department this tab is scoped to. Defaults to 'Finishing' so the fixed tab is
+  // unchanged; the dynamic '__dept__' renderer passes a custom department name to
+  // reuse this room-grouped structure for any 'group_auto'-template dept.
+  deptName?: string;
 }
 
 const FINISH_TIMERS_KEY = 'finishing_room_timers';
@@ -88,7 +92,8 @@ function roomKey(jobNumber: string | null, roomNumber: string | null): string {
   return `${jobNumber ?? '__nojob__'}::${roomNumber ?? '__noroom__'}`;
 }
 
-export default function FinishingTab({ tenantId, showToast, jobs }: Props) {
+export default function FinishingTab({ tenantId, showToast, jobs, deptName = 'Finishing' }: Props) {
+  const deptKey = deptName.toLowerCase();
   const [units, setUnits] = useState<CabinetUnit[]>([]);
   const [parts, setParts] = useState<FinPart[]>([]);
   const [specs, setSpecs] = useState<Record<string, FinishSpec>>({});
@@ -107,11 +112,11 @@ export default function FinishingTab({ tenantId, showToast, jobs }: Props) {
       const [unitRes, partRes, specRes] = await Promise.all([
         supabase.from('cabinet_units')
           .select('id, tenant_id, job_number, room_number, cabinet_number, unit_label, status, assigned_dept, flagged_reason, created_at')
-          .eq('tenant_id', tenantId).eq('assigned_dept', 'finishing').neq('status', 'complete')
+          .eq('tenant_id', tenantId).eq('assigned_dept', deptKey).neq('status', 'complete')
           .order('created_at', { ascending: false }).limit(5000),
         supabase.from('parts')
           .select('id, cabinet_unit_id, job_number, part_name, material, width, height, depth, quantity, status, assigned_dept')
-          .eq('tenant_id', tenantId).eq('assigned_dept', 'finishing').limit(10000),
+          .eq('tenant_id', tenantId).eq('assigned_dept', deptKey).limit(10000),
         supabase.from('finish_specs')
           .select('job_number, cabinet_color, cabinet_finish, sheen')
           .eq('tenant_id', tenantId),
@@ -126,7 +131,7 @@ export default function FinishingTab({ tenantId, showToast, jobs }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [tenantId, showToast]);
+  }, [tenantId, deptKey, showToast]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -140,7 +145,7 @@ export default function FinishingTab({ tenantId, showToast, jobs }: Props) {
 
   useEffect(() => {
     const ch = supabase
-      .channel('rt-sup-finishing')
+      .channel(`rt-sup-finishing-${deptKey}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'parts', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'finish_specs', filter: `tenant_id=eq.${tenantId}` }, () => { void load(); })
@@ -167,7 +172,7 @@ export default function FinishingTab({ tenantId, showToast, jobs }: Props) {
     setBusyId(unit.id);
     try {
       const results = await Promise.allSettled(cabParts.map((p) =>
-        pushPart({ tenantId, partId: p.id, partName: p.part_name, cabinetUnitId: unit.id, jobNumber: unit.job_number, fromDept: 'finishing', toDept, workerName: 'Supervisor', timeClockId: null })
+        pushPart({ tenantId, partId: p.id, partName: p.part_name, cabinetUnitId: unit.id, jobNumber: unit.job_number, fromDept: deptKey, toDept, workerName: 'Supervisor', timeClockId: null })
       ));
       const failed = results.filter((r) => r.status === 'rejected').length;
       if (failed > 0) showToast(`${failed} part${failed === 1 ? '' : 's'} failed to push`, true);
@@ -187,7 +192,7 @@ export default function FinishingTab({ tenantId, showToast, jobs }: Props) {
     try {
       await supabase.from('parts')
         .update({ assigned_dept: 'qc' })
-        .eq('cabinet_unit_id', unit.id).eq('tenant_id', tenantId).eq('assigned_dept', 'finishing');
+        .eq('cabinet_unit_id', unit.id).eq('tenant_id', tenantId).eq('assigned_dept', deptKey);
       const { error } = await supabase.from('cabinet_units')
         .update({ status: 'ready_for_qc', assigned_dept: 'qc', completed_by: 'Supervisor' })
         .eq('id', unit.id).eq('tenant_id', tenantId);
@@ -255,7 +260,7 @@ export default function FinishingTab({ tenantId, showToast, jobs }: Props) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <DeptCrewStrip tenantId={tenantId} dept="Finishing" />
+      <DeptCrewStrip tenantId={tenantId} dept={deptName} />
 
       {loading ? (
         <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading finishing data…</div>

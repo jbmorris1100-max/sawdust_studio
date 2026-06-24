@@ -61,6 +61,12 @@ interface Props {
   showToast: (msg: string, error?: boolean) => void;
   jobs?: Job[];
   departments?: string[];
+  // Department this tab is scoped to. Defaults to 'Assembly' so the fixed Assembly
+  // tab is unchanged (it shows all cabinets with assembly parts + the QC gate). The
+  // dynamic '__dept__' renderer passes a custom department name to reuse this
+  // cabinet-drill-down structure for any 'cabinet'-template dept; when scoped to a
+  // custom dept, only cabinets currently assigned to that dept are shown.
+  deptName?: string;
 }
 
 // ── SVG icons (thin stroke, no emoji) ─────────────────────────────────────────
@@ -285,7 +291,9 @@ function dimLabel(p: AssemblyPart): string {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export default function AssemblyTab({ tenantId, showToast, departments, jobs }: Props) {
+export default function AssemblyTab({ tenantId, showToast, departments, jobs, deptName = 'Assembly' }: Props) {
+  const deptKey = deptName.toLowerCase();
+  const scoped = deptKey !== 'assembly'; // custom dept → limit visible cabinets to this dept
   const deptOptions = departments && departments.length ? departments : DEFAULT_DEPARTMENTS;
   const [units,       setUnits]       = useState<CabinetUnit[]>([]);
   const [allParts,    setAllParts]    = useState<AssemblyPart[]>([]);
@@ -359,7 +367,7 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
   // ── Realtime subscriptions ────────────────────────────────────────────────
 
   useEffect(() => {
-    const unitsCh = supabase.channel('rt-cabinet-units')
+    const unitsCh = supabase.channel(`rt-cabinet-units-${deptKey}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'cabinet_units', filter: `tenant_id=eq.${tenantId}` }, (payload) => {
         if (payload.eventType === 'INSERT') {
           setUnits((prev) => prev.some((u) => u.id === payload.new.id) ? prev : [payload.new as CabinetUnit, ...prev]);
@@ -371,7 +379,7 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
       })
       .subscribe();
 
-    const partsCh = supabase.channel('rt-assembly-parts')
+    const partsCh = supabase.channel(`rt-assembly-parts-${deptKey}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'parts', filter: `tenant_id=eq.${tenantId}` }, (payload) => {
         if (payload.eventType === 'INSERT') {
           setAllParts((prev) => prev.some((p) => p.id === payload.new.id) ? prev : [...prev, payload.new as AssemblyPart]);
@@ -387,7 +395,7 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
       supabase.removeChannel(unitsCh);
       supabase.removeChannel(partsCh);
     };
-  }, [tenantId]);
+  }, [tenantId, deptKey]);
 
   // ── Message team ──────────────────────────────────────────────────────────
 
@@ -521,7 +529,7 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
   // ── Computed data ──────────────────────────────────────────────────────────
 
   const unitParts = (unitId: string) =>
-    allParts.filter((p) => p.cabinet_unit_id === unitId && (p.assigned_dept || 'production').toLowerCase() === 'assembly');
+    allParts.filter((p) => p.cabinet_unit_id === unitId && (p.assigned_dept || 'production').toLowerCase() === deptKey);
 
   // Human label for a job_number, resolved from the jobs table (Client / Room path).
   const jobLabelFor = (jobNumber: string): string => {
@@ -545,8 +553,13 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
 
   // Split-ticket children (split_from_id set) are nested under their parent, not
   // shown as standalone cabinets. Map parentId → child tickets.
+  // When scoped to a custom 'cabinet'-template dept, only show cabinets currently
+  // assigned to that dept; the fixed Assembly tab (scoped === false) shows them all.
+  const visibleUnits = scoped
+    ? units.filter((u) => (u.assigned_dept || '').toLowerCase() === deptKey)
+    : units;
   const childrenByParent: Record<string, CabinetUnit[]> = {};
-  units.forEach((u) => {
+  visibleUnits.forEach((u) => {
     if (u.split_from_id) {
       if (!childrenByParent[u.split_from_id]) childrenByParent[u.split_from_id] = [];
       childrenByParent[u.split_from_id].push(u);
@@ -555,7 +568,7 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
 
   // LEVEL 1 — group top-level units by job_number (null → "No Job"); children excluded.
   const byJob: Record<string, CabinetUnit[]> = {};
-  units.forEach((u) => {
+  visibleUnits.forEach((u) => {
     if (u.split_from_id) return; // nested under its parent
     const k = u.job_number || 'No Job';
     if (!byJob[k]) byJob[k] = [];
@@ -589,7 +602,7 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
       .map((rk) => [rk, sortCabs(byRoom[rk])] as [string, CabinetUnit[]]);
   };
 
-  const flaggedUnits = units.filter((u) => u.status === 'flagged');
+  const flaggedUnits = visibleUnits.filter((u) => u.status === 'flagged');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -637,7 +650,7 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs }: 
       {/* ── Drill-down: Jobs → Rooms → Cabinets → Parts ──────────────────── */}
       {loading ? (
         <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading assembly data…</div>
-      ) : units.length === 0 ? (
+      ) : visibleUnits.length === 0 ? (
         <div className="portal-card" style={{ fontSize: 13, color: 'var(--ink-mute)' }}>
           No cabinet units yet. Upload a CSV cut list in the <strong style={{ color: 'var(--ink-dim)' }}>Plans</strong> tab to get started.
         </div>

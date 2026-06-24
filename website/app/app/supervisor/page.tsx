@@ -15,6 +15,7 @@ import CraftsmanTab from './CraftsmanTab';
 import CrewTab from './CrewTab';
 import QcTab from './QcTab';
 import SortListTab from './SortListTab';
+import DeptGroupManualView from './DeptGroupManualView';
 import RoutingRulesPanel from './RoutingRulesPanel';
 import JobDrillDown from './JobDrillDown';
 import FinishSpecsModal from './FinishSpecsModal';
@@ -5955,28 +5956,52 @@ export default function SupervisorPage() {
             />
           )}
 
-          {/* ── Custom department placeholder ────────────────────────────────
-              Shown for any custom (non-fixed) department whose template view
-              hasn't been built yet. The template components land in a later
-              prompt; this keeps the generated tab functional in the meantime. */}
-          {tab === '__dept__' && activeDeptTab && (
-            <div style={{ maxWidth: 720 }}>
-              <div className="eyebrow" style={{ marginBottom: 8 }}>Shop Floor</div>
-              <h2 style={{ fontSize: 24, marginBottom: 4 }}>{activeDeptTab.name}</h2>
-              <div className="portal-card" style={{ marginTop: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, padding: '44px 28px', textAlign: 'center' }}>
-                <div style={{ width: 56, height: 56, borderRadius: 14, background: 'rgba(45,225,201,0.08)', border: '1px solid rgba(45,225,201,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--teal)' }}>
-                  <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
-                </div>
-                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>
-                  Coming soon — {templateLabel(activeDeptTab.template)} view for {activeDeptTab.name}
-                </div>
-                <p style={{ fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6, margin: 0, maxWidth: 460 }}>
-                  This department is configured with the <b style={{ color: 'var(--teal)' }}>{templateLabel(activeDeptTab.template)}</b> tracking template.
-                  Its crew-facing tracking view is being built. You can change its template anytime in <b>Settings → Departments</b>.
-                </p>
+          {/* ── Custom department (dynamic, template-driven) ─────────────────
+              Any custom (non-fixed) department renders here. Its `template` field
+              selects which tracking structure to reuse — mirroring the crew-side
+              dynamic renderer: 'part' → Production, 'cabinet' → Assembly,
+              'group_auto' → Finishing, 'group_manual' → the minimal sessions view.
+              Each is scoped to this department's name. Templates without a
+              supervisor view yet ('sheet'/'qc') fall back to the info card. */}
+          {tab === '__dept__' && activeDeptTab && tenant && (() => {
+            const dep = activeDeptTab;
+            const header = (
+              <div style={{ marginBottom: 16 }}>
+                <div className="eyebrow" style={{ marginBottom: 8 }}>Shop Floor</div>
+                <h2 style={{ fontSize: 24, margin: 0 }}>{dep.name}</h2>
               </div>
-            </div>
-          )}
+            );
+            if (dep.template === 'part') {
+              return <div>{header}<ProductionTab tenantId={tenant.id} showToast={showToast} jobs={jobs} departments={departments} deptName={dep.name} /></div>;
+            }
+            if (dep.template === 'cabinet') {
+              return <div>{header}<AssemblyTab tenantId={tenant.id} showToast={showToast} jobs={jobs} departments={departments} deptName={dep.name} /></div>;
+            }
+            if (dep.template === 'group_auto') {
+              return <div>{header}<FinishingTab tenantId={tenant.id} showToast={showToast} jobs={jobs} departments={departments} deptName={dep.name} /></div>;
+            }
+            if (dep.template === 'group_manual') {
+              return <div>{header}<DeptGroupManualView tenantId={tenant.id} showToast={showToast} jobs={jobs} deptName={dep.name} /></div>;
+            }
+            // 'sheet' / 'qc' / unknown — no supervisor tracking view yet.
+            return (
+              <div style={{ maxWidth: 720 }}>
+                {header}
+                <div className="portal-card" style={{ marginTop: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, padding: '44px 28px', textAlign: 'center' }}>
+                  <div style={{ width: 56, height: 56, borderRadius: 14, background: 'rgba(45,225,201,0.08)', border: '1px solid rgba(45,225,201,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--teal)' }}>
+                    <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>
+                    No supervisor view yet for the {templateLabel(dep.template)} template
+                  </div>
+                  <p style={{ fontSize: 13, color: 'var(--ink-dim)', lineHeight: 1.6, margin: 0, maxWidth: 460 }}>
+                    <b>{dep.name}</b> is configured with the <b style={{ color: 'var(--teal)' }}>{templateLabel(dep.template)}</b> tracking template.
+                    You can change its template anytime in <b>Settings → Departments</b>.
+                  </p>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* ── Integrations tab ─────────────────────────────────────────── */}
           {tab === 'integrations' && tenant && (
