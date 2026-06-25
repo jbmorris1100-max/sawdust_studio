@@ -3163,14 +3163,19 @@ export default function SupervisorPage() {
   }
 
   // ── Phase 3B: door report (cut_list_detail) → enrich existing door parts ──────
-  // The door report describes the SAME physical doors already created as parts in
-  // 3A (the "Door Flat Panel" rows of the nest). It must NOT insert new parts — it
-  // only adds richer spec columns (style, edges, materials, hinge, size specs) to
-  // the matching door parts. Match key: the report row's Cab# → the part's
-  // cabinet_unit (by cabinet_number) AND a door-ish part_name (contains "door").
-  // A cabinet's "Pair" door maps to its two nested panel parts, so one report row
-  // can enrich several parts. Unmatched report rows are a real data gap (a door
-  // whose panel was not in the nest) and are reported, never fabricated.
+  // The door report describes the SAME physical door PANELS already created as
+  // parts in 3A — the "Door Flat Panel" nest rows are the 3/8-ply panel inserts.
+  // It enriches them with spec columns (style, edges, materials, hinge, sizes);
+  // it never inserts. Matching is by Cab# AND DIMENSION, not Cab# alone: a cabinet
+  // can appear under several style blocks (e.g. a 206 Door pair plus a 101 Slab),
+  // so cabinet-only matching wrote the LAST block's spec onto every door part of
+  // the cabinet — wrong spec. Instead we parse WxH out of the row's panel_size
+  // (the nest part equals the door's PANEL, not the finished door — verified 40/40
+  // panel vs 2/40 finished against the real Stewart data) and update only the door
+  // parts whose width/height match that row (±0.1" for fraction rounding; order-
+  // agnostic; finished_size is a fallback for slab doors where panel == finished).
+  // A report row with no dimensional match on its cabinet's door parts is left
+  // unmatched and reported — it never falls back to cabinet-only matching.
   async function enrichDoorPartsFromReport(
     fileName: string,
     docText: string,
@@ -3199,19 +3204,47 @@ export default function SupervisorPage() {
         if (k) idByCab.set(k, u.id);
       }
       const { data: doorParts } = await supabase
-        .from('parts').select('id, cabinet_unit_id, part_name')
+        .from('parts').select('id, cabinet_unit_id, part_name, width, height')
         .eq('tenant_id', tenant.id).eq('job_number', jobNumber).ilike('part_name', '%door%');
-      const doorPartIdsByUnit = new Map<string, string[]>();
-      for (const p of (doorParts as { id: string; cabinet_unit_id: string | null; part_name: string }[] | null) ?? []) {
+      const partsByUnit = new Map<string, { id: string; width: number | null; height: number | null }[]>();
+      for (const p of (doorParts as { id: string; cabinet_unit_id: string | null; width: number | null; height: number | null }[] | null) ?? []) {
         if (!p.cabinet_unit_id) continue;
-        (doorPartIdsByUnit.get(p.cabinet_unit_id) ?? doorPartIdsByUnit.set(p.cabinet_unit_id, []).get(p.cabinet_unit_id)!).push(p.id);
+        if (!partsByUnit.has(p.cabinet_unit_id)) partsByUnit.set(p.cabinet_unit_id, []);
+        partsByUnit.get(p.cabinet_unit_id)!.push({ id: p.id, width: p.width, height: p.height });
       }
+
+      // Parse a report size cell ("qty - W x H" with mixed fractions, stray spaces)
+      // into decimal inches, then dimension-match a part to a row within ±0.1".
+      const parseFrac = (s: string): number =>
+        s.trim().split(/\s+/).reduce((a, t) => a + (t.includes('/') ? Number(t.split('/')[0]) / Number(t.split('/')[1]) : Number(t)), 0);
+      const parseWH = (str: string | null | undefined): { w: number; h: number } | null => {
+        if (!str) return null;
+        const m = String(str).match(/^\s*\d+\s*-\s*(.+)$/);
+        const seg = (m ? m[1] : String(str)).split(/\s+x\s+/i);
+        if (seg.length !== 2) return null;
+        const w = parseFrac(seg[0]), h = parseFrac(seg[1]);
+        return Number.isFinite(w) && Number.isFinite(h) ? { w, h } : null;
+      };
+      const close = (a: number, b: number) => Math.abs(a - b) <= 0.1;
+      const dimMatch = (pw: number | null, ph: number | null, t: { w: number; h: number } | null) =>
+        t != null && pw != null && ph != null &&
+        ((close(pw, t.w) && close(ph, t.h)) || (close(pw, t.h) && close(ph, t.w)));
 
       for (const d of doors) {
         const cab = String(d.cab ?? '').trim();
         const unitId = cab ? idByCab.get(cab.toLowerCase()) ?? null : null;
-        const partIds = unitId ? doorPartIdsByUnit.get(unitId) ?? [] : [];
-        if (!partIds.length) { result.unmatched.push(`Cab# ${cab || '?'} (room ${d.room ?? '?'})`); continue; }
+        const candidates = unitId ? partsByUnit.get(unitId) ?? [] : [];
+        // Update only the door parts whose dims equal this row's panel (or, for
+        // slab doors, finished) size — never all door parts of the cabinet.
+        const panel = parseWH(d.panel_size);
+        const finished = parseWH(d.finished_size);
+        const partIds = candidates
+          .filter((p) => dimMatch(p.width, p.height, panel) || dimMatch(p.width, p.height, finished))
+          .map((p) => p.id);
+        if (!partIds.length) {
+          result.unmatched.push(`Cab# ${cab || '?'} ${d.panel_size ?? d.finished_size ?? '?'} (room ${d.room ?? '?'})`);
+          continue;
+        }
         const spec = {
           door_style:            d.style ?? null,
           outside_edge:          d.outside_edge ?? null,
