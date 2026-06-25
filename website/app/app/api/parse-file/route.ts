@@ -145,6 +145,57 @@ const ROSTER_SYSTEM =
   `e.g. 30 1/2 → 30.5); use null if a dimension is absent. lr is the L-R / hand ` +
   `field if present, else null. Do not invent cabinets that are not in the text.`;
 
+// Primary cut-list (nest) extractor. Reads a 'cut_list_primary' PDF's text — a
+// per-sheet nest where EACH ROW is one discrete physical part tied to one
+// cabinet. Columns are: # | Width | Length | Name | Cab# | Room | Comments.
+// Material is NOT per-row: it lives in each sheet's header line (e.g.
+// "3/4 Oak Ply White Rift (4 x 10)"), so every part inherits the material of
+// the sheet it is nested on. One row in → one part out (quantity is always 1).
+const CUTLIST_PRIMARY_SYSTEM =
+  `You are a cabinet shop data expert. The text below is a primary cut list / ` +
+  `nest: a series of sheets, each with a header line naming the sheet MATERIAL ` +
+  `(e.g. "1/4 Oak Ply White Rift 1-Sided", "3/4 Oak Ply White Rift (4 x 10)"), ` +
+  `followed by rows with columns: # , Width , Length , Name , Cab# , Room , ` +
+  `Comments. EACH ROW is ONE discrete physical part. Extract EVERY part row from ` +
+  `EVERY sheet. Return ONLY valid JSON: { "parts": [{ "name": string, ` +
+  `"cab": string, "room": string|null, "width": number|null, ` +
+  `"length": number|null, "material": string|null, "comments": string|null }] }\n` +
+  `Rules: name is the part Name exactly as printed (e.g. "Toe Skin", ` +
+  `"Door Flat Panel", "Adjustable Shelf"). cab is the Cab# exactly as printed. ` +
+  `width and length are decimal inches (parse fractions e.g. 95 1/2 → 95.5, ` +
+  `22 11/16 → 22.6875); null if absent. material is the MATERIAL from the header ` +
+  `of the sheet the row belongs to — carry it down to every row under that ` +
+  `header. comments is the trailing Comments cell if present, else null. Do not ` +
+  `invent rows; do not merge rows; do not aggregate.`;
+
+// Door-report extractor. Reads a 'cut_list_detail' door report — richer spec
+// data for the SAME physical doors already nested as parts. The report is a
+// series of STYLE BLOCKS: each block has a shared header (Style, Outside Edge,
+// Inside Edge, Panel Material, Stiles & Rails, Panel Profile, Hinge, Route
+// Pattern, Pull) followed by per-door rows (Finished Size WxH, Panels WxH,
+// Rails WxL, Stiles/Mullions WxL, Room/Cabinet like "1 [#2]", Hinge side). The
+// header fields are carried down onto every door row in the block. Used only to
+// ENRICH existing door parts (caller never inserts new parts from this).
+const DOOR_REPORT_SYSTEM =
+  `You are a cabinet shop data expert. The text below is a door report. It is a ` +
+  `series of style blocks; each block has a shared header (Style, Outside Edge, ` +
+  `Inside Edge, Panel Material, Stiles & Rails, Panel Profile, Hinge, Route ` +
+  `Pattern, Pull) then per-door rows with columns: Finished Size (WxH), Panels ` +
+  `(WxH), Rails (WxL), Stiles/Mullions (WxL), Room/Cabinet, Hinge. Extract EVERY ` +
+  `door row, carrying the block header fields down onto each row. Return ONLY ` +
+  `valid JSON: { "doors": [{ "style": string|null, "outside_edge": string|null, ` +
+  `"inside_edge": string|null, "panel_material": string|null, ` +
+  `"stiles_rails_material": string|null, "panel_profile": string|null, ` +
+  `"hinge_type": string|null, "route_pattern": string|null, "pull": string|null, ` +
+  `"finished_size": string|null, "panel_size": string|null, "rail_size": ` +
+  `string|null, "stile_size": string|null, "room": string|null, "cab": string, ` +
+  `"hinge_side": string|null }] }\n` +
+  `Rules: Room/Cabinet prints like "1 [#2]" — set room to the leading room ` +
+  `number ("1") and cab to the bracketed cabinet number without the # ("2"). ` +
+  `hinge_side is the per-row Hinge cell (Left/Right/Pair/None). hinge_type is the ` +
+  `header Hinge hardware (e.g. "Blum 110° Inserta..."). Keep size cells verbatim ` +
+  `as printed (e.g. "1 - 24 3/16 x 69 3/4"). Use null for any field not present.`;
+
 export async function POST(req: Request) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   const payload = await req.json().catch(() => ({})) as Record<string, unknown>;
@@ -242,6 +293,36 @@ export async function POST(req: Request) {
       const text = await callClaude(ROSTER_SYSTEM, user, 8000, apiKey, 90000);
       const parsed = extractJson<{ cabinets?: unknown[] }>(text);
       return NextResponse.json({ cabinets: parsed?.cabinets ?? [] });
+    }
+
+    /* ── Primary cut-list extraction (nest text → part rows) ─────────────── */
+    // For PDFs tagged 'cut_list_primary'. Returns one part row per nest line;
+    // the caller matches each part's cab# to a cabinet_unit and inserts parts
+    // (no aggregated-list explosion here — that path is deferred).
+    if (mode === 'extract-cut-list-primary') {
+      const fileName = String(payload.fileName ?? 'unknown');
+      const docText = String(payload.docText ?? payload.firstPageText ?? '').slice(0, 60000);
+      if (!docText.trim()) return NextResponse.json({ parts: [] });
+      const user = `File name: ${fileName}\n\nPrimary cut list / nest text:\n${docText}`;
+      // Large output: a full nest can run 200+ part rows, so allow a high token
+      // ceiling — at 16k the JSON truncated mid-array (stop_reason max_tokens).
+      const text = await callClaude(CUTLIST_PRIMARY_SYSTEM, user, 32000, apiKey, 300000);
+      const parsed = extractJson<{ parts?: unknown[] }>(text);
+      return NextResponse.json({ parts: parsed?.parts ?? [] });
+    }
+
+    /* ── Door-report extraction (detail text → door rows) ────────────────── */
+    // For PDFs tagged 'cut_list_detail'. Returns door spec rows; the caller
+    // matches each to an existing door part (by cab#/room) and UPDATES its spec
+    // columns — it never inserts new parts from this report.
+    if (mode === 'extract-door-report') {
+      const fileName = String(payload.fileName ?? 'unknown');
+      const docText = String(payload.docText ?? payload.firstPageText ?? '').slice(0, 60000);
+      if (!docText.trim()) return NextResponse.json({ doors: [] });
+      const user = `File name: ${fileName}\n\nDoor report text:\n${docText}`;
+      const text = await callClaude(DOOR_REPORT_SYSTEM, user, 16000, apiKey, 180000);
+      const parsed = extractJson<{ doors?: unknown[] }>(text);
+      return NextResponse.json({ doors: parsed?.doors ?? [] });
     }
 
     /* ── Image extraction (vision) ────────────────────────────────────── */

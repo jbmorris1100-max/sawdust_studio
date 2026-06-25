@@ -156,6 +156,41 @@ type RosterCab = {
   lr?: string | null;
 };
 
+// One part row returned by parse-file mode 'extract-cut-list-primary'. width &
+// length are the nest's two cut dimensions; material is carried down from the
+// sheet header. Each row is one discrete physical part (quantity 1).
+type CutPart = {
+  name?: string | null;
+  cab?: string | null;
+  room?: string | null;
+  width?: number | null;
+  length?: number | null;
+  material?: string | null;
+  comments?: string | null;
+};
+
+// One door row returned by parse-file mode 'extract-door-report'. Header fields
+// (style/edges/materials/hinge) are carried down onto each row; size cells are
+// kept verbatim. Used only to enrich existing door parts (3B), never to insert.
+type DoorSpec = {
+  style?: string | null;
+  outside_edge?: string | null;
+  inside_edge?: string | null;
+  panel_material?: string | null;
+  stiles_rails_material?: string | null;
+  panel_profile?: string | null;
+  hinge_type?: string | null;
+  route_pattern?: string | null;
+  pull?: string | null;
+  finished_size?: string | null;
+  panel_size?: string | null;
+  rail_size?: string | null;
+  stile_size?: string | null;
+  room?: string | null;
+  cab?: string | null;
+  hinge_side?: string | null;
+};
+
 const JOB_DRAWING_COLS =
   'id, tenant_id, job_number, job_path, label, file_url, file_name, uploaded_by, created_at, file_type, departments, parsed, version, superseded_by, is_current, doc_type, doc_type_reason';
 
@@ -2915,7 +2950,42 @@ export default function SupervisorPage() {
         const n = await seedCabinetUnitsFromRoster(file.name, fullText || firstPageText, jobNumber);
         if (n > 0) showToast(`Cabinet roster — ${n} cabinet${n === 1 ? '' : 's'} added`);
       }
+      // Phase 3A — primary cut list (nest) → parts, one row per discrete part.
+      if (doc_type === 'cut_list_primary') {
+        const res = await seedPartsFromCutList(file.name, fullText || firstPageText, jobNumber);
+        if (res.created > 0) showToast(`Cut list — ${res.created} part${res.created === 1 ? '' : 's'} added`);
+      }
+      // Phase 3B — door report (cut_list_detail) ENRICHES existing door parts
+      // with richer spec data; it never inserts new parts.
+      if (doc_type === 'cut_list_detail') {
+        const res = await enrichDoorPartsFromReport(file.name, fullText || firstPageText, jobNumber);
+        if (res.matched > 0) showToast(`Door report — enriched ${res.matched} door part${res.matched === 1 ? '' : 's'}`);
+      }
+      // Phase 3A guard — aggregated lists (std cut list / door list / drawers /
+      // moulding) are only exploded for jobs that have NO primary nest. If a
+      // cut_list_primary already exists for this job, skip them silently; the
+      // aggregated-explosion branch is deferred and intentionally not built yet.
+      if (doc_type === 'cut_list_aggregated') {
+        const hasPrimary = await jobHasPrimaryCutList(jobNumber);
+        if (hasPrimary) {
+          // Skip silently — the primary nest is the parts source for this job.
+        }
+        // else: deferred — no aggregated explosion implemented in this phase.
+      }
     } catch { /* classification is best-effort */ }
+  }
+
+  // True if this job already has a file tagged 'cut_list_primary' — used to
+  // skip aggregated-list explosion when a primary nest is the parts source.
+  async function jobHasPrimaryCutList(jobNumber: string): Promise<boolean> {
+    if (!tenant) return false;
+    const { count } = await supabase
+      .from('job_drawings')
+      .select('id', { count: 'exact', head: true })
+      .eq('tenant_id', tenant.id)
+      .eq('job_number', jobNumber)
+      .eq('doc_type', 'cut_list_primary');
+    return (count ?? 0) > 0;
   }
 
   // ── Phase 2: cabinet_roster → cabinet_units ──────────────────────────────────
@@ -2991,6 +3061,181 @@ export default function SupervisorPage() {
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Could not seed cabinets from roster', true);
       return 0;
+    }
+  }
+
+  // ── Phase 3A: cut_list_primary (nest) → parts ────────────────────────────────
+  // Explodes a primary nest into parts. Each nest row is ONE discrete physical
+  // part carrying a Cab#; we match that to an existing cabinet_units row for this
+  // job (by cabinet_number) and set parts.cabinet_unit_id from the match.
+  // Dimension mapping is verified against the real nest headers: the nest gives
+  // Width and Length (the two face dims of a flat cut part), so Width → width and
+  // Length → height; depth is left null (panel thickness lives in the material
+  // string, not a column). Material is the sheet material carried down by the
+  // extractor. Repeated identical rows (same unit + name + W + H) are REAL repeat
+  // parts — a wardrobe's 5 adjustable shelves, a pair of identical door panels —
+  // so they collapse into one part row with quantity = the repeat count, NOT
+  // dropped (dropping them was silent data loss). Cross-run idempotent: a key
+  // already present in parts for this job is skipped so re-runs never duplicate.
+  // Rows whose Cab# matches no cabinet_unit are flagged and skipped (logged)
+  // rather than failing the batch.
+  async function seedPartsFromCutList(
+    fileName: string,
+    docText: string,
+    jobNumber: string,
+  ): Promise<{ total: number; created: number; skippedDupes: number; unmatched: string[] }> {
+    const result = { total: 0, created: 0, skippedDupes: 0, unmatched: [] as string[] };
+    if (!tenant) return result;
+    try {
+      const res = await fetch('/app/api/parse-file', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'extract-cut-list-primary', fileName, docText }),
+      });
+      if (!res.ok) return result;
+      const { parts } = await res.json() as { parts?: CutPart[] };
+      if (!parts?.length) return result;
+      result.total = parts.length;
+
+      // Map Cab# → cabinet_unit id for this job (cabinet_number is the join key).
+      const { data: units } = await supabase
+        .from('cabinet_units').select('id, cabinet_number')
+        .eq('tenant_id', tenant.id).eq('job_number', jobNumber);
+      const byCab = new Map<string, string>();
+      for (const u of (units as { id: string; cabinet_number: string | null }[] | null) ?? []) {
+        const k = (u.cabinet_number ?? '').trim().toLowerCase();
+        if (k) byCab.set(k, u.id);
+      }
+
+      // Keys already persisted for this job (cross-run idempotency baseline).
+      const { data: existingParts } = await supabase
+        .from('parts').select('cabinet_unit_id, part_name, width, height')
+        .eq('tenant_id', tenant.id).eq('job_number', jobNumber);
+      const partKey = (unitId: string | null, name: string, w: number | null, h: number | null) =>
+        `${unitId ?? ''}|${name.trim().toLowerCase()}|${w ?? ''}|${h ?? ''}`;
+      const have = new Set(
+        ((existingParts as { cabinet_unit_id: string | null; part_name: string; width: number | null; height: number | null }[] | null) ?? [])
+          .map((p) => partKey(p.cabinet_unit_id, p.part_name ?? '', p.width, p.height)),
+      );
+
+      const num = (v: unknown): number | null => {
+        const n = typeof v === 'number' ? v : parseFloat(String(v ?? ''));
+        return Number.isFinite(n) ? n : null;
+      };
+      // Group identical nest rows (same unit + name + W + H) into one part with
+      // quantity = repeat count. Repeated rows are real duplicate physical parts,
+      // not noise to dedup away — collapsing without counting was silent loss.
+      const groups = new Map<string, Record<string, unknown> & { quantity: number }>();
+      for (const p of parts) {
+        const cab = String(p.cab ?? '').trim();
+        const name = (p.name ?? '').toString().trim() || 'Unknown part';
+        const unitId = cab ? byCab.get(cab.toLowerCase()) ?? null : null;
+        if (!unitId) { result.unmatched.push(`${name} (Cab# ${cab || '?'})`); continue; }
+        const width  = num(p.width);
+        const height = num(p.length);   // nest Length is the part's second face dim → height
+        const key = partKey(unitId, name, width, height);
+        if (have.has(key)) { result.skippedDupes++; continue; }  // already persisted in a prior run
+        const grouped = groups.get(key);
+        if (grouped) { grouped.quantity += 1; continue; }        // real repeat → bump quantity
+        groups.set(key, {
+          tenant_id:       tenant.id,
+          cabinet_unit_id: unitId,
+          job_number:      jobNumber,
+          part_name:       name,
+          material:        p.material ? String(p.material).trim() : null,
+          width,
+          height,
+          quantity:        1,
+          status:          'pending',
+        });
+      }
+      const toInsert = [...groups.values()];
+      if (toInsert.length) {
+        const { error } = await supabase.from('parts').insert(toInsert);
+        if (error) throw error;
+        result.created = toInsert.length;
+      }
+      return result;
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Could not seed parts from cut list', true);
+      return result;
+    }
+  }
+
+  // ── Phase 3B: door report (cut_list_detail) → enrich existing door parts ──────
+  // The door report describes the SAME physical doors already created as parts in
+  // 3A (the "Door Flat Panel" rows of the nest). It must NOT insert new parts — it
+  // only adds richer spec columns (style, edges, materials, hinge, size specs) to
+  // the matching door parts. Match key: the report row's Cab# → the part's
+  // cabinet_unit (by cabinet_number) AND a door-ish part_name (contains "door").
+  // A cabinet's "Pair" door maps to its two nested panel parts, so one report row
+  // can enrich several parts. Unmatched report rows are a real data gap (a door
+  // whose panel was not in the nest) and are reported, never fabricated.
+  async function enrichDoorPartsFromReport(
+    fileName: string,
+    docText: string,
+    jobNumber: string,
+  ): Promise<{ total: number; matched: number; unmatched: string[] }> {
+    const result = { total: 0, matched: 0, unmatched: [] as string[] };
+    if (!tenant) return result;
+    try {
+      const res = await fetch('/app/api/parse-file', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'extract-door-report', fileName, docText }),
+      });
+      if (!res.ok) return result;
+      const { doors } = await res.json() as { doors?: DoorSpec[] };
+      if (!doors?.length) return result;
+      result.total = doors.length;
+
+      // cabinet_number → cabinet_unit id, then door parts grouped by unit id.
+      const { data: units } = await supabase
+        .from('cabinet_units').select('id, cabinet_number')
+        .eq('tenant_id', tenant.id).eq('job_number', jobNumber);
+      const idByCab = new Map<string, string>();
+      for (const u of (units as { id: string; cabinet_number: string | null }[] | null) ?? []) {
+        const k = (u.cabinet_number ?? '').trim().toLowerCase();
+        if (k) idByCab.set(k, u.id);
+      }
+      const { data: doorParts } = await supabase
+        .from('parts').select('id, cabinet_unit_id, part_name')
+        .eq('tenant_id', tenant.id).eq('job_number', jobNumber).ilike('part_name', '%door%');
+      const doorPartIdsByUnit = new Map<string, string[]>();
+      for (const p of (doorParts as { id: string; cabinet_unit_id: string | null; part_name: string }[] | null) ?? []) {
+        if (!p.cabinet_unit_id) continue;
+        (doorPartIdsByUnit.get(p.cabinet_unit_id) ?? doorPartIdsByUnit.set(p.cabinet_unit_id, []).get(p.cabinet_unit_id)!).push(p.id);
+      }
+
+      for (const d of doors) {
+        const cab = String(d.cab ?? '').trim();
+        const unitId = cab ? idByCab.get(cab.toLowerCase()) ?? null : null;
+        const partIds = unitId ? doorPartIdsByUnit.get(unitId) ?? [] : [];
+        if (!partIds.length) { result.unmatched.push(`Cab# ${cab || '?'} (room ${d.room ?? '?'})`); continue; }
+        const spec = {
+          door_style:            d.style ?? null,
+          outside_edge:          d.outside_edge ?? null,
+          inside_edge:           d.inside_edge ?? null,
+          panel_material:        d.panel_material ?? null,
+          stiles_rails_material: d.stiles_rails_material ?? null,
+          panel_profile:         d.panel_profile ?? null,
+          hinge_type:            d.hinge_type ?? null,
+          route_pattern:         d.route_pattern ?? null,
+          pull:                  d.pull ?? null,
+          finished_size:         d.finished_size ?? null,
+          panel_size:            d.panel_size ?? null,
+          rail_size:             d.rail_size ?? null,
+          stile_size:            d.stile_size ?? null,
+          hinge_side:            d.hinge_side ?? null,
+        };
+        const { error } = await supabase.from('parts').update(spec).in('id', partIds);
+        if (error) throw error;   // most likely: spec columns not migrated yet
+        result.matched += 1;
+      }
+      return result;
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Could not enrich door parts from report', true);
+      return result;
     }
   }
 
