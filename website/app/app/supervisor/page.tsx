@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { BgLayers, LogoMark } from '@/components/shared';
 import { supabase } from '@/lib/supabase';
+import { extractPdfText } from '@/lib/pdfText';
 import { useSession } from '@/lib/useSession';
 import { trialDaysLeft, getDepartments, DEFAULT_DEPARTMENTS, planLabel as planLabelFor, isPaidPlan, isPartnerActive, PLAN_DISPLAY } from '@/lib/auth';
 import IntegrationsTab, { SourceBadge } from './IntegrationsTab';
@@ -134,12 +135,29 @@ type JobDrawing = {
   version: number | null;
   superseded_by: string | null;
   is_current: boolean | null;
+  // AI document classification (set by classifyPlanDoc on upload). Columns added
+  // by the job_drawings doc_type migration; optional on the type so reads/writes
+  // degrade gracefully if the migration hasn't run yet.
+  doc_type?: string | null;
+  doc_type_reason?: string | null;
 };
 
 type CsvRow = Record<string, string>;
 
+// One cabinet row returned by parse-file mode 'extract-cabinet-roster'.
+type RosterCab = {
+  room?: string | null;
+  cabinet_id?: string | null;
+  qty?: number | null;
+  name?: string | null;
+  width?: number | null;
+  height?: number | null;
+  depth?: number | null;
+  lr?: string | null;
+};
+
 const JOB_DRAWING_COLS =
-  'id, tenant_id, job_number, job_path, label, file_url, file_name, uploaded_by, created_at, file_type, departments, parsed, version, superseded_by, is_current';
+  'id, tenant_id, job_number, job_path, label, file_url, file_name, uploaded_by, created_at, file_type, departments, parsed, version, superseded_by, is_current, doc_type, doc_type_reason';
 
 function parsePlanCSV(text: string): { headers: string[]; rows: CsvRow[] } {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
@@ -2850,6 +2868,12 @@ export default function SupervisorPage() {
         setPlanFile(null);
         setPlanLabel('');
       } else {
+        // Non-CSV (PDF/image/…): file is stored. For PDFs, run a best-effort,
+        // fire-and-forget AI document classification (and, for cabinet rosters,
+        // seed cabinet_units). Never blocks or breaks the upload.
+        const uploadedFile = planFile;
+        const uploadedJobNum = jobNumber.trim();
+        void classifyPlanDoc(inserted as JobDrawing, uploadedFile, uploadedJobNum);
         setPlanFile(null);
         resetPlanJobSelector();
         setPlanLabel('');
@@ -2861,6 +2885,112 @@ export default function SupervisorPage() {
       showToast(msg, true);
     } finally {
       setPlanUploading(false);
+    }
+  }
+
+  // ── Phase 1: classify an uploaded PDF plan ───────────────────────────────────
+  // Read-only AI classification of an uploaded PDF: extracts first-page text,
+  // tags the file (doc_type + one-line reason) via parse-file, and stores the tag
+  // on job_drawings. For cabinet rosters it then seeds cabinet_units (Phase 2).
+  // Best-effort throughout — every step is guarded so it can never break upload.
+  async function classifyPlanDoc(drawing: JobDrawing, file: File, jobNumber: string) {
+    if ((drawing.file_type ?? '') !== 'pdf') return;
+    try {
+      const { firstPageText, fullText, pageCount } = await extractPdfText(file);
+      const res = await fetch('/app/api/parse-file', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'classify-doc', fileName: file.name, firstPageText, pageCount }),
+      });
+      if (!res.ok) return;
+      const { doc_type, reason } = await res.json() as { doc_type?: string; reason?: string };
+      if (!doc_type) return;
+      // Persist the tag (columns optional until the doc_type migration runs).
+      try {
+        await supabase.from('job_drawings').update({ doc_type, doc_type_reason: reason ?? '' }).eq('id', drawing.id);
+        setPlans((prev) => prev.map((p) => p.id === drawing.id ? { ...p, doc_type, doc_type_reason: reason ?? '' } : p));
+      } catch { /* doc_type columns not migrated yet — ignore */ }
+      // Phase 2 — cabinet roster → cabinet_units (no parts; that's a later phase).
+      if (doc_type === 'cabinet_roster') {
+        const n = await seedCabinetUnitsFromRoster(file.name, fullText || firstPageText, jobNumber);
+        if (n > 0) showToast(`Cabinet roster — ${n} cabinet${n === 1 ? '' : 's'} added`);
+      }
+    } catch { /* classification is best-effort */ }
+  }
+
+  // ── Phase 2: cabinet_roster → cabinet_units ──────────────────────────────────
+  // Extracts cabinet rows from a roster PDF's text and inserts them as
+  // cabinet_units. assigned_dept is left at its default; job_id comes from the
+  // jobs row when known. Idempotent: cabinets already present for this job (matched
+  // on cabinet number) are skipped, so re-running classification never duplicates.
+  // NOTE: cabinet_units currently has no width/height/depth/lr/quantity columns —
+  // those are populated only when the optional cabinet_units migration has added
+  // them; otherwise the insert falls back to the always-present core columns.
+  async function seedCabinetUnitsFromRoster(fileName: string, docText: string, jobNumber: string): Promise<number> {
+    if (!tenant) return 0;
+    try {
+      const res = await fetch('/app/api/parse-file', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'extract-cabinet-roster', fileName, docText }),
+      });
+      if (!res.ok) return 0;
+      const { cabinets } = await res.json() as { cabinets?: RosterCab[] };
+      if (!cabinets?.length) return 0;
+
+      const job = jobs.find((j) => j.job_number === jobNumber);
+      const { data: existing } = await supabase
+        .from('cabinet_units').select('cabinet_number')
+        .eq('tenant_id', tenant.id).eq('job_number', jobNumber);
+      const have = new Set(
+        ((existing as { cabinet_number: string | null }[] | null) ?? [])
+          .map((r) => (r.cabinet_number ?? '').trim().toLowerCase()).filter(Boolean),
+      );
+
+      const num = (v: unknown): number | null => {
+        const n = typeof v === 'number' ? v : parseFloat(String(v ?? ''));
+        return Number.isFinite(n) ? n : null;
+      };
+      const core: Record<string, unknown>[] = [];
+      const full: Record<string, unknown>[] = [];
+      for (const c of cabinets) {
+        const cabNum = String(c.cabinet_id ?? '').trim();
+        if (!cabNum || have.has(cabNum.toLowerCase())) continue;
+        have.add(cabNum.toLowerCase());
+        const name = (c.name ?? '').toString().trim();
+        const base = {
+          tenant_id:      tenant.id,
+          job_id:         job?.id ?? null,
+          job_number:     jobNumber,
+          room_number:    c.room ? String(c.room).trim() : null,
+          cabinet_number: cabNum,
+          unit_label:     name ? `${cabNum} — ${name}` : cabNum,
+          status:         'pending',
+        };
+        core.push(base);
+        full.push({
+          ...base,
+          cabinet_name: name || null,
+          width:  num(c.width),
+          height: num(c.height),
+          depth:  num(c.depth),
+          lr:     c.lr ? String(c.lr).trim() : null,
+          quantity: Math.max(1, num(c.qty) ?? 1),
+        });
+      }
+      if (core.length === 0) return 0;
+
+      // Prefer the full insert (dimensions etc.); if those columns don't exist
+      // yet, fall back to the core columns that are always present.
+      const tryInsert = await supabase.from('cabinet_units').insert(full);
+      if (tryInsert.error) {
+        const { error } = await supabase.from('cabinet_units').insert(core);
+        if (error) throw error;
+      }
+      return core.length;
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Could not seed cabinets from roster', true);
+      return 0;
     }
   }
 
