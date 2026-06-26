@@ -13,6 +13,7 @@ type ClockEntry = {
   date: string | null;
   total_hours: number | null;
   total_break_minutes: number | null;
+  break_minutes: number | null;
   notes: string | null;
   job_number: string | null;
   status: string | null;
@@ -54,7 +55,7 @@ type NeedRow = {
   created_at: string;
 };
 
-type JobRow = { id: string; job_number: string; job_name: string | null };
+type JobRow = { id: string; job_number: string; job_name: string | null; labor_est: number | null; material_est: number | null; labor_budget_dollars: number | null };
 type SortDir = 'asc' | 'desc';
 type ReportKey = 'daily' | 'job' | 'weekly' | 'damage' | 'inventory' | 'parts';
 
@@ -91,6 +92,21 @@ function toHHMM(h: number | null): string {
 function calcHours(clockIn: string, clockOut: string | null): number {
   return (((clockOut ? new Date(clockOut) : new Date()).getTime()) - new Date(clockIn).getTime()) / 3_600_000;
 }
+
+// ── Labor-cost helpers ──────────────────────────────────────────────────────
+// Net paid hours = gross clocked hours minus break time. Breaks live in either
+// total_break_minutes (shift-tracking migration) or break_minutes (base table);
+// prefer the former, fall back to the latter.
+function breakMinutes(e: ClockEntry): number {
+  return e.total_break_minutes ?? e.break_minutes ?? 0;
+}
+function grossHours(e: ClockEntry): number {
+  return e.total_hours ?? calcHours(e.clock_in, e.clock_out);
+}
+function netHours(e: ClockEntry): number {
+  return Math.max(0, grossHours(e) - breakMinutes(e) / 60);
+}
+function fmtMoney(n: number): string { return `$${n.toFixed(2)}`; }
 
 function fmtDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -499,9 +515,10 @@ function DailyMetrics({ entries }: { entries: ClockEntry[] }) {
 
 // ── 1. Daily Labor ────────────────────────────────────────────────────────────
 
-function DailyLaborReport({ tenantId, showToast }: Props) {
+function DailyLaborReport({ tenantId, showToast, onGoToCrew }: Props) {
   const [date, setDate]       = useState(todayISO);
   const [entries, setEntries] = useState<ClockEntry[]>([]);
+  const [rates,   setRates]   = useState<Record<string, number>>({}); // worker name (lowercased) → hourly_rate
   const [loading, setLoading] = useState(false);
   const [sortCol, setSortCol] = useState('clock_in');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -511,11 +528,32 @@ function DailyLaborReport({ tenantId, showToast }: Props) {
     setSortCol(col);
   }, [sortCol]);
 
+  // Pay rates are supervisor-only — fetched here in the Reports tab, never on
+  // any crew-facing query.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from('crew_members')
+          .select('name, hourly_rate')
+          .eq('tenant_id', tenantId);
+        if (cancelled) return;
+        const map: Record<string, number> = {};
+        ((data as { name: string | null; hourly_rate: number | null }[]) ?? []).forEach((r) => {
+          if (r.name && r.hourly_rate != null) map[r.name.toLowerCase()] = r.hourly_rate;
+        });
+        setRates(map);
+      } catch { /* rates optional — labor cost just shows "Rate not set" */ }
+    })();
+    return () => { cancelled = true; };
+  }, [tenantId]);
+
   useEffect(() => {
     setLoading(true);
     supabase
       .from('time_clock')
-      .select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
+      .select('id, worker_name, dept, clock_in, clock_out, date, total_hours, total_break_minutes, break_minutes, notes, job_number, status')
       .eq('tenant_id', tenantId)
       .eq('date', date)
       .order('clock_in', { ascending: true })
@@ -537,6 +575,41 @@ function DailyLaborReport({ tenantId, showToast }: Props) {
   }, [entries]);
 
   const totalHours = entries.reduce((s, e) => s + (e.total_hours ?? calcHours(e.clock_in, e.clock_out)), 0);
+
+  // ── Per-crew-member labor cost = hourly_rate × net hours (after breaks). ──
+  // Workers without a rate show "Rate not set" and are excluded from cost
+  // totals. A worker may touch multiple depts in a day, so per-worker cost
+  // uses their single rate × all their net hours; the dept rollup below
+  // attributes each entry's cost to that entry's own dept.
+  const workerCosts = useMemo(() => {
+    return Object.entries(byWorker).map(([name, ents]) => {
+      const net   = ents.reduce((s, e) => s + netHours(e), 0);
+      const gross = ents.reduce((s, e) => s + grossHours(e), 0);
+      const depts = [...new Set(ents.map((e) => e.dept ?? '—'))];
+      const rate  = rates[name.toLowerCase()] ?? null;
+      return { name, depts, gross, net, rate, cost: rate != null ? net * rate : null };
+    }).sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0) || b.net - a.net);
+  }, [byWorker, rates]);
+
+  // Per-dept rollup = sum of its crew's cost that day (entry-level attribution).
+  const deptCosts = useMemo(() => {
+    const m: Record<string, { net: number; cost: number; rated: boolean }> = {};
+    entries.forEach((e) => {
+      const dept = (e.dept ?? '').trim() || 'Unassigned';
+      const rate = rates[(e.worker_name ?? '').toLowerCase()] ?? null;
+      const net  = netHours(e);
+      if (!m[dept]) m[dept] = { net: 0, cost: 0, rated: false };
+      m[dept].net += net;
+      if (rate != null) { m[dept].cost += net * rate; m[dept].rated = true; }
+    });
+    return Object.entries(m).map(([dept, v]) => ({ dept, ...v })).sort((a, b) => b.cost - a.cost);
+  }, [entries, rates]);
+
+  const totalLaborCost = workerCosts.reduce((s, w) => s + (w.cost ?? 0), 0);
+  const ratedNet       = workerCosts.filter((w) => w.rate != null).reduce((s, w) => s + w.net, 0);
+  const anyRated       = workerCosts.some((w) => w.rate != null);
+  const anyUnrated     = workerCosts.some((w) => w.rate == null && w.net > 0.0001);
+  const topDeptCost    = deptCosts.find((d) => d.cost > 0) ?? null;
 
   const sortedEntries = useMemo(() => {
     return [...entries].sort((a, b) => {
@@ -562,12 +635,98 @@ function DailyLaborReport({ tenantId, showToast }: Props) {
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputSt} />
         </div>
         <ExportBtn onClick={() => downloadCSV(`daily-labor_${date}.csv`,
-          ['Worker', 'Dept', 'Clock In', 'Clock Out', 'Hours', 'Job / Project', 'Type', 'Notes'],
-          entries.map((e) => [e.worker_name ?? '', e.dept ?? '', fmtTime(e.clock_in), e.clock_out ? fmtTime(e.clock_out) : 'Active',
-            (e.total_hours ?? calcHours(e.clock_in, e.clock_out)).toFixed(2), e.job_number ?? '', e.status ?? '', e.notes ?? '']))} />
+          ['Worker', 'Dept', 'Clock In', 'Clock Out', 'Gross Hours', 'Break (min)', 'Net Hours', 'Rate', 'Cost', 'Job / Project', 'Type', 'Notes'],
+          entries.map((e) => {
+            const rate = rates[(e.worker_name ?? '').toLowerCase()] ?? null;
+            const net  = netHours(e);
+            return [e.worker_name ?? '', e.dept ?? '', fmtTime(e.clock_in), e.clock_out ? fmtTime(e.clock_out) : 'Active',
+              grossHours(e).toFixed(2), breakMinutes(e), net.toFixed(2),
+              rate != null ? rate.toFixed(2) : '', rate != null ? (net * rate).toFixed(2) : '',
+              e.job_number ?? '', e.status ?? '', e.notes ?? ''];
+          }))} />
       </div>
 
       {!loading && entries.length > 0 && <DailyMetrics entries={entries} />}
+
+      {/* ── Labor cost = hourly_rate × net hours, per crew member + dept rollup ── */}
+      {!loading && entries.length > 0 && (
+        <>
+          {anyRated && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+              <MetricTile label="Total Labor Cost" value={fmtMoney(totalLaborCost)} color="#2DE1C9" />
+              <MetricTile label="Avg Rate (rated)" value={ratedNet > 0 ? fmtMoney(totalLaborCost / ratedNet) : '—'} color="#5EEAD4" />
+              <MetricTile label="Costliest Dept" value={topDeptCost ? `${topDeptCost.dept} · ${fmtMoney(topDeptCost.cost)}` : '—'} color="#A78BFA" />
+            </div>
+          )}
+
+          {anyUnrated && (
+            <div className="portal-card" style={{ padding: '12px 16px', borderLeft: '3px solid #FBBF24', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <span style={{ fontSize: 12.5, color: 'var(--ink-dim)' }}>
+                Some crew have no hourly rate set — their hours are excluded from labor cost.
+              </span>
+              {onGoToCrew && (
+                <button onClick={onGoToCrew} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--teal)', fontSize: 12.5, fontFamily: 'inherit', textDecoration: 'underline' }}>Set rates in Crew tab</button>
+              )}
+            </div>
+          )}
+
+          {/* Per-crew-member labor cost */}
+          <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
+            <div style={{ padding: '11px 16px', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Labor Cost · {fmtDate(date)}</span>
+              {anyRated && <span style={{ fontSize: 13, fontWeight: 700, color: '#2DE1C9' }}>{fmtMoney(totalLaborCost)} total</span>}
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr>{['Worker', 'Dept', 'Net Hrs', 'Rate', 'Cost'].map((h) => <th key={h} style={thSt}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {workerCosts.map((w, i) => (
+                    <tr key={w.name} style={{ background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent' }}>
+                      <td style={tdBold}>{w.name}</td>
+                      <td style={tdSt}>{w.depts.join(', ')}</td>
+                      <td style={tdSt}>{toHHMM(w.net)}</td>
+                      <td style={tdSt}>
+                        {w.rate != null ? fmtMoney(w.rate) : (
+                          onGoToCrew
+                            ? <button onClick={onGoToCrew} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--teal)', fontSize: 12.5, fontFamily: 'inherit', textDecoration: 'underline' }}>Rate not set</button>
+                            : <span style={{ color: 'var(--ink-mute)', fontSize: 12.5 }}>Rate not set</span>
+                        )}
+                      </td>
+                      <td style={tdSt}>{w.cost != null ? fmtMoney(w.cost) : '—'}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ background: 'rgba(45,225,201,0.04)', borderTop: '2px solid var(--line)' }}>
+                    <td style={{ ...tdBold, color: 'var(--teal)' }}>TOTAL</td>
+                    <td />
+                    <td style={{ ...tdBold, color: 'var(--teal)' }}>{toHHMM(ratedNet)}</td>
+                    <td />
+                    <td style={{ ...tdBold, color: 'var(--teal)' }}>{fmtMoney(totalLaborCost)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Per-department cost rollup */}
+          {anyRated && deptCosts.some((d) => d.cost > 0) && (
+            <div className="portal-card" style={{ padding: '16px 20px' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Cost by Department</div>
+              {deptCosts.filter((d) => d.cost > 0).map((d) => (
+                <div key={d.dept} style={{ marginBottom: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <span style={{ fontSize: 13, color: 'var(--ink-dim)', fontWeight: 600, textTransform: 'capitalize' }}>{d.dept} <span style={{ color: 'var(--ink-mute)', fontWeight: 400 }}>· {toHHMM(d.net)}</span></span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#2DE1C9' }}>{fmtMoney(d.cost)}</span>
+                  </div>
+                  <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.06)' }}>
+                    <div style={{ height: '100%', width: `${totalLaborCost > 0 ? (d.cost / totalLaborCost) * 100 : 0}%`, background: deptTimeColor(d.dept), borderRadius: 4 }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
 
       {!loading && Object.keys(byWorker).length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -609,9 +768,9 @@ function DailyLaborReport({ tenantId, showToast }: Props) {
                       <td style={tdSt}>{e.dept ?? '—'}</td>
                       <td style={tdSt}>{fmtTime(e.clock_in)}</td>
                       <td style={tdSt}>{e.clock_out ? fmtTime(e.clock_out) : <span style={{ color: '#2DE1C9' }}>Active</span>}</td>
-                      <td style={tdSt}>{toHHMM(e.total_hours ?? calcHours(e.clock_in, e.clock_out))}</td>
-                      <td style={tdSt}>{e.total_break_minutes ? `${e.total_break_minutes}m` : '—'}</td>
-                      <td style={tdSt}>{(() => { const h = e.total_hours ?? calcHours(e.clock_in, e.clock_out); const b = (e.total_break_minutes ?? 0) / 60; return toHHMM(Math.max(0, h - b)); })()}</td>
+                      <td style={tdSt}>{toHHMM(grossHours(e))}</td>
+                      <td style={tdSt}>{breakMinutes(e) ? `${breakMinutes(e)}m` : '—'}</td>
+                      <td style={tdSt}>{toHHMM(netHours(e))}</td>
                       <td style={tdSt}>{e.job_number ? <code style={{ fontSize: 12 }}>{e.job_number}</code> : '—'}</td>
                       <td style={tdSt}><StatusPill status={e.status ?? 'active'} /></td>
                     </tr>
@@ -668,7 +827,7 @@ function JobCostReport({ tenantId, showToast, onGoToCrew }: Props) {
     let cancelled = false;
     (async () => {
       try {
-        const { data } = await supabase.from('jobs').select('id, job_number, job_name').eq('tenant_id', tenantId)
+        const { data } = await supabase.from('jobs').select('id, job_number, job_name, labor_est, material_est, labor_budget_dollars').eq('tenant_id', tenantId)
           .order('created_at', { ascending: false }).limit(200);
         if (cancelled) return;
         const rows = (data as JobRow[]) ?? [];
@@ -686,7 +845,7 @@ function JobCostReport({ tenantId, showToast, onGoToCrew }: Props) {
     (async () => {
       try {
         const [c, p, d, n] = await Promise.all([
-          supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
+          supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, total_break_minutes, break_minutes, notes, job_number, status')
             .eq('tenant_id', tenantId).eq('job_number', selJob).order('clock_in'),
           supabase.from('parts_log').select('id, worker_name, job_number, part_name, dept, status, notes, created_at')
             .eq('tenant_id', tenantId).eq('job_number', selJob).order('created_at'),
@@ -709,12 +868,15 @@ function JobCostReport({ tenantId, showToast, onGoToCrew }: Props) {
     return () => { cancelled = true; };
   }, [tenantId, selJob, showToast]);
 
+  // Hours here are NET (gross minus break minutes) via the shared netHours()
+  // helper — same basis as the Daily Labor report, so the same job shows the
+  // same hours and the same dollar labor total in both places.
   const workerTotals = useMemo(() => {
     const m: Record<string, { hours: number; dept: string; days: Set<string | null> }> = {};
     clock.forEach((e) => {
       const n = e.worker_name ?? 'Unknown';
       if (!m[n]) m[n] = { hours: 0, dept: e.dept ?? '—', days: new Set() };
-      m[n].hours += e.total_hours ?? calcHours(e.clock_in, e.clock_out);
+      m[n].hours += netHours(e);
       m[n].days.add(e.date);
     });
     return Object.entries(m).map(([name, v]) => ({ name, ...v, days: v.days.size }))
@@ -737,6 +899,27 @@ function JobCostReport({ tenantId, showToast, onGoToCrew }: Props) {
   laborCosts.forEach((w) => { if (w.cost != null) deptCost[w.dept] = (deptCost[w.dept] ?? 0) + w.cost; });
   const topDept = Object.entries(deptCost).sort((a, b) => b[1] - a[1])[0] ?? null;
   const money = (n: number) => `$${n.toFixed(2)}`;
+
+  // ── Actual vs Estimate ──────────────────────────────────────────────────────
+  // labor_est is stored in HOURS (the job-edit UI renders "{labor_est}h" and its
+  // input is hours), so the apples-to-apples comparison is actual labor hours
+  // (grandTotal) vs the estimate in hours. totalLaborCost ($) is shown alongside
+  // as supporting context but has no dollar estimate to compare against.
+  // material_est is stored in DOLLARS but has no actual yet (inventory feature
+  // not built) — it is shown alone as a stub, never with a fabricated actual.
+  const selJobRow      = jobs.find((j) => j.job_number === selJob) ?? null;
+  const laborEstHours  = selJobRow?.labor_est ?? null;
+  const materialEst    = selJobRow?.material_est ?? null;
+  const laborVarPct    = (laborEstHours != null && laborEstHours > 0)
+    ? ((grandTotal - laborEstHours) / laborEstHours) * 100
+    : null;
+  // Dollar labor budget is a SEPARATE comparison from the hours estimate — it
+  // compares totalLaborCost ($) to jobs.labor_budget_dollars ($). Never conflate
+  // it with the hours variance above; they're shown as two distinct lines.
+  const laborBudgetDollars = selJobRow?.labor_budget_dollars ?? null;
+  const costVarPct = (laborBudgetDollars != null && laborBudgetDollars > 0)
+    ? ((totalLaborCost - laborBudgetDollars) / laborBudgetDollars) * 100
+    : null;
 
   const SubCard = ({ title, count, children }: { title: string; count: number; children: React.ReactNode }) => (
     <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -773,6 +956,83 @@ function JobCostReport({ tenantId, showToast, onGoToCrew }: Props) {
               <MetricTile label="Total Labor Cost" value={money(totalLaborCost)} color="#2DE1C9" />
               <MetricTile label="Avg Hourly Rate" value={money(avgRate)} color="#5EEAD4" />
               <MetricTile label="Most Expensive Dept" value={topDept ? `${topDept[0]} · ${money(topDept[1])}` : '—'} color="#A78BFA" />
+            </div>
+          )}
+
+          {/* Actual vs Estimate — labor (hours, real comparison) + material (stub) */}
+          {!loading && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
+              {/* Labor: TWO separate comparisons — hours-vs-hours and dollars-vs-dollars */}
+              <div className="portal-card" style={{ padding: '16px 20px' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 12 }}>Labor — Actual vs Estimate</div>
+
+                {/* ── Hours (net) vs hours estimate ── */}
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-mute)', opacity: 0.8, marginBottom: 6 }}>Hours</div>
+                {laborEstHours == null ? (
+                  <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>
+                    No hours estimate set · actual to date <strong style={{ color: 'var(--ink-dim)' }}>{toHHMM(grandTotal)}</strong>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 22, fontWeight: 700, color: '#2DE1C9', letterSpacing: '-0.02em' }}>{toHHMM(grandTotal)}</span>
+                      <span style={{ fontSize: 13, color: 'var(--ink-mute)' }}>actual vs <strong style={{ color: 'var(--ink-dim)' }}>{laborEstHours}h</strong> estimated</span>
+                    </div>
+                    {laborVarPct != null && (
+                      <div style={{ marginTop: 6, fontSize: 13, fontWeight: 700, color: laborVarPct > 0 ? '#F87171' : '#34D399' }}>
+                        {laborVarPct > 0 ? '▲' : '▼'} {Math.abs(laborVarPct).toFixed(0)}% {laborVarPct > 0 ? 'over' : 'under'} estimate
+                        <span style={{ color: 'var(--ink-mute)', fontWeight: 400 }}> ({grandTotal >= laborEstHours ? '+' : ''}{toHHMM(Math.abs(grandTotal - laborEstHours))})</span>
+                      </div>
+                    )}
+                    <div style={{ marginTop: 12, height: 8, borderRadius: 4, background: 'rgba(255,255,255,0.06)', position: 'relative', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${Math.min(100, laborEstHours > 0 ? (grandTotal / laborEstHours) * 100 : 0)}%`, background: (laborVarPct ?? 0) > 0 ? '#F87171' : '#2DE1C9', borderRadius: 4, transition: 'width 0.3s' }} />
+                    </div>
+                  </>
+                )}
+
+                <div style={{ height: 1, background: 'var(--line)', margin: '16px 0' }} />
+
+                {/* ── Cost ($) vs dollar budget — SEPARATE line, never merged with hours ── */}
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-mute)', opacity: 0.8, marginBottom: 6 }}>Cost</div>
+                {!anyRated ? (
+                  <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No hourly rates set — labor cost can&apos;t be computed.</div>
+                ) : laborBudgetDollars == null ? (
+                  <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>
+                    No dollar budget set · actual cost to date <strong style={{ color: 'var(--ink-dim)' }}>{money(totalLaborCost)}</strong>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 22, fontWeight: 700, color: '#5EEAD4', letterSpacing: '-0.02em' }}>{money(totalLaborCost)}</span>
+                      <span style={{ fontSize: 13, color: 'var(--ink-mute)' }}>actual vs <strong style={{ color: 'var(--ink-dim)' }}>{money(laborBudgetDollars)}</strong> budgeted</span>
+                    </div>
+                    {costVarPct != null && (
+                      <div style={{ marginTop: 6, fontSize: 13, fontWeight: 700, color: costVarPct > 0 ? '#F87171' : '#34D399' }}>
+                        {costVarPct > 0 ? '▲' : '▼'} {Math.abs(costVarPct).toFixed(0)}% {costVarPct > 0 ? 'over' : 'under'} budget
+                        <span style={{ color: 'var(--ink-mute)', fontWeight: 400 }}> ({totalLaborCost >= laborBudgetDollars ? '+' : '−'}{money(Math.abs(totalLaborCost - laborBudgetDollars))})</span>
+                      </div>
+                    )}
+                    <div style={{ marginTop: 12, height: 8, borderRadius: 4, background: 'rgba(255,255,255,0.06)', position: 'relative', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${Math.min(100, laborBudgetDollars > 0 ? (totalLaborCost / laborBudgetDollars) * 100 : 0)}%`, background: (costVarPct ?? 0) > 0 ? '#F87171' : '#5EEAD4', borderRadius: 4, transition: 'width 0.3s' }} />
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Material: STUB — estimate only, no actual until inventory feature exists */}
+              <div className="portal-card" style={{ padding: '16px 20px' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 12 }}>Material — Estimate</div>
+                {materialEst != null ? (
+                  <div style={{ fontSize: 22, fontWeight: 700, color: '#5EEAD4', letterSpacing: '-0.02em' }}>${materialEst.toLocaleString()}</div>
+                ) : (
+                  <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No material estimate set for this job.</div>
+                )}
+                <div style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 7, padding: '6px 11px', borderRadius: 8, background: 'rgba(167,139,250,0.10)', border: '1px solid rgba(167,139,250,0.25)' }}>
+                  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#A78BFA" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                  <span style={{ fontSize: 12, color: '#A78BFA', fontWeight: 600 }}>Material tracking coming with inventory feature</span>
+                </div>
+                <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--ink-mute)' }}>Actual material spend will appear here once inventory is built.</div>
+              </div>
             </div>
           )}
 
@@ -1421,7 +1681,7 @@ export default function ReportsTab({ tenantId, showToast, onGoToCrew }: Props) {
         ))}
       </div>
 
-      {active === 'daily'     && <DailyLaborReport     tenantId={tenantId} showToast={showToast} />}
+      {active === 'daily'     && <DailyLaborReport     tenantId={tenantId} showToast={showToast} onGoToCrew={onGoToCrew} />}
       {active === 'job'       && <JobCostReport        tenantId={tenantId} showToast={showToast} onGoToCrew={onGoToCrew} />}
       {active === 'weekly'    && <WeeklySummaryReport  tenantId={tenantId} showToast={showToast} />}
       {active === 'damage'    && <DamageReportLog      tenantId={tenantId} showToast={showToast} />}

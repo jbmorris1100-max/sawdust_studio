@@ -834,6 +834,9 @@ export default function CrewPage() {
   const isClockedIn = !!clockShift;
   // A paused project surfaced after clock-in → the "Unfinished project" resume prompt.
   const [resumePrompt, setResumePrompt] = useState<ActiveProject | null>(null);
+  // True when the current break auto-paused an active build, so break-end knows
+  // to offer a resume (mirrors the clock-in resume flow, reuses the same prompt).
+  const breakPausedProjectRef = useRef(false);
   const [resumeBusy,   setResumeBusy]   = useState(false);
 
   // Break tracking
@@ -2460,6 +2463,22 @@ export default function CrewPage() {
     try {
       const now = new Date().toISOString();
       await supabase.from('time_clock').update({ on_break: true, break_start: now }).eq('id', openEntry.id);
+
+      // Auto-pause any active build so break time isn't counted as task time.
+      // Reuses pauseWorkerProject (closes the session, folds its seconds into
+      // accumulated_seconds) — the same mechanism clock-out uses, so no time is
+      // lost or double-counted. Online-only + best-effort: never block the break.
+      breakPausedProjectRef.current = false;
+      if (tenant && crewName && typeof navigator !== 'undefined' && navigator.onLine) {
+        try {
+          const res = await pauseWorkerProject(tenant.id, crewName);
+          if (res) {
+            breakPausedProjectRef.current = true;
+            showToast(`${res.project.unit_label} paused for break`);
+          }
+        } catch (_) { /* best-effort — break still starts */ }
+      }
+
       void logShiftEvent({
         tenantId: tenant!.id,
         timeClockId: activeTimeClockId ?? openEntry.id,
@@ -2472,7 +2491,7 @@ export default function CrewPage() {
       localStorage.setItem('on_break', 'true');
       localStorage.setItem('break_start_time', now);
       closeModal();
-      showToast('Break started');
+      if (!breakPausedProjectRef.current) showToast('Break started');
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Failed', true);
     } finally {
@@ -2505,6 +2524,16 @@ export default function CrewPage() {
       localStorage.removeItem('break_start_time');
       closeModal();
       showToast(`Break ended — ${duration} min`);
+
+      // If the break auto-paused a build, offer to resume it (same prompt the
+      // clock-in flow uses). "Not now" leaves it paused for manual resume later.
+      if (breakPausedProjectRef.current && tenant && crewName) {
+        breakPausedProjectRef.current = false;
+        try {
+          const proj = await getWorkerProject(tenant.id, crewName);
+          if (proj && proj.status === 'paused') setResumePrompt(proj);
+        } catch (_) { /* best-effort — crew can resume from the queue */ }
+      }
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Failed', true);
     } finally {
