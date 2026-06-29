@@ -7,6 +7,7 @@ import PartPushButton from '@/components/PartPushButton';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 import { deptDisplay } from '@/lib/partActions';
 import { sendNotify } from '@/lib/notify';
+import DeptCrewStrip from './DeptCrewStrip';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -607,6 +608,10 @@ export default function AssemblyTab({ tenantId, showToast, departments, jobs, de
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <style>{`@keyframes flagPulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
+
+      {/* Crew on floor — who is clocked in to this dept right now (shared with
+          every other dept tab; Assembly was the lone tab missing it). */}
+      <DeptCrewStrip tenantId={tenantId} dept={deptName} />
 
       {/* ── Migration needed banner ─────────────────────────────────────── */}
       {migrationNeeded && (
