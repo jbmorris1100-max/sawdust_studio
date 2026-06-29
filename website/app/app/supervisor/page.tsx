@@ -543,12 +543,6 @@ function dueMeta(dateStr: string): { label: string; color: string; overdue: bool
   const label = overdue ? `${-days}d overdue` : days === 0 ? 'today' : `in ${days}d`;
   return { label, color, overdue };
 }
-function elapsed(clockIn: string) {
-  const ms = Date.now() - new Date(clockIn).getTime();
-  const h = Math.floor(ms / 3600000);
-  const m = Math.floor((ms % 3600000) / 60000);
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-}
 
 // ── UI Components ─────────────────────────────────────────────────────────────
 
@@ -824,7 +818,6 @@ export default function SupervisorPage() {
   const [plans,          setPlans]          = useState<JobDrawing[]>([]);
   const [sops,           setSops]           = useState<SopItem[]>([]);
   const [craftsmanBuilds, setCraftsmanBuilds] = useState<CraftsmanBuild[]>([]);
-  const [craftsTick,     setCraftsTick]     = useState(0);
   const [parts,          setParts]          = useState<PartLog[]>([]);
   const [expandedPartId, setExpandedPartId] = useState<string | null>(null);
   const [updatingPartId, setUpdatingPartId] = useState<string | null>(null);
@@ -1940,12 +1933,6 @@ export default function SupervisorPage() {
       void generateBrief();
     }
   }, [tab, aiMode, brief, briefLoading, generateBrief]);
-
-  // Tick every minute to refresh elapsed times in Craftsman Activity panel
-  useEffect(() => {
-    const iv = setInterval(() => setCraftsTick((t) => t + 1), 60000);
-    return () => clearInterval(iv);
-  }, []);
 
   useEffect(() => {
     loadAll();
@@ -4057,10 +4044,6 @@ export default function SupervisorPage() {
     : [];
   const openThreadLabel = openThread === '__broadcast__' ? 'All Departments' : (openThread ?? '');
 
-  const todayStart      = new Date(); todayStart.setHours(0, 0, 0, 0);
-  const activeBuilds    = craftsmanBuilds.filter((b) => !b.clock_out);
-  const completedBuilds = craftsmanBuilds.filter((b) => b.clock_out && new Date(b.clock_in) >= todayStart);
-
   const thStyle: React.CSSProperties = { padding: '10px 20px', textAlign: 'left', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-mute)' };
   const tdStyle: React.CSSProperties = { padding: '12px 20px', fontSize: 13, color: 'var(--ink-dim)' };
   const tdBold:  React.CSSProperties = { ...tdStyle, fontSize: 14, fontWeight: 600, color: 'var(--ink)' };
@@ -4415,72 +4398,6 @@ export default function SupervisorPage() {
                   </>
                 )}
               </div>
-
-              {/* Craftsman Build Activity */}
-              {(activeBuilds.length > 0 || completedBuilds.length > 0 || !dataLoading) && (
-                <div className="portal-card" style={{ padding: 0, overflow: 'hidden' }}>
-                  <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#2DE1C9' }}>Craftsman Build Activity</span>
-                    {activeBuilds.length > 0 && (
-                      <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: 'rgba(45,225,201,0.12)', color: '#2DE1C9' }}>
-                        {activeBuilds.length} active
-                      </span>
-                    )}
-                    {/* craftsTick drives elapsed recalc every minute */}
-                    <span style={{ display: 'none' }}>{craftsTick}</span>
-                  </div>
-
-                  {dataLoading ? (
-                    <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
-                  ) : activeBuilds.length === 0 && completedBuilds.length === 0 ? (
-                    <div style={{ padding: 20, fontSize: 13, color: 'var(--ink-mute)' }}>No craftsman build activity today.</div>
-                  ) : (
-                    <>
-                      {activeBuilds.length > 0 && (
-                        <>
-                          <div style={{ padding: '8px 20px 4px', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Active</div>
-                          {activeBuilds.map((b) => (
-                            <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '13px 20px', borderBottom: '1px solid var(--line)' }}>
-                              <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#2DE1C9', flexShrink: 0, animation: 'craftsPulse 2s ease-in-out infinite' }} />
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>{b.worker_name}</div>
-                                <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                  {b.notes ?? 'Craftsman Build'}{b.job_number ? ` · Job ${b.job_number}` : ''}
-                                </div>
-                              </div>
-                              <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                                <div style={{ fontSize: 13, fontWeight: 700, color: '#2DE1C9', fontVariantNumeric: 'tabular-nums' }}>{elapsed(b.clock_in)}</div>
-                                <div style={{ fontSize: 10, color: 'var(--ink-mute)', marginTop: 2 }}>Craftsman Build</div>
-                              </div>
-                            </div>
-                          ))}
-                        </>
-                      )}
-                      {completedBuilds.length > 0 && (
-                        <>
-                          <div style={{ padding: '8px 20px 4px', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Completed Today</div>
-                          {completedBuilds.map((b) => (
-                            <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '13px 20px', borderBottom: '1px solid var(--line)' }}>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>{b.worker_name}</div>
-                                <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                  {b.notes ?? 'Craftsman Build'}{b.job_number ? ` · Job ${b.job_number}` : ''}
-                                </div>
-                              </div>
-                              <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                                <div style={{ fontSize: 13, fontWeight: 700, color: '#34D399' }}>
-                                  {b.total_hours != null ? `${b.total_hours.toFixed(2)}h` : elapsed(b.clock_in)}
-                                </div>
-                                <div style={{ fontSize: 10, color: 'var(--ink-mute)', marginTop: 2 }}>Craftsman Build</div>
-                              </div>
-                            </div>
-                          ))}
-                        </>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
 
               {/* Parts & QC */}
               {parts.length > 0 && (() => {
