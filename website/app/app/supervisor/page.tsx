@@ -356,6 +356,7 @@ type Job = {
   due_date?: string | null;
   material_est?: number | null;
   labor_est?: number | null;
+  labor_budget_dollars?: number | null;
   install_date?: string | null;
   archived?: boolean | null;
   archived_at?: string | null;
@@ -842,7 +843,7 @@ export default function SupervisorPage() {
   const [finishSpecsJob, setFinishSpecsJob] = useState<Job | null>(null);
   // Inline-edit of Due Date / Material Est. / Labor Est. in the expanded job row.
   const [editingJobId,  setEditingJobId]  = useState<string | null>(null);
-  const [jobEditForm,   setJobEditForm]   = useState<{ due_date: string; material_est: string; labor_est: string }>({ due_date: '', material_est: '', labor_est: '' });
+  const [jobEditForm,   setJobEditForm]   = useState<{ due_date: string; material_est: string; labor_est: string; labor_budget_dollars: string }>({ due_date: '', material_est: '', labor_est: '', labor_budget_dollars: '' });
   const [savingJobEdit, setSavingJobEdit] = useState(false);
 
   // Production pipeline (Overview)
@@ -878,6 +879,7 @@ export default function SupervisorPage() {
   const [planNewDueDate,     setPlanNewDueDate]     = useState('');   // create-new: Due Date (required)
   const [planNewMaterialEst, setPlanNewMaterialEst] = useState('');   // create-new: Material Est. (required)
   const [planNewLaborEst,    setPlanNewLaborEst]    = useState('');   // create-new: Labor Est. in hours (required)
+  const [planNewBudgetDollars, setPlanNewBudgetDollars] = useState(''); // create-new: Labor Budget in $ (optional)
   // Carries the resolved job context through the version-conflict prompt.
   const [pendingJobCtx, setPendingJobCtx] = useState<{ jobNumber: string; jobPath: string | null } | null>(null);
   const [planLabel,     setPlanLabel]     = useState('');
@@ -2274,12 +2276,13 @@ export default function SupervisorPage() {
     const due_date     = jobEditForm.due_date || null;
     const material_est = jobEditForm.material_est.trim() ? (parseFloat(jobEditForm.material_est) || null) : null;
     const labor_est    = jobEditForm.labor_est.trim()   ? (parseFloat(jobEditForm.labor_est)   || null) : null;
-    const prev = { due_date: job.due_date ?? null, material_est: job.material_est ?? null, labor_est: job.labor_est ?? null };
-    setJobs((jj) => jj.map((j) => j.id === job.id ? { ...j, due_date, material_est, labor_est } : j));
+    const labor_budget_dollars = jobEditForm.labor_budget_dollars.trim() ? (parseFloat(jobEditForm.labor_budget_dollars) || null) : null;
+    const prev = { due_date: job.due_date ?? null, material_est: job.material_est ?? null, labor_est: job.labor_est ?? null, labor_budget_dollars: job.labor_budget_dollars ?? null };
+    setJobs((jj) => jj.map((j) => j.id === job.id ? { ...j, due_date, material_est, labor_est, labor_budget_dollars } : j));
     try {
       const { error } = await supabase
         .from('jobs')
-        .update({ due_date, material_est, labor_est })
+        .update({ due_date, material_est, labor_est, labor_budget_dollars })
         .eq('id', job.id)
         .eq('tenant_id', tenant.id);
       if (error) throw error;
@@ -2728,6 +2731,7 @@ export default function SupervisorPage() {
     setPlanNewDueDate('');
     setPlanNewMaterialEst('');
     setPlanNewLaborEst('');
+    setPlanNewBudgetDollars('');
     setPlanJobOpen(false);
   }
 
@@ -2776,7 +2780,7 @@ export default function SupervisorPage() {
       // so "Anderson" resolves to an existing "anderson".
       const { data: existingJob } = await supabase
         .from('jobs')
-        .select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, material_est, labor_est, install_date')
+        .select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, material_est, labor_est, labor_budget_dollars, install_date')
         .eq('tenant_id', tenant.id)
         .ilike('job_path', jobPath)
         .maybeSingle();
@@ -2796,12 +2800,13 @@ export default function SupervisorPage() {
           due_date:     planNewDueDate,
           material_est: parseFloat(planNewMaterialEst) || null,
           labor_est:    parseFloat(planNewLaborEst) || null,
+          labor_budget_dollars: planNewBudgetDollars.trim() ? (parseFloat(planNewBudgetDollars) || null) : null,
         };
         if (room) insert.room_name = room;
         const { data, error } = await supabase
           .from('jobs')
           .insert(insert)
-          .select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, material_est, labor_est, install_date')
+          .select('id, job_number, job_name, status, source, created_at, job_path, client_name, room_name, due_date, material_est, labor_est, labor_budget_dollars, install_date')
           .single();
         if (error) throw error;
         const created = data as Job;
@@ -4728,6 +4733,9 @@ export default function SupervisorPage() {
                             {j.labor_est != null && (
                               <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>Labor est: {j.labor_est}h</span>
                             )}
+                            {j.labor_budget_dollars != null && (
+                              <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>Labor budget: ${j.labor_budget_dollars.toLocaleString()}</span>
+                            )}
                             <SourceBadge source={j.source} />
                           </div>
                           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -4742,7 +4750,7 @@ export default function SupervisorPage() {
                             </button>
                             {editingJobId !== j.id && (
                               <button
-                                onClick={() => { setEditingJobId(j.id); setJobEditForm({ due_date: j.due_date ?? '', material_est: j.material_est != null ? String(j.material_est) : '', labor_est: j.labor_est != null ? String(j.labor_est) : '' }); }}
+                                onClick={() => { setEditingJobId(j.id); setJobEditForm({ due_date: j.due_date ?? '', material_est: j.material_est != null ? String(j.material_est) : '', labor_est: j.labor_est != null ? String(j.labor_est) : '', labor_budget_dollars: j.labor_budget_dollars != null ? String(j.labor_budget_dollars) : '' }); }}
                                 className="btn btn-ghost"
                                 style={{ padding: '6px 12px', fontSize: 12, fontWeight: 700 }}
                                 title="Edit dates & estimates"
@@ -4764,6 +4772,10 @@ export default function SupervisorPage() {
                               <div>
                                 <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Labor Est. (hours)</label>
                                 <input type="number" className="form-input" placeholder="e.g. 40" value={jobEditForm.labor_est} onChange={(e) => setJobEditForm((f) => ({ ...f, labor_est: e.target.value }))} />
+                              </div>
+                              <div>
+                                <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Labor Budget ($)</label>
+                                <input type="number" className="form-input" placeholder="e.g. 12000" value={jobEditForm.labor_budget_dollars} onChange={(e) => setJobEditForm((f) => ({ ...f, labor_budget_dollars: e.target.value }))} />
                               </div>
                               <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10 }}>
                                 <button className="btn btn-primary" style={{ opacity: savingJobEdit ? 0.5 : 1 }} disabled={savingJobEdit} onClick={() => { void handleSaveJobEstimates(j); }}>
@@ -5396,6 +5408,10 @@ export default function SupervisorPage() {
                     <div>
                       <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Labor Est. (hours) *</label>
                       <input type="number" className="form-input" placeholder="e.g. 40" value={planNewLaborEst} onChange={(e) => setPlanNewLaborEst(e.target.value)} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-mute)', display: 'block', marginBottom: 5 }}>Labor Budget ($)</label>
+                      <input type="number" className="form-input" placeholder="e.g. 12000" value={planNewBudgetDollars} onChange={(e) => setPlanNewBudgetDollars(e.target.value)} />
                     </div>
                   </div>
                 )}
