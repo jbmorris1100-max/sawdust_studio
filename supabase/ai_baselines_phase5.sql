@@ -22,6 +22,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS ai_baselines_tenant_stage_jobtype_key
 
 CREATE INDEX IF NOT EXISTS idx_ai_baselines_tenant ON ai_baselines (tenant_id);
 
+-- 1b. Tenant-scope ai_baselines' RLS. The base table (supabase/ai_tables.sql)
+--     shipped WIDE-OPEN `using (true)` policies — every shop could read/write
+--     every other shop's baselines (same cross-tenant bug class as the
+--     departments / push_subscriptions RLS gaps fixed earlier). tenant_id only
+--     exists as of this migration, so the tenant-scoped policy can only be
+--     installed here. Drop the four permissive policies, install the standard
+--     tenant_isolation pattern (engine still writes via the service role, which
+--     bypasses RLS; the supervisor UI then reads its OWN tenant only).
+DROP POLICY IF EXISTS "anon can read ai_baselines"   ON ai_baselines;
+DROP POLICY IF EXISTS "anon can insert ai_baselines" ON ai_baselines;
+DROP POLICY IF EXISTS "anon can update ai_baselines" ON ai_baselines;
+DROP POLICY IF EXISTS "anon can delete ai_baselines" ON ai_baselines;
+DROP POLICY IF EXISTS "tenant_isolation"             ON ai_baselines;
+CREATE POLICY "tenant_isolation" ON public.ai_baselines
+  USING (tenant_id = (SELECT id FROM public.tenants WHERE owner_user_id = auth.uid()));
+
 -- ─────────────────────────────────────────────────────────────
 -- 2. ai_crew_pace: per-crew-member pace per stage.
 --    Mirrors ai_baselines but keyed by worker. avg_hours here is the wall-clock
@@ -48,10 +64,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS ai_crew_pace_tenant_worker_stage_key
 CREATE INDEX IF NOT EXISTS idx_ai_crew_pace_tenant ON ai_crew_pace (tenant_id, stage);
 
 ALTER TABLE ai_crew_pace ENABLE ROW LEVEL SECURITY;
--- Match the existing ai_* tables' permissive policies: the engine writes via the
--- service role (bypasses RLS); the supervisor UI reads. Tighten alongside the
--- other ai_* tables in a later security pass.
-CREATE POLICY "anon can read ai_crew_pace"   ON ai_crew_pace FOR SELECT USING (true);
-CREATE POLICY "anon can insert ai_crew_pace" ON ai_crew_pace FOR INSERT WITH CHECK (true);
-CREATE POLICY "anon can update ai_crew_pace" ON ai_crew_pace FOR UPDATE USING (true);
-CREATE POLICY "anon can delete ai_crew_pace" ON ai_crew_pace FOR DELETE USING (true);
+-- Tenant isolation from the start (matches part_dept_events / routing_rules /
+-- sort_list / crew_active_projects). NOT the old wide-open `USING (true)` —
+-- per-worker pace is exactly the kind of data that must never leak across shops.
+-- The engine writes via the service role (bypasses RLS); the supervisor UI reads
+-- only its OWN tenant's rows.
+CREATE POLICY "tenant_isolation" ON public.ai_crew_pace
+  USING (tenant_id = (SELECT id FROM public.tenants WHERE owner_user_id = auth.uid()));
