@@ -13,8 +13,12 @@ const ts = require('typescript');
 const TENANT = 'b69e7a5e-ea31-4b2d-a413-b32cb8f0289f'; // Stewart
 const PAGE = 1000;
 
-const src = readFileSync(new URL('../lib/rework.ts', import.meta.url), 'utf8');
-const js = ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } }).outputText;
+const tx = (s) => ts.transpileModule(s, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } }).outputText;
+// Transpile the dependency (partNamePattern) too, and point rework's import at it.
+const pnp = join(tmpdir(), `pnp-${Date.now()}.mjs`);
+writeFileSync(pnp, tx(readFileSync(new URL('../lib/partNamePattern.ts', import.meta.url), 'utf8')));
+const reworkSrc = readFileSync(new URL('../lib/rework.ts', import.meta.url), 'utf8');
+const js = tx(reworkSrc).replace(/from ['"]\.\/partNamePattern['"]/, `from ${JSON.stringify(pathToFileURL(pnp).href)}`);
 const out = join(tmpdir(), `rework-engine-${Date.now()}.mjs`);
 writeFileSync(out, js);
 const { computeRework, confirmedCount } = await import(pathToFileURL(out).href);
@@ -40,7 +44,19 @@ for (const d of depts ?? []) if (d.name) deptOrder[d.name.trim().toLowerCase()] 
 const events = await pageAll('part_dept_events', 'part_id, cabinet_unit_id, job_number, from_dept, to_dept, worker_name, created_at');
 const damage = await pageAll('damage_reports', 'id, part_name, job_id, dept, report_type, created_at');
 
-const r = computeRework(events, damage, deptOrder);
+// part names + suppressions (same inputs the route feeds the engine).
+const partNames = {};
+{
+  const { data } = await db.from('parts').select('id, part_name').eq('tenant_id', TENANT);
+  for (const r of data ?? []) partNames[r.id] = r.part_name;
+}
+const suppressions = new Set();
+{
+  const { data } = await db.from('ai_rework_suppressions').select('from_dept, to_dept, part_name_pattern').eq('tenant_id', TENANT);
+  for (const s of data ?? []) suppressions.add(`${s.from_dept.trim().toLowerCase()}|${s.to_dept.trim().toLowerCase()}|${s.part_name_pattern}`);
+}
+
+const r = computeRework(events, damage, deptOrder, { partNames, suppressions });
 console.log('=== Phase 6 detector — REAL run vs Stewart ===');
 console.log('tenant_id          :', TENANT);
 console.log('departments        :', Object.keys(deptOrder).length, JSON.stringify(deptOrder));
@@ -49,6 +65,7 @@ console.log('damage_reports     :', damage.length);
 console.log('qc_fail rows       :', r.qcFail, '(auto-confirmed)');
 console.log('damage rows        :', r.damage, '(auto-confirmed)');
 console.log('backward_bounce    :', r.backwardBounce, '(pending — not counted)');
+console.log('suppressedByRule   :', r.suppressedByRule, '(marked normal — not flagged)');
 console.log('bounce events (UI) :', r.bounceEvents);
 console.log('skippedUnknownDept :', r.skippedUnknownDept);
 console.log('confirmedCount     :', confirmedCount(r.rework), '(the rework metric)');

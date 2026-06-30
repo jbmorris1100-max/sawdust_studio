@@ -47,6 +47,8 @@
 //   contributes 1 to the per-part count, not N — a faithful limit of the source.
 // ============================================================================
 
+import { patternFromPartName } from './partNamePattern';
+
 export type DeptOrder = Record<string, number>; // lowercased dept name -> sort_order
 
 export type PartDeptEvent = {
@@ -79,9 +81,16 @@ export type ReworkRow = {
   source: ReworkSource;
   from_dept: string | null;
   to_dept: string | null;
-  occurred_at: string;   // ISO
-  status: ReworkStatus;  // 'confirmed' for qc_fail/damage, 'pending' for backward_bounce
+  occurred_at: string;        // ISO
+  status: ReworkStatus;       // 'confirmed' for qc_fail/damage, 'pending' for backward_bounce
+  part_name_pattern: string | null; // normalized part-name pattern (suppression key); null for damage
 };
+
+// "Normal, don't flag again" suppression: a backward_bounce matching
+// (from_dept, to_dept, part_name_pattern) is not flagged again. Build the lookup
+// key with suppressionKey so the UI write and the detector check always agree.
+export const suppressionKey = (fromDept: string, toDept: string, pattern: string) =>
+  `${fromDept.trim().toLowerCase()}|${toDept.trim().toLowerCase()}|${pattern}`;
 
 export type ReworkResult = {
   rework: ReworkRow[];
@@ -90,6 +99,10 @@ export type ReworkResult = {
   damage: number;          // damage rows (auto-confirmed)
   backwardBounce: number;  // per-part ambiguous rows (pending)
   bounceEvents: number;    // distinct bounceEventIds (UI cards)
+  // Ambiguous backward moves NOT flagged because a supervisor previously marked
+  // that (from->to, part pattern) "Normal, don't flag again". qc_fail/damage are
+  // never suppressed (they're real rework).
+  suppressedByRule: number;
   // part_dept_events rows we could not classify because a dept was missing from the
   // departments map (unknown/custom dept, or terminal 'complete') — surfaced so a
   // misconfigured pipeline is visible rather than silently dropping signal.
@@ -110,10 +123,16 @@ export function computeRework(
   events: PartDeptEvent[],
   damageReports: DamageReport[],
   deptOrder: DeptOrder,
+  opts: {
+    partNames?: Record<string, string | null>; // part_id -> part name (for the suppression pattern)
+    suppressions?: Set<string>;                 // keys from suppressionKey()
+  } = {},
 ): ReworkResult {
+  const partNames = opts.partNames ?? {};
+  const suppressions = opts.suppressions ?? new Set<string>();
   const rework: ReworkRow[] = [];
   const eventIds = new Set<string>();
-  let qcFail = 0, backwardBounce = 0, skippedUnknownDept = 0;
+  let qcFail = 0, backwardBounce = 0, suppressedByRule = 0, skippedUnknownDept = 0;
 
   // ── part_dept_events backward moves ────────────────────────────────────────
   for (const e of events) {
@@ -126,6 +145,15 @@ export function computeRework(
     if (!back) continue;                   // forward / sideways — not rework
 
     const isQc = lc(from) === 'qc';
+    const pattern = patternFromPartName(partNames[e.part_id] ?? '');
+
+    // Suppression applies ONLY to ambiguous backward bounces — a QC fail is real
+    // rework and is never silenced by "Normal, don't flag again".
+    if (!isQc && suppressions.has(suppressionKey(from, to, pattern))) {
+      suppressedByRule++;
+      continue;
+    }
+
     const bounceEventId = `${e.cabinet_unit_id ?? 'nocab'}|${lc(from)}>${lc(to)}|${e.created_at}`;
     eventIds.add(bounceEventId);
     rework.push({
@@ -138,6 +166,7 @@ export function computeRework(
       to_dept: to,
       occurred_at: e.created_at,
       status: isQc ? 'confirmed' : 'pending',
+      part_name_pattern: pattern || null,
     });
     if (isQc) qcFail++; else backwardBounce++;
   }
@@ -159,6 +188,7 @@ export function computeRework(
       to_dept: d.dept ?? null,
       occurred_at: d.created_at,
       status: 'confirmed',
+      part_name_pattern: null, // damage has no part FK to derive a pattern from
     });
     damage++;
   }
@@ -169,6 +199,7 @@ export function computeRework(
     damage,
     backwardBounce,
     bounceEvents: eventIds.size,
+    suppressedByRule,
     skippedUnknownDept,
   };
 }

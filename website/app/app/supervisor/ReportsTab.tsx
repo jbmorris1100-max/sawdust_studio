@@ -1,6 +1,7 @@
 'use client';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
+import ReworkPanel from './ReworkPanel';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -57,7 +58,7 @@ type NeedRow = {
 
 type JobRow = { id: string; job_number: string; job_name: string | null; labor_est: number | null; material_est: number | null; labor_budget_dollars: number | null };
 type SortDir = 'asc' | 'desc';
-type ReportKey = 'daily' | 'job' | 'weekly' | 'damage' | 'inventory' | 'parts';
+type ReportKey = 'daily' | 'job' | 'weekly' | 'damage' | 'inventory' | 'parts' | 'rework';
 
 interface Props {
   tenantId: string;
@@ -1650,6 +1651,7 @@ const REPORT_NAV: { key: ReportKey; label: string }[] = [
   { key: 'job',       label: 'Job Cost'        },
   { key: 'weekly',    label: 'Weekly Summary'  },
   { key: 'damage',    label: 'Damage Log'      },
+  { key: 'rework',    label: 'Rework'          },
   { key: 'inventory', label: 'Inventory'       },
   { key: 'parts',     label: 'Parts & QC'      },
 ];
@@ -1685,6 +1687,7 @@ export default function ReportsTab({ tenantId, showToast, onGoToCrew }: Props) {
       {active === 'job'       && <JobCostReport        tenantId={tenantId} showToast={showToast} onGoToCrew={onGoToCrew} />}
       {active === 'weekly'    && <WeeklySummaryReport  tenantId={tenantId} showToast={showToast} />}
       {active === 'damage'    && <DamageReportLog      tenantId={tenantId} showToast={showToast} />}
+      {active === 'rework'    && <ReworkPanel          tenantId={tenantId} showToast={showToast} />}
       {active === 'inventory' && <InventoryReport      tenantId={tenantId} showToast={showToast} />}
       {active === 'parts'     && <PartsQCReport        tenantId={tenantId} showToast={showToast} />}
     </div>
