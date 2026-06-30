@@ -11,7 +11,8 @@ import { test, expect } from '@playwright/test';
  * the default week picker covers. NO automatic teardown — seeded rows are left for
  * a human-reviewed cleanup (scripts/cleanup-weekly-test.mjs).
  *
- * Required env: TEST_BASE_URL (preview), TEST_VERCEL_SHARE, TEST_LOGIN_PASSWORD,
+ * Required env: TEST_BASE_URL (preview), VERCEL_AUTOMATION_BYPASS_SECRET (header
+ * bypass via playwright.config.ts), TEST_LOGIN_PASSWORD,
  * TEST_SUPERVISOR_PIN, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
  */
 
@@ -21,7 +22,6 @@ const JOB_B = 'E2E-WK-B';
 
 const env = {
   baseURL: process.env.TEST_BASE_URL ?? '',
-  share: process.env.TEST_VERCEL_SHARE ?? '',
   email: process.env.TEST_LOGIN_EMAIL ?? 'user@inlineiq.app',
   password: process.env.TEST_LOGIN_PASSWORD ?? '',
   pin: process.env.TEST_SUPERVISOR_PIN ?? '',
@@ -43,7 +43,8 @@ test.describe('Supervisor · Weekly Summary', () => {
   test.beforeAll(async () => {
     expect(env.baseURL, 'TEST_BASE_URL must be the PREVIEW url').not.toBe('');
     expect(env.baseURL, 'refusing to run against production').not.toContain('inlineiq.app');
-    const missing = (['share', 'password', 'pin', 'supaUrl', 'serviceKey'] as const).filter((k) => !env[k]);
+    expect(process.env.VERCEL_AUTOMATION_BYPASS_SECRET, 'VERCEL_AUTOMATION_BYPASS_SECRET must be set (preview protection bypass)').toBeTruthy();
+    const missing = (['password', 'pin', 'supaUrl', 'serviceKey'] as const).filter((k) => !env[k]);
     expect(missing, `missing env: ${missing.join(', ')}`).toEqual([]);
 
     // Viz 1 source: completed cabinets (output) — 2 for JOB_A, 1 for JOB_B, today.
@@ -65,7 +66,7 @@ test.describe('Supervisor · Weekly Summary', () => {
   });
 
   test('renders per-job legend + both grouped charts; excludes damage/inventory', async ({ page }) => {
-    await page.goto(`/?_vercel_share=${env.share}`, { waitUntil: 'domcontentloaded' });
+    // Preview protection bypassed via the automation-bypass header (playwright.config.ts).
     await page.goto('/login');
     await page.locator('#email').fill(env.email);
     await page.locator('#password').fill(env.password);

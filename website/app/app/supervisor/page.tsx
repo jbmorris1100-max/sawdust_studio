@@ -4272,7 +4272,7 @@ export default function SupervisorPage() {
                         </div>
                       </button>
                       {isExpanded && tenant && (
-                        <JobDrillDown tenantId={tenant.id} jobNumber={p.jobNumber} showToast={showToast} />
+                        <JobDrillDown tenantId={tenant.id} jobNumber={p.jobNumber} showToast={showToast} aiMode={aiMode} />
                       )}
                       </div>
                     );
