@@ -4,8 +4,16 @@ import { defineConfig, devices } from '@playwright/test';
 // By default it runs against the live site; override with TEST_BASE_URL to point
 // at a preview deployment or a local `npm run dev` instance.
 //
+// PREVIEW PROTECTION BYPASS: preview deployments are behind Vercel Deployment
+// Protection. Instead of minting a per-run _vercel_share link, set the project's
+// "Protection Bypass for Automation" secret as VERCEL_AUTOMATION_BYPASS_SECRET
+// (in .env.e2e). We send it as a header on EVERY request below, so every spec is
+// bypassed automatically — no per-spec goto('/?_vercel_share=…') needed.
+//
 // SAFETY: specs assert they are pointed at the TEST tenant before mutating data
 // (see tests/sort-list.spec.ts). Never run these against a production tenant.
+const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+
 export default defineConfig({
   testDir: './tests',
   // One worker — these specs mutate shared backend state on the test tenant, so
@@ -22,6 +30,12 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
     video: 'retain-on-failure',
+    // Vercel automation bypass header on every request (set-cookie too, so any
+    // client-side navigation that misses the header still rides the cookie). Empty
+    // when the secret is unset (e.g. local dev / inlineiq.app, which need no bypass).
+    extraHTTPHeaders: bypass
+      ? { 'x-vercel-protection-bypass': bypass, 'x-vercel-set-bypass-cookie': 'true' }
+      : {},
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },

@@ -78,6 +78,7 @@ test.describe('Crew · break auto-pause / resume', () => {
   test.beforeAll(() => {
     expect(env.baseURL, 'TEST_BASE_URL must be set to the PREVIEW url').not.toBe('');
     expect(env.baseURL, 'refusing to run against production').not.toContain('inlineiq.app');
+    expect(process.env.VERCEL_AUTOMATION_BYPASS_SECRET, 'VERCEL_AUTOMATION_BYPASS_SECRET must be set (preview protection bypass)').toBeTruthy();
     const missing = (['password', 'supaUrl', 'serviceKey'] as const).filter((k) => !env[k]);
     expect(missing, `missing env: ${missing.join(', ')}`).toEqual([]);
   });
@@ -86,13 +87,10 @@ test.describe('Crew · break auto-pause / resume', () => {
   test.afterAll(async () => { await cleanup(); });
 
   test('break freezes accumulated_seconds; resume continues without reset', async ({ page }) => {
-    // ── 0a. Prime the Vercel Deployment-Protection bypass cookie ───────────────
-    // The preview is behind Vercel Authentication; visiting the _vercel_share
-    // link once sets a JWT cookie that authorizes the rest of the run.
-    const share = process.env.TEST_VERCEL_SHARE;
-    if (share) {
-      await page.goto(`/?_vercel_share=${share}`, { waitUntil: 'domcontentloaded' });
-    }
+    // ── 0a. Preview protection bypass ─────────────────────────────────────────
+    // The preview is behind Vercel Deployment Protection; the automation-bypass
+    // secret is sent as a header on every request from playwright.config.ts
+    // (VERCEL_AUTOMATION_BYPASS_SECRET), so no _vercel_share navigation is needed.
 
     // ── 0. Seed the active build (real unit) — the precondition ────────────────
     await cleanup(); // clear any stale row for this worker

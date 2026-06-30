@@ -23,7 +23,8 @@ import { test, expect } from '@playwright/test';
  *       Crew). All numbers come from the seeded DB rows — nothing fabricated.
  *     - learn mode: NO auto-drill panel; the manual breakdown still renders.
  *
- * Required env: TEST_BASE_URL (preview), TEST_VERCEL_SHARE, TEST_LOGIN_PASSWORD,
+ * Required env: TEST_BASE_URL (preview), VERCEL_AUTOMATION_BYPASS_SECRET (preview
+ * protection bypass — applied as a header in playwright.config.ts), TEST_LOGIN_PASSWORD,
  * TEST_SUPERVISOR_PIN, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
  */
 
@@ -34,7 +35,6 @@ const BASELINE_MARKER = 'E2E-DRILL'; // ai_baselines.job_type marker (real rows 
 
 const env = {
   baseURL: process.env.TEST_BASE_URL ?? '',
-  share: process.env.TEST_VERCEL_SHARE ?? '',
   email: process.env.TEST_LOGIN_EMAIL ?? 'user@inlineiq.app',
   password: process.env.TEST_LOGIN_PASSWORD ?? '',
   pin: process.env.TEST_SUPERVISOR_PIN ?? '',
@@ -60,7 +60,8 @@ function setMode(mode: 'learn' | 'assist' | 'autonomous') {
 }
 
 async function login(page: import('@playwright/test').Page) {
-  await page.goto(`/?_vercel_share=${env.share}`, { waitUntil: 'domcontentloaded' });
+  // Preview protection is bypassed via the automation-bypass header set globally
+  // in playwright.config.ts — no per-run _vercel_share navigation needed.
   await page.goto('/login');
   await page.locator('#email').fill(env.email);
   await page.locator('#password').fill(env.password);
@@ -78,7 +79,8 @@ test.describe('Supervisor · Job drill-down (Phase 8, SYNTHETIC auto-drill)', ()
   test.beforeAll(async () => {
     expect(env.baseURL, 'TEST_BASE_URL must be the PREVIEW url').not.toBe('');
     expect(env.baseURL, 'refusing to run against production').not.toContain('inlineiq.app');
-    const missing = (['share', 'password', 'pin', 'supaUrl', 'serviceKey'] as const).filter((k) => !env[k]);
+    expect(process.env.VERCEL_AUTOMATION_BYPASS_SECRET, 'VERCEL_AUTOMATION_BYPASS_SECRET must be set (preview protection bypass)').toBeTruthy();
+    const missing = (['password', 'pin', 'supaUrl', 'serviceKey'] as const).filter((k) => !env[k]);
     expect(missing, `missing env: ${missing.join(', ')}`).toEqual([]);
 
     // 1. SYNTHETIC baseline: assembly avg 2h, sample_count 10 (≥ MIN_SAMPLES).

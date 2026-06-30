@@ -14,7 +14,7 @@ import { test, expect } from '@playwright/test';
  *
  * Required env (website/.env.local + .env.e2e + CLI):
  *   TEST_BASE_URL              preview url (a guard refuses production)
- *   TEST_VERCEL_SHARE          Vercel protection-bypass token (preview is gated)
+ *   VERCEL_AUTOMATION_BYPASS_SECRET  preview protection bypass (sent as a header in playwright.config.ts)
  *   TEST_LOGIN_PASSWORD, TEST_SUPERVISOR_PIN
  *   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
  */
@@ -24,7 +24,6 @@ const REAL_CABINET = '73b37e18-fbff-4b42-853b-a7df143eed93'; // a real Stewart c
 
 const env = {
   baseURL: process.env.TEST_BASE_URL ?? '',
-  share: process.env.TEST_VERCEL_SHARE ?? '',
   email: process.env.TEST_LOGIN_EMAIL ?? 'user@inlineiq.app',
   password: process.env.TEST_LOGIN_PASSWORD ?? '',
   pin: process.env.TEST_SUPERVISOR_PIN ?? '',
@@ -67,7 +66,8 @@ test.describe('Supervisor · Rework confirm/correct', () => {
   test.beforeAll(async () => {
     expect(env.baseURL, 'TEST_BASE_URL must be set to the PREVIEW url').not.toBe('');
     expect(env.baseURL, 'refusing to run against production').not.toContain('inlineiq.app');
-    const missing = (['share', 'password', 'pin', 'supaUrl', 'serviceKey'] as const).filter((k) => !env[k]);
+    expect(process.env.VERCEL_AUTOMATION_BYPASS_SECRET, 'VERCEL_AUTOMATION_BYPASS_SECRET must be set (preview protection bypass)').toBeTruthy();
+    const missing = (['password', 'pin', 'supaUrl', 'serviceKey'] as const).filter((k) => !env[k]);
     expect(missing, `missing env: ${missing.join(', ')}`).toEqual([]);
     alphaPartId = await seedPart(ALPHA);
     betaPartId = await seedPart(BETA);
@@ -76,9 +76,7 @@ test.describe('Supervisor · Rework confirm/correct', () => {
   });
 
   test('Normal suppresses; Log it writes a supervisor damage row', async ({ page }) => {
-    // 0. Prime the Vercel protection-bypass cookie.
-    await page.goto(`/?_vercel_share=${env.share}`, { waitUntil: 'domcontentloaded' });
-
+    // 0. Preview protection bypassed via the automation-bypass header (playwright.config.ts).
     // 1. Login + supervisor PIN.
     await page.goto('/login');
     await page.locator('#email').fill(env.email);
