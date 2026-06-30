@@ -3,6 +3,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
   computeRework,
   confirmedCount,
+  suppressionKey,
   type PartDeptEvent,
   type DamageReport,
   type DeptOrder,
@@ -68,6 +69,33 @@ async function fetchAllEvents(db: SupabaseClient, tenantId: string): Promise<Par
   return all;
 }
 
+// part_id -> part name, for the suppression pattern (part_dept_events has no name).
+async function fetchPartNames(db: SupabaseClient, tenantId: string): Promise<Record<string, string | null>> {
+  const map: Record<string, string | null> = {};
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await db
+      .from('parts').select('id, part_name').eq('tenant_id', tenantId).range(from, from + PAGE - 1);
+    if (error) throw error;
+    const rows = (data as { id: string; part_name: string | null }[] | null) ?? [];
+    for (const r of rows) map[r.id] = r.part_name;
+    if (rows.length < PAGE) break;
+  }
+  return map;
+}
+
+// Suppression keys ("Normal, don't flag again"). Missing table (pre-migration) ->
+// empty set, so detection still runs (nothing suppressed) rather than crashing.
+async function fetchSuppressions(db: SupabaseClient, tenantId: string): Promise<Set<string>> {
+  const set = new Set<string>();
+  const { data, error } = await db
+    .from('ai_rework_suppressions').select('from_dept, to_dept, part_name_pattern').eq('tenant_id', tenantId);
+  if (error) return set; // table not yet applied — treat as no suppressions
+  for (const s of (data as { from_dept: string; to_dept: string; part_name_pattern: string }[] | null) ?? []) {
+    set.add(suppressionKey(s.from_dept, s.to_dept, s.part_name_pattern));
+  }
+  return set;
+}
+
 async function fetchDamage(db: SupabaseClient, tenantId: string): Promise<DamageReport[]> {
   const all: DamageReport[] = [];
   for (let from = 0; ; from += PAGE) {
@@ -117,6 +145,7 @@ async function persist(
         to_dept: r.to_dept,
         occurred_at: r.occurred_at,
         status: r.status,
+        part_name_pattern: r.part_name_pattern,
         detected_at: calc,
       }));
 
@@ -144,17 +173,20 @@ export async function POST(req: Request) {
   if (!tenantId) return NextResponse.json({ error: 'tenantId required' }, { status: 400 });
 
   let deptOrder: DeptOrder, events: PartDeptEvent[], damage: DamageReport[];
+  let partNames: Record<string, string | null>, suppressions: Set<string>;
   try {
-    [deptOrder, events, damage] = await Promise.all([
+    [deptOrder, events, damage, partNames, suppressions] = await Promise.all([
       fetchDeptOrder(db, tenantId),
       fetchAllEvents(db, tenantId),
       fetchDamage(db, tenantId),
+      fetchPartNames(db, tenantId),
+      fetchSuppressions(db, tenantId),
     ]);
   } catch (e) {
     return NextResponse.json({ error: `read failed: ${e instanceof Error ? e.message : String(e)}` }, { status: 500 });
   }
 
-  const result = computeRework(events, damage, deptOrder);
+  const result = computeRework(events, damage, deptOrder, { partNames, suppressions });
   const calc = new Date().toISOString();
 
   const summary = {
@@ -169,6 +201,7 @@ export async function POST(req: Request) {
     qcFail: result.qcFail,
     damage: result.damage,
     backwardBouncePending: result.backwardBounce,
+    suppressedByRule: result.suppressedByRule,    // not flagged — supervisor said "normal"
     bounceEvents: result.bounceEvents,            // distinct UI cards
     confirmedCount: confirmedCount(result.rework), // the rework metric (per-part, confirmed only)
     skippedUnknownDept: result.skippedUnknownDept,

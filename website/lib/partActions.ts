@@ -29,19 +29,12 @@ export function deptDisplay(dept: string | null | undefined): string {
 }
 
 // ── Routing pattern learning ──────────────────────────────────────────────────
-// Derive a reusable pattern from a part name: lowercase, drop dimensions and
-// punctuation, keep the meaningful words. "Base 24 Door 23.5x30" → "base door".
-const STOP_WORDS = new Set(['the', 'and', 'for', 'with', 'qty', 'pcs', 'pc', 'x']);
-export function patternFromPartName(name: string): string {
-  const cleaned = (name || '')
-    .toLowerCase()
-    .replace(/[0-9]+(\.[0-9]+)?/g, ' ')   // strip dimension numbers
-    .replace(/["'#x×]/g, ' ')             // strip quote/× separators
-    .replace(/[^a-z\s]/g, ' ');           // strip remaining punctuation
-  const words = cleaned.split(/\s+/).filter((w) => w.length > 2 && !STOP_WORDS.has(w));
-  const pattern = words.slice(0, 4).join(' ').trim();
-  return pattern || (name || '').trim().toLowerCase().slice(0, 40);
-}
+// patternFromPartName moved to lib/partNamePattern so the server-side rework
+// detector can share the exact normalization without importing this (browser)
+// module. Imported for local use here and re-exported so existing import sites
+// (which import it from partActions) keep working unchanged.
+import { patternFromPartName } from './partNamePattern';
+export { patternFromPartName };
 
 // Upsert one confirmed push into part_routing_patterns and recompute the
 // confidence for every destination sharing this (pattern, from_dept).
