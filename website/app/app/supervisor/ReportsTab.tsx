@@ -1172,11 +1172,69 @@ function JobCostReport({ tenantId, showToast, onGoToCrew }: Props) {
 
 // ── 3. Weekly Summary ─────────────────────────────────────────────────────────
 
+// One stable color per job, assigned in week-hours order so the same job keeps its
+// color across both Weekly Summary charts.
+const JOB_PALETTE = ['#2DE1C9', '#A78BFA', '#FBBF24', '#F87171', '#5EEAD4', '#60A5FA', '#F472B6', '#34D399', '#FB923C', '#C084FC'];
+
+type JobSeries = { key: string; label: string; color: string };
+
+// Grouped (clustered) bar chart: one column per category (day or dept), one bar per
+// job within it — so jobs sit side by side for direct comparison. Generic over the
+// two Weekly Summary views; returns null when every value is zero (callers show an
+// empty state instead).
+function GroupedBarChart({ categories, series, value, fmt, height = 100, testId }: {
+  categories: { key: string; label: string }[];
+  series: JobSeries[];
+  value: (catKey: string, seriesKey: string) => number;
+  fmt: (n: number) => string;
+  height?: number;
+  testId?: string;
+}) {
+  let max = 0;
+  for (const c of categories) for (const s of series) max = Math.max(max, value(c.key, s.key));
+  if (max <= 0) return null;
+  const barW = Math.max(5, Math.min(16, Math.floor(64 / Math.max(1, series.length))));
+  return (
+    <div data-testid={testId} style={{ display: 'flex', gap: 10, alignItems: 'flex-end', overflowX: 'auto', paddingBottom: 4 }}>
+      {categories.map((c) => (
+        <div key={c.key} style={{ flex: '1 0 auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height, justifyContent: 'center' }}>
+            {series.map((s) => {
+              const v = value(c.key, s.key);
+              const h = v > 0 ? Math.max(3, (v / max) * height) : 2;
+              return <div key={s.key} title={`${s.label} · ${c.label}: ${fmt(v)}`}
+                style={{ width: barW, height: h, background: s.color, opacity: v > 0 ? 1 : 0.12, borderRadius: '2px 2px 0 0', transition: 'height 0.3s' }} />;
+            })}
+          </div>
+          <span style={{ fontSize: 10, color: 'var(--ink-mute)', textAlign: 'center', textTransform: 'capitalize', whiteSpace: 'nowrap' }}>{c.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Shared job color legend (with this week's cabinets + hours per job).
+function JobLegend({ jobs, stats }: { jobs: JobSeries[]; stats: Record<string, { cab: number; hrs: number }> }) {
+  if (jobs.length === 0) return null;
+  return (
+    <div data-testid="weekly-legend" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
+      {jobs.map((j) => (
+        <div key={j.key} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <span style={{ width: 10, height: 10, borderRadius: 3, background: j.color, flexShrink: 0 }} />
+          <span style={{ fontSize: 12.5, color: 'var(--ink-dim)', fontWeight: 600 }}>{j.label}</span>
+          <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
+            {stats[j.key]?.cab ?? 0} cab · {toHHMM(stats[j.key]?.hrs ?? 0)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function WeeklySummaryReport({ tenantId, showToast }: Props) {
   const [wkStart, setWkStart] = useState(() => weekStart());
   const [clock,   setClock]   = useState<ClockEntry[]>([]);
-  const [damage,  setDamage]  = useState<DamageRow[]>([]);
-  const [needs,   setNeeds]   = useState<NeedRow[]>([]);
+  const [done,    setDone]    = useState<{ job_number: string | null; completed_at: string | null }[]>([]);
   const [loading, setLoading] = useState(false);
 
   const wkEnd = useMemo(() => addDays(wkStart, 6), [wkStart]);
@@ -1186,18 +1244,19 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
     let cancelled = false;
     (async () => {
       try {
-        const [c, d, n] = await Promise.all([
+        const [c, cab] = await Promise.all([
           supabase.from('time_clock').select('id, worker_name, dept, clock_in, clock_out, date, total_hours, notes, job_number, status')
             .eq('tenant_id', tenantId).gte('date', wkStart).lte('date', wkEnd).order('clock_in'),
-          supabase.from('damage_reports').select('id, part_name, dept, notes, photo_url, status, resolution_type, resolution_notes, resolved_by, resolution_cost, resolved_at, created_at')
-            .eq('tenant_id', tenantId),
-          supabase.from('inventory_needs').select('id, item, dept, job_number, qty, status, created_at')
-            .eq('tenant_id', tenantId),
+          // Viz 1 = OUTPUT: cabinets completed per job per day. Damage reports and
+          // inventory requests are intentionally NOT loaded here — they each have a
+          // dedicated tab (Damage Log / Inventory) and don't belong in this summary.
+          supabase.from('cabinet_units').select('job_number, completed_at')
+            .eq('tenant_id', tenantId)
+            .gte('completed_at', `${wkStart}T00:00:00`).lte('completed_at', `${wkEnd}T23:59:59`),
         ]);
         if (cancelled) return;
         setClock((c.data as ClockEntry[]) ?? []);
-        setDamage(((d.data as DamageRow[]) ?? []).filter((r) => !['resolved', 'closed'].includes((r.status ?? '').toLowerCase())));
-        setNeeds(((n.data as NeedRow[]) ?? []).filter((r) => !['received', 'cancelled'].includes((r.status ?? '').toLowerCase())));
+        setDone((cab.data as { job_number: string | null; completed_at: string | null }[]) ?? []);
       } catch (err: unknown) {
         if (!cancelled) showToast(err instanceof Error ? err.message : 'Load failed', true);
       } finally {
@@ -1207,30 +1266,54 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
     return () => { cancelled = true; };
   }, [tenantId, wkStart, wkEnd, showToast]);
 
-  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => {
+  // Day columns (viz 1 x-axis).
+  const dayCats = useMemo(() => Array.from({ length: 7 }, (_, i) => {
     const iso = addDays(wkStart, i);
-    const ents = clock.filter((e) => e.date === iso);
-    const hours = ents.reduce((s, e) => s + (e.total_hours ?? calcHours(e.clock_in, e.clock_out)), 0);
-    return {
-      iso,
-      label: new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
-      short: new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' }),
-      workers: new Set(ents.map((e) => e.worker_name)).size,
-      hours,
-      jobs: new Set(ents.filter((e) => e.job_number).map((e) => e.job_number)).size,
-    };
-  }), [wkStart, clock]);
+    return { key: iso, label: new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' }) };
+  }), [wkStart]);
 
-  const maxDayHrs = Math.max(1, ...days.map((d) => d.hours));
-  const weekTotal = days.reduce((s, d) => s + d.hours, 0);
+  // Jobs active this week (completions ∪ labor), ordered by week hours so color
+  // assignment is stable and the busiest jobs get the leading palette colors.
+  const jobStats = useMemo(() => {
+    const stats: Record<string, { cab: number; hrs: number }> = {};
+    for (const d of done) if (d.job_number) (stats[d.job_number] ??= { cab: 0, hrs: 0 }).cab += 1;
+    for (const e of clock) if (e.job_number) (stats[e.job_number] ??= { cab: 0, hrs: 0 }).hrs += e.total_hours ?? calcHours(e.clock_in, e.clock_out);
+    return stats;
+  }, [done, clock]);
+  const jobs: JobSeries[] = useMemo(() =>
+    Object.keys(jobStats)
+      .sort((a, b) => (jobStats[b].hrs - jobStats[a].hrs) || a.localeCompare(b))
+      .map((job, i) => ({ key: job, label: `Job ${job}`, color: JOB_PALETTE[i % JOB_PALETTE.length] })),
+  [jobStats]);
 
-  const jobHrs: Record<string, number> = {};
-  clock.forEach((e) => { if (e.job_number) jobHrs[e.job_number] = (jobHrs[e.job_number] ?? 0) + (e.total_hours ?? calcHours(e.clock_in, e.clock_out)); });
-  const topJobs = Object.entries(jobHrs).sort((a, b) => b[1] - a[1]).slice(0, 5);
-  const maxJH = topJobs[0]?.[1] ?? 1;
+  // Viz 1: cabinets completed by (day, job).
+  const doneByDayJob = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const d of done) {
+      if (!d.completed_at || !d.job_number) continue;
+      m.set(`${d.completed_at.slice(0, 10)}|${d.job_number}`, (m.get(`${d.completed_at.slice(0, 10)}|${d.job_number}`) ?? 0) + 1);
+    }
+    return m;
+  }, [done]);
+
+  // Viz 2: hours by (dept, job).
+  const deptCats = useMemo(() =>
+    [...new Set(clock.map((e) => e.dept).filter(Boolean) as string[])].sort().map((d) => ({ key: d, label: d })),
+  [clock]);
+  const hoursByDeptJob = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const e of clock) {
+      if (!e.dept || !e.job_number) continue;
+      m.set(`${e.dept}|${e.job_number}`, (m.get(`${e.dept}|${e.job_number}`) ?? 0) + (e.total_hours ?? calcHours(e.clock_in, e.clock_out)));
+    }
+    return m;
+  }, [clock]);
+
+  const weekHours = useMemo(() => clock.reduce((s, e) => s + (e.total_hours ?? calcHours(e.clock_in, e.clock_out)), 0), [clock]);
+  const weekCabs = done.length;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div data-testid="weekly-summary" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <label style={{ fontSize: 12, color: 'var(--ink-mute)', fontWeight: 600 }}>Week of</label>
@@ -1240,87 +1323,41 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
           — {new Date(wkEnd + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
         </span>
         <ExportBtn onClick={() => downloadCSV(`weekly-summary_${wkStart}.csv`,
-          ['Day', 'Crew Count', 'Total Hours', 'Jobs Active'],
-          days.map((d) => [d.label, d.workers, d.hours.toFixed(2), d.jobs]))} />
+          ['Job', 'Cabinets Completed', 'Total Hours'],
+          jobs.map((j) => [j.label, String(jobStats[j.key]?.cab ?? 0), toHHMM(jobStats[j.key]?.hrs ?? 0)]))} />
       </div>
 
-      {/* Day bars */}
-      <div className="portal-card" style={{ padding: '16px 20px' }}>
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 16 }}>
-          Daily Breakdown — {toHHMM(weekTotal)} total
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', height: 110 }}>
-          {days.map((d) => {
-            const pct = d.hours / maxDayHrs;
-            const barH = Math.max(loading ? 4 : 0, pct * 80);
-            const color = d.hours === 0 ? 'rgba(255,255,255,0.06)' : pct >= 0.75 ? '#34D399' : pct >= 0.4 ? '#FBBF24' : '#F87171';
-            return (
-              <div key={d.iso} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, height: '100%', justifyContent: 'flex-end' }}>
-                <span style={{ fontSize: 9, color: 'var(--ink-mute)' }}>{d.hours > 0 ? toHHMM(d.hours) : ''}</span>
-                <div title={`${d.label}: ${d.workers} crew, ${toHHMM(d.hours)}, ${d.jobs} jobs`}
-                  style={{ width: '100%', height: barH, background: color, borderRadius: '3px 3px 0 0', transition: 'height 0.3s' }} />
-                <span style={{ fontSize: 9, color: 'var(--ink-mute)', textAlign: 'center' }}>{d.short}</span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Top jobs */}
-      <div className="portal-card" style={{ padding: '16px 20px' }}>
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 14 }}>Top Jobs This Week</div>
-        {topJobs.length === 0
-          ? <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No jobs / projects logged this week.</div>
-          : topJobs.map(([job, hrs]) => (
-            <div key={job} style={{ marginBottom: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ fontSize: 13, color: 'var(--ink-dim)', fontWeight: 600 }}>Job {job}</span>
-                <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>{toHHMM(hrs)}</span>
-              </div>
-              <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.06)' }}>
-                <div style={{ height: '100%', width: `${(hrs / maxJH) * 100}%`, background: '#2DE1C9', borderRadius: 4 }} />
-              </div>
-            </div>
-          ))}
-      </div>
-
-      {/* Department time per job — stacked dept-hours bar for each active job */}
-      {topJobs.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)' }}>Department Time by Job</div>
-          {topJobs.map(([job]) => {
-            const jobEntries = clock.filter((e) => e.job_number === job);
-            if (jobEntries.length === 0) return null;
-            return (
-              <div key={job}>
-                <div style={{ fontSize: 13, color: 'var(--ink-dim)', fontWeight: 700, marginBottom: 6 }}>Job {job}</div>
-                <DeptTimeBar entries={jobEntries} />
-              </div>
-            );
-          })}
+      {/* Shared per-job color legend (drives both charts below) */}
+      {jobs.length > 0 && (
+        <div className="portal-card" style={{ padding: '12px 16px' }}>
+          <JobLegend jobs={jobs} stats={jobStats} />
         </div>
       )}
 
-      {/* Open issues */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12 }}>
-        {[
-          { title: 'Open Damage', items: damage.slice(0, 6), color: '#F87171', getLabel: (r: DamageRow) => r.part_name, getStatus: (r: DamageRow) => r.status },
-          { title: 'Pending Inventory', items: needs.slice(0, 6), color: '#FBBF24', getLabel: (r: NeedRow) => r.item, getStatus: (r: NeedRow) => r.status },
-        ].map(({ title, items, color, getLabel, getStatus }) => (
-          <div key={title} className="portal-card" style={{ padding: '16px 20px' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color, marginBottom: 10 }}>
-              {title} ({items.length})
-            </div>
-            {items.length === 0
-              ? <div style={{ fontSize: 12, color: '#34D399', display: 'flex', alignItems: 'center', gap: 5 }}>All clear <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
-              : items.map((r) => (
-                <div key={(r as { id: string }).id} style={{ fontSize: 12, color: 'var(--ink-dim)', padding: '5px 0', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span>{getLabel(r as never)}</span>
-                  <StatusPill status={getStatus(r as never)} />
-                </div>
-              ))}
-          </div>
-        ))}
+      {/* Viz 1 — Daily OUTPUT (cabinets completed) per job, side by side across the week */}
+      <div className="portal-card" style={{ padding: '16px 20px' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 16 }}>
+          Daily Output by Job — {weekCabs} cabinet{weekCabs === 1 ? '' : 's'} this week
+        </div>
+        {loading
+          ? <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
+          : weekCabs === 0
+          ? <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No cabinets completed this week.</div>
+          : <GroupedBarChart testId="weekly-viz1" categories={dayCats} series={jobs} fmt={(n) => `${n} cab`}
+              value={(day, job) => doneByDayJob.get(`${day}|${job}`) ?? 0} />}
+      </div>
+
+      {/* Viz 2 — Department TIME-SPENT, jobs compared within each dept (variance driver) */}
+      <div className="portal-card" style={{ padding: '16px 20px' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-mute)', marginBottom: 16 }}>
+          Department Time by Job — {toHHMM(weekHours)} this week
+        </div>
+        {loading
+          ? <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>Loading…</div>
+          : weekHours === 0
+          ? <div style={{ fontSize: 13, color: 'var(--ink-mute)' }}>No labor logged this week.</div>
+          : <GroupedBarChart testId="weekly-viz2" categories={deptCats} series={jobs} fmt={(n) => toHHMM(n)}
+              value={(dept, job) => hoursByDeptJob.get(`${dept}|${job}`) ?? 0} />}
       </div>
     </div>
   );
