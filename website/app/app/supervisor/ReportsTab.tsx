@@ -1313,7 +1313,7 @@ function WeeklySummaryReport({ tenantId, showToast }: Props) {
   const weekCabs = done.length;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div data-testid="weekly-summary" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <label style={{ fontSize: 12, color: 'var(--ink-mute)', fontWeight: 600 }}>Week of</label>

@@ -91,8 +91,11 @@ test.describe('Supervisor · Weekly Summary', () => {
     await expect(page.getByTestId('weekly-viz1'), 'daily output chart').toBeVisible();
     await expect(page.getByTestId('weekly-viz2'), 'dept time chart').toBeVisible();
 
-    // Damage + Inventory are intentionally NOT in the Weekly Summary.
-    await expect(page.getByText('Open Damage')).toHaveCount(0);
-    await expect(page.getByText('Pending Inventory')).toHaveCount(0);
+    // Damage + Inventory are intentionally NOT in the Weekly Summary itself
+    // (they each have their own tab). Scope to the Weekly Summary panel — the
+    // surrounding supervisor shell may show an "Open Damage" indicator elsewhere.
+    const panel = page.getByTestId('weekly-summary');
+    await expect(panel.getByText('Open Damage')).toHaveCount(0);
+    await expect(panel.getByText('Pending Inventory')).toHaveCount(0);
   });
 });
