@@ -145,6 +145,19 @@ const ROSTER_SYSTEM =
   `e.g. 30 1/2 → 30.5); use null if a dimension is absent. lr is the L-R / hand ` +
   `field if present, else null. Do not invent cabinets that are not in the text.`;
 
+// CABINET VISION exports some room headers with the room NUMBER glued to the
+// room NAME — the roster prints "Room 1Primary Bath Wardrobes" (while its
+// siblings print correctly as "Room 2 Primary Bath"), so the extractor returns
+// the glued form and it renders unspaced. Re-insert the single missing space
+// between the room number and the following name, whether or not a leading
+// "Room " prefix is present. Already-spaced values ("Room 2 Primary Bath"),
+// plain numbers ("1"), and non-numeric names ("Kitchen") are left untouched.
+function normalizeRosterRoom(raw: unknown): string | null {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  return s.replace(/^(Room\s+)?(\d+)(?=[A-Za-z])/i, '$1$2 ');
+}
+
 // Primary cut-list (nest) extractor. Reads a 'cut_list_primary' PDF's text — a
 // per-sheet nest where EACH ROW is one discrete physical part tied to one
 // cabinet. Columns are: # | Width | Length | Name | Cab# | Room | Comments.
@@ -292,7 +305,16 @@ export async function POST(req: Request) {
       const user = `File name: ${fileName}\n\nCabinet roster text:\n${docText}`;
       const text = await callClaude(ROSTER_SYSTEM, user, 8000, apiKey, 90000);
       const parsed = extractJson<{ cabinets?: unknown[] }>(text);
-      return NextResponse.json({ cabinets: parsed?.cabinets ?? [] });
+      // Repair the CABINET VISION "1Primary Bath Wardrobes" room-header spacing
+      // at the extraction chokepoint so every consumer (preview + insert) gets
+      // the corrected room value.
+      const cabinets = (parsed?.cabinets ?? []).map((c) => {
+        if (c && typeof c === 'object' && 'room' in c) {
+          return { ...(c as Record<string, unknown>), room: normalizeRosterRoom((c as Record<string, unknown>).room) };
+        }
+        return c;
+      });
+      return NextResponse.json({ cabinets });
     }
 
     /* ── Primary cut-list extraction (nest text → part rows) ─────────────── */
