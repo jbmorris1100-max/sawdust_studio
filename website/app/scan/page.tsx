@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { requireCrewIdentity, type CrewIdentity } from '@/lib/crewSession';
 
 // ── /scan ─────────────────────────────────────────────────────────────────────
 // Landing page opened when a crew member scans a shop QR code. Reads the action
@@ -15,7 +16,7 @@ const TEAL = '#5EEAD4';
 const ACTIONS = ['clock_in', 'clock_out', 'break_start', 'break_end'] as const;
 type Action = (typeof ACTIONS)[number];
 
-type Phase = 'loading' | 'need_name' | 'working' | 'success' | 'already_in' | 'error';
+type Phase = 'loading' | 'need_auth' | 'working' | 'success' | 'already_in' | 'error';
 type IconKind = 'clock_in' | 'clock_out' | 'break' | 'error' | 'clock';
 
 type OpenShift = {
@@ -53,9 +54,11 @@ function ScanContent() {
   const [heading, setHeading] = useState('');
   const [detail, setDetail] = useState('');
   const [shopName, setShopName] = useState<string | null>(null);
-  const [nameInput, setNameInput] = useState('');
   const [openShiftIn, setOpenShiftIn] = useState<string | null>(null); // clock_in time when already clocked in
   const ran = useRef(false);
+  // Verified crew identity for this scan (from the crew-auth session). Held in a
+  // ref so the "Clock out instead" button can reuse it without re-verifying.
+  const identityRef = useRef<CrewIdentity | null>(null);
 
   const validAction = (ACTIONS as readonly string[]).includes(action);
 
@@ -101,11 +104,11 @@ function ScanContent() {
     setPhase('success');
   }
 
-  async function runAction(name: string) {
+  async function runAction(identity: CrewIdentity) {
+    const name = identity.name;
+    const dept = identity.dept;
     setPhase('working');
     try {
-      const dept = (() => { try { return localStorage.getItem('crew_dept') || null; } catch { return null; } })();
-
       if (action === 'clock_in') {
         const open = await findOpenShift(name);
         if (open) {
@@ -124,6 +127,7 @@ function ScanContent() {
           clock_out: null,
           date: now.split('T')[0],
           status: 'active',
+          crew_member_id: identity.crewMemberId,
           ...(dept ? { dept, current_dept: dept } : {}),
         });
         if (error) throw error;
@@ -226,13 +230,24 @@ function ScanContent() {
         return;
       }
 
-      let savedName = '';
-      try { savedName = localStorage.getItem('crew_name')?.trim() || ''; } catch { /* ignore */ }
-      if (savedName) {
-        void runAction(savedName);
-      } else {
-        setPhase('need_name');
+      // Attribution safeguard: /scan may only clock a verified crew member.
+      // Use an existing crew-auth session if the device has one; otherwise send
+      // them to the PIN/WebAuthn login at /join — never a typed name.
+      const identity = await requireCrewIdentity(tenantId);
+      if (!identity) {
+        setIcon('clock');
+        setHeading('Sign in required');
+        setDetail('Redirecting you to sign in…');
+        setPhase('need_auth');
+        // Round-trip: after PIN/WebAuthn sign-in, /join sends them back here so
+        // the scanned action (clock in/out, break) completes automatically —
+        // never dropped on /app/crew requiring a second tap.
+        const next = encodeURIComponent(`/scan?action=${action}&tenant=${tenantId}`);
+        setTimeout(() => { router.replace(`/join?tenant=${tenantId}&next=${next}`); }, 1200);
+        return;
       }
+      identityRef.current = identity;
+      void runAction(identity);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -243,13 +258,6 @@ function ScanContent() {
     const t = setTimeout(() => { router.push('/app/crew'); }, 3000);
     return () => clearTimeout(t);
   }, [phase, router]);
-
-  function submitName() {
-    const name = nameInput.trim();
-    if (!name) return;
-    try { localStorage.setItem('crew_name', name); } catch { /* ignore */ }
-    void runAction(name);
-  }
 
   return (
     <div style={{ minHeight: '100vh', background: '#050608', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 28, fontFamily: 'inherit', position: 'relative' }}>
@@ -282,25 +290,7 @@ function ScanContent() {
         {phase === 'loading' && <h1 style={hStyle}>Reading QR code…</h1>}
         {phase === 'working' && <h1 style={hStyle}>One moment…</h1>}
 
-        {phase === 'need_name' && (
-          <>
-            <h1 style={hStyle}>What&rsquo;s your name?</h1>
-            <p style={pStyle}>We&rsquo;ll remember it on this device for next time.</p>
-            <input
-              value={nameInput}
-              onChange={(e) => setNameInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') submitName(); }}
-              placeholder="Your name"
-              autoFocus
-              style={{ width: '100%', padding: '12px 14px', borderRadius: 10, background: '#11161a', border: '1px solid rgba(94,234,212,0.25)', color: '#E2E8F0', fontSize: 15, fontFamily: 'inherit', outline: 'none', textAlign: 'center' }}
-            />
-            <button onClick={submitName} disabled={!nameInput.trim()} style={{ ...primaryBtn, opacity: nameInput.trim() ? 1 : 0.5 }}>
-              Continue
-            </button>
-          </>
-        )}
-
-        {(phase === 'success' || phase === 'error' || phase === 'already_in') && (
+        {(phase === 'success' || phase === 'error' || phase === 'already_in' || phase === 'need_auth') && (
           <>
             <h1 style={hStyle}>{heading}</h1>
             {detail && <p style={pStyle}>{detail}</p>}
@@ -308,7 +298,7 @@ function ScanContent() {
         )}
 
         {phase === 'already_in' && openShiftIn && (
-          <button onClick={() => { let n = ''; try { n = localStorage.getItem('crew_name')?.trim() || ''; } catch {} if (n) { setPhase('working'); void (async () => { try { const s = await findOpenShift(n); if (s) await doClockOut(n, s); else fail('No active clock-in found.'); } catch { fail('Could not clock out.'); } })(); } }} style={primaryBtn}>
+          <button onClick={() => { const id = identityRef.current; if (id) { setPhase('working'); void (async () => { try { const s = await findOpenShift(id.name); if (s) await doClockOut(id.name, s); else fail('No active clock-in found.'); } catch { fail('Could not clock out.'); } })(); } }} style={primaryBtn}>
             Clock out instead
           </button>
         )}
