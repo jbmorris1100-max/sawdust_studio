@@ -15,6 +15,7 @@ import GroupAutoTemplateView from './GroupAutoTemplateView';
 import GroupManualTemplateView from './GroupManualTemplateView';
 import CabinetScanner from '../scan/CabinetScanner';
 import QcInspectorView from './QcInspectorView';
+import CrewDeptSearch from './CrewDeptSearch';
 import PushPicker from '@/components/PushPicker';
 import { pushPart, deptDisplay, recomputeCabinet, notifyDeptWork } from '@/lib/partActions';
 import {
@@ -3289,6 +3290,14 @@ export default function CrewPage() {
               </div>
             </div>
           </div>
+
+          {/* ── Dept-scoped search ──────────────────────────────────────────────
+              Crew-facing search bar, hard-scoped to this crew member's own
+              department (cabinet_units.assigned_dept). Lets crew jump to any
+              cabinet/job in their dept; a result opens the read-only drill-down. */}
+          {tenant && crewDept && (
+            <CrewDeptSearch tenantId={tenant.id} deptKey={crewDept.toLowerCase()} deptLabel={crewDept} />
+          )}
 
           {/* ── Department work view ────────────────────────────────────────────
               Each department renders its own queue of parts driven entirely by
