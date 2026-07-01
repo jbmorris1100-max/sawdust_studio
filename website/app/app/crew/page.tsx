@@ -25,6 +25,7 @@ import PartPushButton from '@/components/PartPushButton';
 import ViewDrawingsButton from '@/components/ViewDrawingsButton';
 import MessageThread from '@/components/MessageThread';
 import { enqueue, pendingCount } from '@/lib/offlineQueue';
+import { requireCrewIdentity, readCrewSession } from '@/lib/crewSession';
 import { sendNotify } from '@/lib/notify';
 
 // ── Crew tenant resolver ───────────────────────────────────────────────────────
@@ -363,36 +364,11 @@ async function logShiftEvent(params: {
 
 // ── Crew member registry (auto-registration on clock-in) ─────────────────────
 // Ensures every crew member who clocks in exists in crew_members. Returns the
-// crew_member id (or null) so the time_clock row can be linked to it.
-//   - new name → insert an 'active' record (name, dept, joined_at, last_active)
-//   - known name → bump last_active to now
-async function registerCrewMember(tenantId: string, name: string, dept: string | null): Promise<string | null> {
-  const trimmed = name.trim();
-  if (!trimmed) return null;
-  const now = new Date().toISOString();
-  try {
-    const { data: existing } = await supabase
-      .from('crew_members')
-      .select('id')
-      .eq('tenant_id', tenantId)
-      .ilike('name', trimmed)
-      .limit(1)
-      .maybeSingle();
-    if (existing?.id) {
-      try { await supabase.from('crew_members').update({ last_active: now }).eq('id', existing.id); } catch (_) {}
-      return existing.id as string;
-    }
-    const { data: inserted } = await supabase
-      .from('crew_members')
-      .insert({ tenant_id: tenantId, name: trimmed, department: dept, status: 'active', joined_at: now, last_active: now })
-      .select('id')
-      .single();
-    return (inserted as { id: string } | null)?.id ?? null;
-  } catch (e) {
-    console.error('[crew_member]', e);
-    return null;
-  }
-}
+// crew_member id — now always sourced from the verified crew-auth session
+// (see requireCrewIdentity in lib/crewSession). The old registerCrewMember()
+// helper that auto-created a crew_members row from typed text was removed: a
+// clock-in must be attributed to a real, authenticated crew member, never to
+// free-text a supervisor never vetted.
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -2380,8 +2356,14 @@ export default function CrewPage() {
     const date = now.split('T')[0];
 
     // Offline — queue the clock-in and mark active locally so the timer runs.
+    // Attribution safeguard: only a device that already holds a crew-auth
+    // session (captured while online) may queue a clock-in. The crew_member_id
+    // + token ride along in the payload and are re-verified server-side on sync
+    // (see offlineQueue 'clock_in'). No stored session → no offline clock-in.
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      enqueue('clock_in', { worker_name: name, dept, clock_in: now, date });
+      const sess = readCrewSession(tenant!.id);
+      if (!sess) { showToast('Sign in required before clocking in', true); return; }
+      enqueue('clock_in', { worker_name: name, dept, clock_in: now, date, crew_member_id: sess.crewMemberId, session_token: sess.sessionToken });
       const pendingId = `pending-${Date.now()}`;
       try { localStorage.setItem('active_time_clock_id', pendingId); } catch (_) {}
       setActiveTimeClockId(pendingId);
@@ -2394,12 +2376,23 @@ export default function CrewPage() {
 
     setSaving(true);
     try {
-      // Auto-register (or refresh) this crew member so the supervisor roster
-      // always reflects everyone who has ever clocked in.
-      const crewMemberId = await registerCrewMember(tenant!.id, name, dept);
+      // Attribution safeguard: a clock-in may only be created for an
+      // authenticated crew member. crew_member_id + identity come from a
+      // verified crew-auth session token (requireCrewIdentity) — never from the
+      // free-text name field (the old registerCrewMember auto-create path). No
+      // valid session → route through the PIN/WebAuthn login at /join first.
+      const identity = await requireCrewIdentity(tenant!.id);
+      if (!identity) {
+        setSaving(false);
+        closeModal();
+        window.location.assign(`/join?tenant=${tenant!.id}`);
+        return;
+      }
+      const workerName = identity.name;
+      const workerDept = dept || identity.dept || '';
       const payload = {
-        worker_name: name,
-        dept,
+        worker_name: workerName,
+        dept:        workerDept,
         clock_in:    now,
         clock_out:   null,
         date,
@@ -2407,24 +2400,24 @@ export default function CrewPage() {
         tenant_id:   tenant!.id,
       };
       const { data: insertedRow, error } = await supabase
-        .from('time_clock').insert({ ...payload, current_dept: dept, crew_member_id: crewMemberId }).select('id').single();
+        .from('time_clock').insert({ ...payload, current_dept: workerDept, crew_member_id: identity.crewMemberId }).select('id').single();
       if (error) throw error;
       const clockId = (insertedRow as { id: string }).id;
       localStorage.setItem('active_time_clock_id', clockId);
       setActiveTimeClockId(clockId);
       // Open the gate immediately so work actions are unblocked without a refetch.
-      setClockShift({ id: clockId, worker_name: name, dept, clock_in: now, clock_out: null, status: 'active', on_break: false, total_break_minutes: 0, current_dept: dept });
+      setClockShift({ id: clockId, worker_name: workerName, dept: workerDept, clock_in: now, clock_out: null, status: 'active', on_break: false, total_break_minutes: 0, current_dept: workerDept });
       void logShiftEvent({
         tenantId: tenant!.id, timeClockId: clockId,
-        workerName: name, eventType: 'clock_in', dept,
+        workerName, eventType: 'clock_in', dept: workerDept,
       });
-      saveIdentity(name, dept);
+      saveIdentity(workerName, workerDept);
       await reloadClock();
       closeModal();
-      showToast(`${name} clocked in`);
+      showToast(`${workerName} clocked in`);
       // If they were mid-build when they last clocked out, offer to resume it.
       try {
-        const proj = await getWorkerProject(tenant!.id, name);
+        const proj = await getWorkerProject(tenant!.id, workerName);
         if (proj && proj.status === 'paused') setResumePrompt(proj);
       } catch (_) { /* best-effort */ }
     } catch (err: unknown) {

@@ -85,15 +85,45 @@ async function processAction(
 
   switch (action.type) {
     case 'clock_in': {
+      // Attribution safeguard: an offline clock-in carries the crew_member_id +
+      // session token captured while the device was authenticated. Re-verify
+      // that token server-side (crew-auth → verifySessionToken) BEFORE inserting.
+      // A missing/invalid/expired token must NOT silently insert — we throw so
+      // syncQueue leaves the action queued and surfaces a sync failure, prompting
+      // the crew member to re-authenticate.
+      const crewMemberId = p.crew_member_id as string | undefined;
+      const sessionToken = p.session_token as string | undefined;
+      if (!crewMemberId || !sessionToken) {
+        throw new Error('Offline clock-in missing crew session — sign in to sync');
+      }
+      const vres = await fetch('/app/api/crew-auth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'verify-session', tenantId, crewMemberId, sessionToken }),
+      });
+      const { ok } = (await vres.json()) as { ok: boolean };
+      if (!ok) throw new Error('Offline clock-in session invalid or expired — sign in to sync');
+      // Resolve the authoritative identity from the crew_members row so the
+      // synced row's worker_name/dept match the real member, not any typed text.
+      const { data: cm } = await supabase
+        .from('crew_members')
+        .select('name, department')
+        .eq('id', crewMemberId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+      const member = cm as { name: string; department: string | null } | null;
+      const workerName = member?.name ?? (p.worker_name as string);
+      const dept = (p.dept as string | null) ?? member?.department ?? null;
       const { error } = await supabase.from('time_clock').insert({
-        worker_name: p.worker_name,
-        dept:        p.dept,
-        current_dept: p.dept,
-        clock_in:    p.clock_in,
-        clock_out:   null,
-        date:        p.date,
-        status:      'active',
-        tenant_id:   tenantId,
+        worker_name:  workerName,
+        dept,
+        current_dept: dept,
+        clock_in:     p.clock_in,
+        clock_out:    null,
+        date:         p.date,
+        status:       'active',
+        tenant_id:    tenantId,
+        crew_member_id: crewMemberId,
       });
       if (error) throw error;
       break;

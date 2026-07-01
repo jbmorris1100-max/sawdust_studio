@@ -30,6 +30,12 @@ function JoinInner() {
   // When role=qc, the picker leads to a QC-delegate PIN screen instead of the
   // normal crew PIN/biometric flow — a delegate inspects cabinets at /app/crew?qc=1.
   const role         = searchParams.get('role') ?? '';
+  // Optional post-sign-in destination (e.g. /scan wants the crew member sent
+  // back to complete the clock-in action after PIN/WebAuthn). Only same-origin
+  // relative paths are honored — never a protocol-relative or absolute URL — so
+  // this can't be abused as an open redirect. Falls back to the crew home.
+  const nextParam    = searchParams.get('next') ?? '';
+  const destAfterAuth = (nextParam.startsWith('/') && !nextParam.startsWith('//')) ? nextParam : '/app/crew';
 
   const [shopName,   setShopName]   = useState<string | null>(null);
   const [notFound,   setNotFound]   = useState(false);
@@ -59,8 +65,8 @@ function JoinInner() {
       localStorage.setItem(SESSION_KEY(tenantId), sessionToken);
       localStorage.setItem(CREW_ID_KEY(tenantId), crewMemberId);
     } catch { /* ignore */ }
-    router.push('/app/crew');
-  }, [tenantId, router]);
+    router.push(destAfterAuth);
+  }, [tenantId, router, destAfterAuth]);
 
   // Load tenant + check for existing session
   useEffect(() => {
@@ -85,7 +91,7 @@ function JoinInner() {
               body: JSON.stringify({ action: 'verify-session', tenantId, crewMemberId, sessionToken }),
             });
             const { ok } = await res.json() as { ok: boolean };
-            if (ok) { router.push('/app/crew'); return; }
+            if (ok) { router.push(destAfterAuth); return; }
             localStorage.removeItem(SESSION_KEY(tenantId));
           }
         } catch { /* fall through to join flow */ }
@@ -101,7 +107,7 @@ function JoinInner() {
       setCrew((crewData as CrewMember[] | null) ?? []);
       setLoading(false);
     })();
-  }, [tenantId, router]);
+  }, [tenantId, router, destAfterAuth]);
 
   // User picks their name
   function selectMember(m: CrewMember) {
@@ -436,7 +442,7 @@ function JoinInner() {
                     {busy ? 'Setting up…' : 'Set Up Face ID / Touch ID'}
                   </button>
                   <button
-                    onClick={() => router.push('/app/crew')}
+                    onClick={() => router.push(destAfterAuth)}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--ink-mute)', fontFamily: 'inherit', padding: 0 }}>
                     Skip — use PIN every time
                   </button>
