@@ -61,5 +61,6 @@ ALTER TABLE ai_rework_events ENABLE ROW LEVEL SECURITY;
 -- Tenant isolation from the start (NOT the wide-open `using(true)` that ai_baselines
 -- / ai_crew_pace had to be retrofitted away from). Engine writes via the service
 -- role (bypasses RLS); the supervisor UI reads/updates its OWN tenant only.
+-- RLS retrofitted to anon-open in migration 20260702000000 (this tenant_isolation policy is NOT the live state).
 CREATE POLICY "tenant_isolation" ON public.ai_rework_events
   USING (tenant_id = (SELECT id FROM public.tenants WHERE owner_user_id = auth.uid()));

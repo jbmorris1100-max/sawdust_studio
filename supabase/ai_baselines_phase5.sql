@@ -35,6 +35,7 @@ DROP POLICY IF EXISTS "anon can insert ai_baselines" ON ai_baselines;
 DROP POLICY IF EXISTS "anon can update ai_baselines" ON ai_baselines;
 DROP POLICY IF EXISTS "anon can delete ai_baselines" ON ai_baselines;
 DROP POLICY IF EXISTS "tenant_isolation"             ON ai_baselines;
+-- RLS retrofitted to anon-open in migration 20260702000000 (this tenant_isolation policy is NOT the live state).
 CREATE POLICY "tenant_isolation" ON public.ai_baselines
   USING (tenant_id = (SELECT id FROM public.tenants WHERE owner_user_id = auth.uid()));
 
@@ -69,5 +70,6 @@ ALTER TABLE ai_crew_pace ENABLE ROW LEVEL SECURITY;
 -- per-worker pace is exactly the kind of data that must never leak across shops.
 -- The engine writes via the service role (bypasses RLS); the supervisor UI reads
 -- only its OWN tenant's rows.
+-- RLS retrofitted to anon-open in migration 20260702000000 (this tenant_isolation policy is NOT the live state).
 CREATE POLICY "tenant_isolation" ON public.ai_crew_pace
   USING (tenant_id = (SELECT id FROM public.tenants WHERE owner_user_id = auth.uid()));

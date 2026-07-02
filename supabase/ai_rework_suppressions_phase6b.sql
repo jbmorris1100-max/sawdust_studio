@@ -30,6 +30,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_rework_suppressions_lookup
 ALTER TABLE ai_rework_suppressions ENABLE ROW LEVEL SECURITY;
 -- tenant_isolation from the start (the detector reads via the service role; the
 -- supervisor UI reads/writes its OWN tenant only).
+-- RLS retrofitted to anon-open in migration 20260702000000 (this tenant_isolation policy is NOT the live state).
 CREATE POLICY "tenant_isolation" ON public.ai_rework_suppressions
   USING (tenant_id = (SELECT id FROM public.tenants WHERE owner_user_id = auth.uid()));
 
